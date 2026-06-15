@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OnSite — One Day, Three Roles</title>
+<style>
+  :root{
+    --bg:#f4f5f3; --card:#ffffff; --ink:#1c2421; --muted:#6b7670;
+    --line:#e3e6e2; --teal:#0f766e; --teal-d:#0b5a54; --teal-l:#e6f1ef;
+    --amber:#b5790b; --amber-l:#fbf2dd; --red:#b3261e; --red-l:#fbe9e7;
+    --green:#15803d; --green-l:#e6f4ea; --blue:#1d4ed8; --blue-l:#e7edfd;
+    --shadow:0 1px 3px rgba(20,30,25,.08),0 8px 24px rgba(20,30,25,.06);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;padding:0;min-height:100%}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased;line-height:1.45}
+  h1,h2,h3{letter-spacing:-.02em;margin:0}
+  button{font-family:inherit;cursor:pointer}
+  .muted{color:var(--muted)}
+  .wrap{max-width:1180px;margin:0 auto;padding:18px}
+
+  /* landing */
+  #landing{min-height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;
+    text-align:center;padding:30px 18px;background:linear-gradient(170deg,#0f766e,#0b5a54 55%,#09433f);color:#fff}
+  #landing .logo{font-size:13px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;opacity:.85}
+  #landing h1{font-size:34px;margin:10px 0 8px;font-weight:750}
+  #landing p.lead{max-width:560px;font-size:16px;opacity:.92;margin:0 auto 28px}
+  .roles{display:flex;gap:16px;flex-wrap:wrap;justify-content:center;max-width:880px}
+  .role-card{background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.18);border-radius:18px;
+    padding:22px;width:250px;text-align:left;color:#fff;transition:transform .08s,background .15s;backdrop-filter:blur(6px)}
+  .role-card:hover{background:rgba(255,255,255,.17);transform:translateY(-2px)}
+  .role-card .ic{font-size:30px}
+  .role-card h3{font-size:20px;margin:10px 0 4px}
+  .role-card .who{font-size:13px;opacity:.8;margin-bottom:8px}
+  .role-card .desc{font-size:13.5px;opacity:.9;line-height:1.5}
+  .role-card .go{margin-top:14px;font-size:13px;font-weight:700;opacity:.95}
+  #landing .all-btn{margin-top:26px;background:#fff;color:var(--teal-d);border:none;border-radius:12px;
+    padding:14px 22px;font-size:15px;font-weight:700}
+  #landing .hint{margin-top:18px;font-size:12.5px;opacity:.7;max-width:520px}
+
+  /* app shell */
+  #app{display:none}
+  .topbar{position:sticky;top:0;z-index:30;background:rgba(244,245,243,.93);backdrop-filter:blur(10px);
+    border-bottom:1px solid var(--line)}
+  .topbar .inner{max-width:1180px;margin:0 auto;padding:10px 18px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .brand{font-weight:750;font-size:16px;letter-spacing:-.02em;cursor:pointer}
+  .brand small{font-weight:600;color:var(--muted);font-size:12px;letter-spacing:0}
+  .seg{display:flex;background:#e9ece9;border-radius:11px;padding:3px;gap:2px}
+  .seg button{border:none;background:none;padding:8px 13px;border-radius:9px;font-size:13.5px;font-weight:650;color:var(--muted)}
+  .seg button.on{background:#fff;color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.08)}
+  .spacer{flex:1}
+  .tbtn{border:1px solid var(--line);background:#fff;border-radius:10px;padding:9px 13px;font-size:13.5px;font-weight:650;color:var(--ink)}
+  .tbtn.primary{background:var(--teal);color:#fff;border-color:var(--teal)}
+  .tbtn.subtle{background:none;border:none;color:var(--muted);font-weight:600}
+
+  /* columns */
+  .cols{display:grid;gap:16px;grid-template-columns:1fr}
+  .cols.three{grid-template-columns:repeat(3,1fr)}
+  @media(max-width:900px){.cols.three{grid-template-columns:1fr}}
+  .lane{min-width:0}
+  .lane-head{display:flex;align-items:center;gap:10px;margin:4px 2px 12px}
+  .lane-head .dot{width:32px;height:32px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:17px;color:#fff}
+  .lane-head h2{font-size:17px} .lane-head .sub{font-size:12.5px;color:var(--muted)}
+  .dot.field{background:var(--teal)} .dot.board{background:var(--amber)} .dot.office{background:var(--blue)}
+
+  .card{background:var(--card);border-radius:15px;box-shadow:var(--shadow);padding:14px;margin-bottom:12px}
+  .card .ct{font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);margin-bottom:9px}
+  .item{border:1px solid var(--line);border-radius:12px;padding:11px 12px;margin-bottom:9px}
+  .item:last-child{margin-bottom:0}
+  .item .t{font-weight:650;font-size:14.5px}
+  .item .d{font-size:12.8px;color:var(--muted);margin-top:2px}
+  .item .bldg{font-size:11.5px;color:var(--muted);margin-top:5px}
+  .item.done{opacity:.78}
+  .item.done .t{text-decoration:line-through;text-decoration-color:rgba(0,0,0,.25)}
+  .chip{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:650;padding:2px 8px;border-radius:999px;white-space:nowrap}
+  .chip.teal{background:var(--teal-l);color:var(--teal-d)} .chip.amber{background:var(--amber-l);color:var(--amber)}
+  .chip.red{background:var(--red-l);color:var(--red)} .chip.green{background:var(--green-l);color:var(--green)}
+  .chip.blue{background:var(--blue-l);color:var(--blue)} .chip.grey{background:#eef0ee;color:var(--muted)}
+  .acts{display:flex;gap:7px;margin-top:9px;flex-wrap:wrap}
+  .mini{border:none;border-radius:9px;padding:7px 11px;font-size:12.5px;font-weight:650}
+  .mini.go{background:var(--teal);color:#fff} .mini.ok{background:var(--green);color:#fff}
+  .mini.no{background:#eef0ee;color:var(--ink)} .mini.warn{background:var(--amber);color:#fff}
+  .stat{display:flex;justify-content:space-between;align-items:baseline;padding:7px 0;border-bottom:1px dashed var(--line)}
+  .stat:last-child{border-bottom:none}
+  .stat .v{font-weight:750;font-size:18px} .stat .v.green{color:var(--green)} .stat .v.blue{color:var(--blue)}
+  .empty{font-size:13px;color:var(--muted);padding:8px 2px}
+
+  /* modal */
+  .scrim{display:none;position:fixed;inset:0;background:rgba(20,30,25,.42);z-index:50;align-items:flex-end;justify-content:center}
+  .scrim.on{display:flex}
+  .sheet{background:#fff;border-radius:18px 18px 0 0;width:100%;max-width:520px;padding:18px;max-height:92vh;overflow:auto}
+  @media(min-width:560px){.scrim{align-items:center}.sheet{border-radius:18px}}
+  .sheet h3{font-size:18px;margin-bottom:14px}
+  label{display:block;font-size:12.5px;font-weight:650;color:var(--muted);margin:11px 0 5px}
+  input,select,textarea{width:100%;border:1px solid var(--line);border-radius:11px;padding:11px;font-size:14.5px;font-family:inherit;background:#fff;color:var(--ink)}
+  textarea{resize:vertical;min-height:60px}
+  .kinds{display:flex;gap:7px;flex-wrap:wrap}
+  .kinds button{flex:1;min-width:90px;border:1px solid var(--line);background:#fff;border-radius:11px;padding:10px 6px;font-size:12.5px;font-weight:650;color:var(--ink)}
+  .kinds button.on{border-color:var(--teal);background:var(--teal-l);color:var(--teal-d)}
+  .sheet .row2{display:flex;gap:10px}
+  .sheet .save{margin-top:16px;width:100%;background:var(--teal);color:#fff;border:none;border-radius:12px;padding:14px;font-size:15px;font-weight:700}
+  .sheet .cancel{width:100%;background:none;border:none;color:var(--muted);font-size:13.5px;font-weight:600;padding:10px;margin-top:4px}
+
+  /* toast */
+  #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);opacity:0;
+    background:var(--ink);color:#fff;padding:11px 16px;border-radius:11px;font-size:13.5px;font-weight:600;z-index:80;
+    transition:opacity .2s,transform .2s;box-shadow:var(--shadow);max-width:90vw;text-align:center}
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+
+<!-- LANDING -->
+<div id="landing">
+  <div class="logo">● OnSite</div>
+  <h1>One day, three roles</h1>
+  <p class="lead">No login — just pick who you are. Enter a real day's work as the caretaker, then watch the <b>same actions</b> show up for the board and the office. Enter once, benefit three times.</p>
+  <div class="roles">
+    <div class="role-card" data-enter="field">
+      <div class="ic">🧰</div>
+      <h3>Field</h3>
+      <div class="who">Martin · caretaker</div>
+      <div class="desc">Arrive, see today's tasks &amp; smart suggestions, log work with a photo, request approval for bigger jobs.</div>
+      <div class="go">Enter as Field →</div>
+    </div>
+    <div class="role-card" data-enter="board">
+      <div class="ic">🏛️</div>
+      <h3>Board</h3>
+      <div class="who">Anne · board chair</div>
+      <div class="desc">See work done with proof, approve costs in one tap, get flagged about anything outside scope.</div>
+      <div class="go">Enter as Board →</div>
+    </div>
+    <div class="role-card" data-enter="office">
+      <div class="ic">🗂️</div>
+      <h3>Office</h3>
+      <div class="who">Admin · back office</div>
+      <div class="desc">Hours per customer, work ready to invoice, approved jobs to dispatch, trips saved, building record growing.</div>
+      <div class="go">Enter as Office →</div>
+    </div>
+  </div>
+  <button class="all-btn" data-enter="all">▦  See all three side by side</button>
+  <div class="hint">Tip: open as <b>All three</b>, then add or complete a task — you'll see it appear in every lane at once. Your day is saved in this browser, so notes survive a reload.</div>
+</div>
+
+<!-- APP -->
+<div id="app">
+  <div class="topbar"><div class="inner">
+    <div class="brand" data-enter="home">● OnSite <small>· one day, three roles</small></div>
+    <div class="seg" id="seg">
+      <button data-view="field">🧰 Field</button>
+      <button data-view="board">🏛️ Board</button>
+      <button data-view="office">🗂️ Office</button>
+      <button data-view="all">▦ All three</button>
+    </div>
+    <div class="spacer"></div>
+    <button class="tbtn primary" data-act="add">+ Add to today</button>
+    <button class="tbtn subtle" data-act="menu">···</button>
+  </div></div>
+  <div class="wrap"><div class="cols" id="cols"></div></div>
+</div>
+
+<!-- ADD / EDIT SHEET -->
+<div class="scrim" id="scrim"><div class="sheet" id="sheet"></div></div>
+<div id="toast"></div>
+
+<script>
+(function(){
+  "use strict";
+  var LS_KEY = "onsite_day_v1";
+
+  function demo(){
+    return {
+      nextId: 100,
+      buildings: [
+        {id:"solbakken", name:"Solbakken Borettslag", addr:"Os Allé 12", code:"1948",
+         note:"Blue door at the back. Anne (chair): bins out Tue & Fri. 14 units."},
+        {id:"osalle", name:"Os Allé 30 Sameie", addr:"Os Allé 30", code:"2207",
+         note:"Fru Hansen, ground floor — wants hedge cut spring + fall."}
+      ],
+      items: [
+        {id:1, kind:"task", bld:"solbakken", title:"Sprinkler test — basement", detail:"Annual function test, log result.", status:"todo", billable:true, hours:0.5, time:"08:00", who:"Martin", proof:null},
+        {id:2, kind:"suggestion", bld:"solbakken", title:"Fire-door check — same basement", detail:"Due in 6 days. You're already down here — do it now?", status:"open", billable:true, hours:0.25, time:"08:00", who:"System", proof:null, samePlace:true},
+        {id:3, kind:"notice", bld:"solbakken", title:"Bikes blocking the fire exit", detail:"Out of scope — board should decide. Photo attached.", status:"open", billable:false, time:"11:00", who:"Martin", proof:{photo:true,note:""}},
+        {id:4, kind:"request", bld:"solbakken", title:"Water damage in stairwell — plumber needed", detail:"Approve ~kr 3 000 to call plumber?", status:"pending", cost:3000, billable:true, time:"13:00", who:"Martin", proof:{photo:true,note:""}},
+        {id:5, kind:"task", bld:"osalle", title:"Spring hedge cut — row A 120cm / row B 80cm", detail:"From standing service plan.", status:"todo", billable:true, hours:1.5, time:"14:30", who:"Martin", proof:null},
+        {id:6, kind:"plan", bld:"osalle", title:"Hedge cut — spring + fall (Fru Hansen)", detail:"Standing service plan, kr 9 600/yr. Approve once, runs every year.", status:"pending", cost:9600, billable:true, time:"—", who:"System", proof:null}
+      ]
+    };
+  }
+
+  var state = load();
+  var view = "field";
+
+  function load(){
+    try{ var raw = localStorage.getItem(LS_KEY); if(raw) return JSON.parse(raw); }catch(e){}
+    return demo();
+  }
+  function save(){ try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){} }
+  function bldName(id){ var b=state.buildings.find(function(x){return x.id===id;}); return b?b.name:""; }
+  function byKind(k){ return state.items.filter(function(i){return i.kind===k;}); }
+
+  /* ---------- toast ---------- */
+  var toastT;
+  function toast(msg){
+    var t=document.getElementById("toast"); t.textContent=msg; t.classList.add("show");
+    clearTimeout(toastT); toastT=setTimeout(function(){t.classList.remove("show");},2200);
+  }
+
+  /* ---------- navigation ---------- */
+  document.addEventListener("click", function(e){
+    var en = e.target.closest("[data-enter]");
+    if(en){ enter(en.getAttribute("data-enter")); return; }
+    var v = e.target.closest("[data-view]");
+    if(v){ view = v.getAttribute("data-view"); render(); return; }
+    var a = e.target.closest("[data-act]");
+    if(a){ act(a.getAttribute("data-act"), a.getAttribute("data-id")); return; }
+  });
+
+  function enter(where){
+    if(where==="home"){ document.getElementById("app").style.display="none";
+      document.getElementById("landing").style.display="flex"; return; }
+    document.getElementById("landing").style.display="none";
+    document.getElementById("app").style.display="block";
+    view = (where==="all")?"all":where;
+    render();
+  }
+
+  /* ---------- actions ---------- */
+  function act(name, id){
+    var item = id? state.items.find(function(i){return i.id==id;}) : null;
+    switch(name){
+      case "add": openSheet(); break;
+      case "menu": openMenu(); break;
+      case "done":
+        item.status="done"; item.proof={photo:true, note:item.proof&&item.proof.note?item.proof.note:"Logged on site"};
+        if(!item.hours) item.hours=0.5;
+        commit("✓ Done — now documented for the Board and billable for the Office"); break;
+      case "accept": // accept suggestion -> becomes a task
+        item.kind="task"; item.status="todo";
+        commit("Added to today — same trip, no extra visit (Office: trip saved)"); break;
+      case "approve":
+        item.status="approved";
+        commit(item.kind==="plan" ? "Plan approved — recurring revenue locked in (Office)"
+                                  : "Approved — Office can dispatch and knows it's billable"); break;
+      case "decline": item.status="declined"; commit("Declined — Field & Office notified"); break;
+      case "ack": item.status="ack"; commit("Acknowledged — logged in the decision record"); break;
+      case "del": state.items=state.items.filter(function(i){return i.id!=id;}); commit("Removed"); break;
+    }
+  }
+  function commit(msg){ save(); render(); if(msg) toast(msg); }
+
+  function openMenu(){
+    var s=document.getElementById("sheet");
+    s.innerHTML =
+      '<h3>This day</h3>'+
+      '<p class="muted" style="font-size:13.5px;margin:0 0 14px">'+state.items.length+' items across '+state.buildings.length+' buildings. Your day is saved in this browser.</p>'+
+      '<button class="save" style="background:var(--ink)" data-do="seed">↺ Load the demo day (storyboard)</button>'+
+      '<button class="save" style="background:var(--red);margin-top:10px" data-do="clear">🗑 Clear to an empty day (enter my own)</button>'+
+      '<button class="cancel" data-do="close">Close</button>';
+    showScrim();
+  }
+
+  /* ---------- add sheet ---------- */
+  var draft;
+  function openSheet(){
+    draft = {kind:"task", bld:state.buildings[0].id, billable:true};
+    var s=document.getElementById("sheet");
+    var blopts = state.buildings.map(function(b){return '<option value="'+b.id+'">'+b.name+'</option>';}).join("");
+    s.innerHTML =
+      '<h3>Add to today</h3>'+
+      '<label>What kind of thing happened?</label>'+
+      '<div class="kinds" id="kinds">'+
+        kbtn("task","🧰 Task done/owed")+kbtn("suggestion","💡 Smart suggestion")+
+        kbtn("request","✋ Needs approval")+kbtn("notice","📣 Flag to board")+kbtn("plan","🔁 Service plan")+
+      '</div>'+
+      '<label>Building</label><select id="f_bld">'+blopts+'</select>'+
+      '<label>Title</label><input id="f_title" placeholder="e.g. Replaced light in stairwell">'+
+      '<label>Detail (optional)</label><textarea id="f_detail" placeholder="What, where, anything the board/office should know"></textarea>'+
+      '<div class="row2">'+
+        '<div style="flex:1"><label>Hours (if work)</label><input id="f_hours" type="number" step="0.25" min="0" placeholder="0.5"></div>'+
+        '<div style="flex:1"><label id="l_cost">Cost kr (if approval/plan)</label><input id="f_cost" type="number" step="100" min="0" placeholder="3000"></div>'+
+      '</div>'+
+      '<label style="display:flex;align-items:center;gap:8px;margin-top:12px"><input type="checkbox" id="f_bill" checked style="width:auto"> Billable to the customer</label>'+
+      '<button class="save" data-do="save">Add to today</button>'+
+      '<button class="cancel" data-do="close">Cancel</button>';
+    showScrim();
+    s.querySelector("#kinds").addEventListener("click", function(e){
+      var b=e.target.closest("button[data-k]"); if(!b) return;
+      draft.kind=b.getAttribute("data-k");
+      [].forEach.call(s.querySelectorAll("#kinds button"), function(x){x.classList.toggle("on", x.getAttribute("data-k")===draft.kind);});
+    });
+  }
+  function kbtn(k,label){ return '<button data-k="'+k+'"'+(k==="task"?' class="on"':'')+'>'+label+'</button>'; }
+
+  function showScrim(){ document.getElementById("scrim").classList.add("on"); }
+  function hideScrim(){ document.getElementById("scrim").classList.remove("on"); }
+
+  document.getElementById("scrim").addEventListener("click", function(e){
+    if(e.target.id==="scrim"){ hideScrim(); return; }
+    var d=e.target.closest("[data-do]"); if(!d) return;
+    var act=d.getAttribute("data-do");
+    if(act==="close"){ hideScrim(); }
+    else if(act==="seed"){ state=demo(); save(); hideScrim(); render(); toast("Loaded the storyboard demo day"); }
+    else if(act==="clear"){ state={nextId:100, buildings:state.buildings, items:[]}; save(); hideScrim(); render(); toast("Cleared — enter your real day with “+ Add”"); }
+    else if(act==="save"){ saveDraft(); }
+  });
+
+  function saveDraft(){
+    var g=function(id){return document.getElementById(id);};
+    var title=g("f_title").value.trim();
+    if(!title){ g("f_title").focus(); return; }
+    var hours=parseFloat(g("f_hours").value)||0;
+    var cost=parseFloat(g("f_cost").value)||0;
+    var it={
+      id: state.nextId++, kind: draft.kind, bld: g("f_bld").value,
+      title:title, detail:g("f_detail").value.trim(),
+      billable: g("f_bill").checked, hours:hours, cost:cost,
+      time: new Date().toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}), who:"Martin", proof:null,
+      status: draft.kind==="request"||draft.kind==="plan" ? "pending" : draft.kind==="notice"||draft.kind==="suggestion" ? "open" : "todo"
+    };
+    state.items.push(it); hideScrim(); commit("Added — visible to Field, Board & Office");
+  }
+
+  /* ---------- rendering ---------- */
+  function render(){
+    [].forEach.call(document.querySelectorAll("#seg button"), function(b){
+      b.classList.toggle("on", b.getAttribute("data-view")===view);
+    });
+    var cols=document.getElementById("cols");
+    if(view==="all"){
+      cols.className="cols three";
+      cols.innerHTML = lane("field")+lane("board")+lane("office");
+    } else {
+      cols.className="cols";
+      cols.innerHTML = lane(view);
+    }
+  }
+
+  function laneHead(role){
+    var m={field:["field","🧰","Field","Martin · caretaker"],
+           board:["board","🏛️","Board","Anne · board chair"],
+           office:["office","🗂️","Office","Admin · back office"]};
+    var x=m[role];
+    return '<div class="lane-head"><div class="dot '+x[0]+'">'+x[1]+'</div><div><h2>'+x[2]+'</h2><div class="sub">'+x[3]+'</div></div></div>';
+  }
+
+  function lane(role){
+    return '<div class="lane">'+laneHead(role)+
+      (role==="field"?fieldView():role==="board"?boardView():officeView())+'</div>';
+  }
+
+  function itemRow(i, acts){
+    var cls="item"+(i.status==="done"?" done":"");
+    var chips="";
+    if(i.kind==="suggestion") chips+=chip("teal","💡 suggested");
+    if(i.samePlace) chips+=chip("teal","same place");
+    if(i.status==="done") chips+=chip("green","✓ done");
+    if(i.status==="approved") chips+=chip("green","approved");
+    if(i.status==="declined") chips+=chip("grey","declined");
+    if(i.status==="pending") chips+=chip("amber","awaiting board");
+    if(i.status==="ack") chips+=chip("grey","noted");
+    if(i.cost) chips+=chip("amber","kr "+i.cost.toLocaleString("no"));
+    if(i.hours) chips+=chip("grey",i.hours+" h");
+    if(i.billable) chips+=chip("blue","billable");
+    if(i.proof&&i.proof.photo) chips+=chip("grey","📷 photo");
+    return '<div class="'+cls+'">'+
+      '<div class="t">'+esc(i.title)+'</div>'+
+      (i.detail?'<div class="d">'+esc(i.detail)+'</div>':'')+
+      '<div class="bldg">📍 '+esc(bldName(i.bld))+' · '+ (i.time||'') +'</div>'+
+      '<div style="margin-top:7px;display:flex;gap:5px;flex-wrap:wrap">'+chips+'</div>'+
+      (acts?'<div class="acts">'+acts+'</div>':'')+
+    '</div>';
+  }
+  function chip(c,t){ return '<span class="chip '+c+'">'+t+'</span>'; }
+  function mini(act,id,cls,label){ return '<button class="mini '+cls+'" data-act="'+act+'" data-id="'+id+'">'+label+'</button>'; }
+
+  /* FIELD: today's tasks + suggestions + raise things */
+  function fieldView(){
+    var tasks=state.items.filter(function(i){return i.kind==="task";});
+    var suggs=state.items.filter(function(i){return i.kind==="suggestion"&&i.status==="open";});
+    var mine=state.items.filter(function(i){return (i.kind==="request"||i.kind==="notice")&&i.who==="Martin";});
+    var html="";
+    html+='<div class="card"><div class="ct">Today\'s tasks</div>'+
+      (tasks.length?tasks.map(function(i){
+        return itemRow(i, i.status==="done"?"":mini("done",i.id,"ok","✓ Mark done (photo + log)"));
+      }).join(""):'<div class="empty">No tasks yet. Add your day with “+ Add”.</div>')+'</div>';
+    if(suggs.length) html+='<div class="card"><div class="ct">Smart suggestions — while you\'re here</div>'+
+      suggs.map(function(i){ return itemRow(i, mini("accept",i.id,"go","+ Do it now")+mini("del",i.id,"no","Dismiss")); }).join("")+'</div>';
+    html+='<div class="card"><div class="ct">Things I raised</div>'+
+      (mine.length?mine.map(function(i){ return itemRow(i,""); }).join(""):'<div class="empty">Requests to the board & flags appear here.</div>')+'</div>';
+    return html;
+  }
+
+  /* BOARD: approvals, proof feed, flags */
+  function boardView(){
+    var approvals=state.items.filter(function(i){return (i.kind==="request"||i.kind==="plan")&&i.status==="pending";});
+    var flags=state.items.filter(function(i){return i.kind==="notice"&&i.status==="open";});
+    var done=state.items.filter(function(i){return i.status==="done";});
+    var html="";
+    html+='<div class="card"><div class="ct">Needs your approval</div>'+
+      (approvals.length?approvals.map(function(i){
+        return itemRow(i, mini("approve",i.id,"ok","Approve")+mini("decline",i.id,"no","Not now"));
+      }).join(""):'<div class="empty">Nothing waiting. You\'re up to date.</div>')+'</div>';
+    if(flags.length) html+='<div class="card"><div class="ct">Flagged for a decision</div>'+
+      flags.map(function(i){ return itemRow(i, mini("ack",i.id,"warn","Got it, noted")); }).join("")+'</div>';
+    html+='<div class="card"><div class="ct">Done this week — with proof</div>'+
+      (done.length?done.map(function(i){ return itemRow(i,""); }).join(""):'<div class="empty">As work is completed it shows here, photo-documented — zero effort for you.</div>')+'</div>';
+    return html;
+  }
+
+  /* OFFICE: billing, dispatch, stats */
+  function officeView(){
+    var done=state.items.filter(function(i){return i.status==="done"&&i.billable;});
+    var dispatch=state.items.filter(function(i){return i.kind==="request"&&i.status==="approved";});
+    var plans=state.items.filter(function(i){return i.kind==="plan"&&i.status==="approved";});
+    var savedTrips=state.items.filter(function(i){return i.kind==="task"&&i.samePlace;}).length
+      + state.items.filter(function(i){return i.kind==="suggestion"&&i.status!=="open";}).length;
+    var hours=done.reduce(function(s,i){return s+(i.hours||0);},0);
+    var recurring=plans.reduce(function(s,i){return s+(i.cost||0);},0);
+    var recordCount=state.items.length + state.items.filter(function(i){return i.proof&&i.proof.photo;}).length;
+    var html="";
+    html+='<div class="card"><div class="ct">At a glance</div>'+
+      '<div class="stat"><span>Billable hours logged</span><span class="v">'+hours.toFixed(2)+'</span></div>'+
+      '<div class="stat"><span>Ready to invoice</span><span class="v green">'+done.length+'</span></div>'+
+      '<div class="stat"><span>Trips saved (batched)</span><span class="v green">'+savedTrips+'</span></div>'+
+      '<div class="stat"><span>Recurring revenue locked</span><span class="v blue">kr '+recurring.toLocaleString("no")+'</span></div>'+
+      '<div class="stat"><span>Building-record entries</span><span class="v">'+recordCount+'</span></div>'+
+      '</div>';
+    html+='<div class="card"><div class="ct">Ready to invoice</div>'+
+      (done.length?done.map(function(i){ return itemRow(i,""); }).join(""):'<div class="empty">Completed billable work lands here, photo-backed & time-stamped.</div>')+'</div>';
+    if(dispatch.length) html+='<div class="card"><div class="ct">Approved — dispatch now</div>'+
+      dispatch.map(function(i){ return itemRow(i,""); }).join("")+'</div>';
+    return html;
+  }
+
+  function esc(s){ return (s||"").replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];}); }
+
+  // start on landing
+})();
+</script>
+</body>
+</html>

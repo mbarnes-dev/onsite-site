@@ -1,0 +1,16 @@
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Vercel
+.vercel
+
+# Node (only if you add tooling later)
+node_modules/
+npm-debug.log*
+
+# Local env (never commit secrets — set them in the Vercel dashboard)
+.env
+.env.*
