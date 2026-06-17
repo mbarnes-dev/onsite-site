@@ -1,0 +1,145 @@
+/* ===========================================================================
+   onboarding.css — styles for the sales → onboarding flow (Steps 0–5).
+   Reuses the design tokens defined in index.html's :root (teal/amber/blue, etc.).
+   All new structures are prefixed .ob- to avoid colliding with the day app.
+   =========================================================================== */
+
+/* ---- pipeline header + stage rail ---- */
+.ob-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:4px 2px 14px}
+.ob-head .dot{width:32px;height:32px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:17px;color:#fff;background:#0b5a54}
+.ob-head h2{font-size:17px}
+.ob-head .sub{font-size:12.5px;color:var(--muted)}
+.ob-head .spacer{flex:1}
+
+.ob-stages{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 14px}
+.ob-stage{font-size:11.5px;font-weight:700;padding:5px 10px;border-radius:999px;background:#eef0ee;color:var(--muted);white-space:nowrap;display:flex;align-items:center;gap:5px}
+.ob-stage .n{display:inline-flex;width:16px;height:16px;border-radius:50%;background:#cfd5d1;color:#fff;align-items:center;justify-content:center;font-size:10px}
+.ob-stage.done{background:var(--green-l);color:var(--green)}
+.ob-stage.done .n{background:var(--green)}
+.ob-stage.cur{background:var(--teal);color:#fff}
+.ob-stage.cur .n{background:rgba(255,255,255,.35)}
+
+/* ---- pipeline cards ---- */
+.ob-pipe{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(260px,1fr))}
+.ob-cust{background:var(--card);border-radius:15px;box-shadow:var(--shadow);padding:14px;cursor:pointer;border:1px solid var(--line);transition:transform .08s,box-shadow .15s}
+.ob-cust:hover{transform:translateY(-2px);box-shadow:0 2px 6px rgba(20,30,25,.12),0 12px 28px rgba(20,30,25,.08)}
+.ob-cust .nm{font-weight:750;font-size:15.5px;letter-spacing:-.01em}
+.ob-cust .ad{font-size:12.8px;color:var(--muted);margin-top:1px}
+.ob-cust .meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+
+.ob-badge{font-size:11px;font-weight:700;padding:3px 9px;border-radius:999px;white-space:nowrap}
+.ob-badge.s-prospect{background:#eef0ee;color:var(--muted)}
+.ob-badge.s-surveyed{background:var(--teal-l);color:var(--teal-d)}
+.ob-badge.s-offer{background:var(--blue-l);color:var(--blue)}
+.ob-badge.s-changes{background:var(--amber-l);color:var(--amber)}
+.ob-badge.s-agreed{background:var(--green-l);color:var(--green)}
+.ob-badge.s-live{background:var(--green);color:#fff}
+
+/* ---- wizard shell ---- */
+.ob-wiz{max-width:1180px}
+.ob-back{border:none;background:none;color:var(--muted);font-weight:650;font-size:13.5px;padding:6px 0;cursor:pointer}
+.ob-title{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:2px 2px 6px}
+.ob-title h2{font-size:21px;letter-spacing:-.02em}
+.ob-step{font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--teal-d);background:var(--teal-l);padding:3px 9px;border-radius:999px}
+.ob-grid{display:grid;gap:16px;grid-template-columns:1fr}
+@media(min-width:900px){.ob-grid.split{grid-template-columns:minmax(0,1.55fr) minmax(280px,1fr)}}
+
+/* ---- map ---- */
+#ob-map{height:520px;border-radius:14px;border:1px solid var(--line);background:#dfe6e2;z-index:1}
+@media(max-width:899px){#ob-map{height:420px}}
+.leaflet-container{font:inherit}
+.ob-pin{display:flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:50% 50% 50% 4px;
+  background:#fff;border:2px solid var(--teal);box-shadow:0 2px 6px rgba(0,0,0,.3);font-size:18px;transform:rotate(45deg);cursor:pointer}
+.ob-pin>span{transform:rotate(-45deg)}
+.ob-pin.upsell{border-color:var(--amber);background:var(--amber-l)}
+.ob-pin.caretaker{border-color:var(--blue)}
+.ob-bpin{font-size:26px;filter:drop-shadow(0 2px 3px rgba(0,0,0,.4))}
+
+/* layer toolbar */
+.ob-layers{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:10px}
+.ob-layer{display:flex;align-items:center;gap:6px;border:1px solid var(--line);background:#fff;border-radius:11px;padding:8px 11px;font-size:13px;font-weight:650;color:var(--ink);cursor:pointer}
+.ob-layer .c{display:inline-flex;min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:#eef0ee;color:var(--muted);font-size:11px;font-weight:700;align-items:center;justify-content:center}
+.ob-layer.on{border-color:var(--teal);background:var(--teal-l);color:var(--teal-d)}
+.ob-layer.on .c{background:var(--teal);color:#fff}
+.ob-layer.active{outline:2px solid var(--teal);outline-offset:1px}
+
+.ob-maptools{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0}
+.ob-hint{font-size:12.5px;color:var(--muted);background:var(--teal-l);border-radius:10px;padding:8px 11px;margin:0 0 10px}
+.ob-active-note{font-size:12.8px;font-weight:650;color:var(--teal-d)}
+
+/* ---- generic list rows (zones, lines, requests, log) ---- */
+.ob-row{border:1px solid var(--line);border-radius:12px;padding:11px 12px;margin-bottom:9px;background:#fff}
+.ob-row.up{border-color:var(--amber);background:var(--amber-l)}
+.ob-row .rt{font-weight:650;font-size:14px;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.ob-row .rd{font-size:12.6px;color:var(--muted);margin-top:2px}
+.ob-row .rp{font-weight:750;white-space:nowrap}
+.ob-line-top{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.ob-acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}
+.ob-mini{border:1px solid var(--line);background:#fff;border-radius:9px;padding:6px 10px;font-size:12px;font-weight:650;color:var(--ink);cursor:pointer}
+.ob-mini.on{border-color:var(--teal);background:var(--teal);color:#fff}
+.ob-mini.ok.on{border-color:var(--green);background:var(--green)}
+.ob-mini.warn.on{border-color:var(--amber);background:var(--amber)}
+.ob-mini.no.on{border-color:var(--red);background:var(--red)}
+.ob-cmt{width:100%;margin-top:7px;border:1px solid var(--line);border-radius:9px;padding:8px;font-size:13px;font-family:inherit;display:none}
+.ob-cmt.show{display:block}
+
+/* totals */
+.ob-tot{display:flex;justify-content:space-between;align-items:baseline;padding:7px 0;border-bottom:1px dashed var(--line)}
+.ob-tot:last-child{border-bottom:none}
+.ob-tot .v{font-weight:750;font-size:17px}
+.ob-tot.grand .v{font-size:21px;color:var(--teal-d)}
+
+/* diff / history */
+.ob-diff{font-size:13px}
+.ob-diff .add{color:var(--green)}
+.ob-diff .rm{color:var(--red);text-decoration:line-through}
+.ob-diff .ch{color:var(--amber)}
+.ob-ver{font-size:11px;font-weight:700;color:var(--blue);background:var(--blue-l);padding:2px 8px;border-radius:999px}
+
+/* big primary action bar inside wizard */
+.ob-bar{display:flex;gap:9px;flex-wrap:wrap;margin-top:14px}
+.ob-btn{border:none;border-radius:12px;padding:13px 18px;font-size:14.5px;font-weight:700;cursor:pointer}
+.ob-btn.primary{background:var(--teal);color:#fff}
+.ob-btn.amber{background:var(--amber);color:#fff}
+.ob-btn.green{background:var(--green);color:#fff}
+.ob-btn.ghost{background:#fff;border:1px solid var(--line);color:var(--ink)}
+.ob-btn.ink{background:var(--ink);color:#fff}
+.ob-btn:disabled{opacity:.45;cursor:not-allowed}
+
+.ob-callout{border:1px solid var(--amber);background:var(--amber-l);border-radius:12px;padding:11px 12px;font-size:13px;color:var(--amber);margin-bottom:10px}
+.ob-callout b{color:var(--amber)}
+.ob-ok{border:1px solid var(--green);background:var(--green-l);border-radius:12px;padding:11px 12px;font-size:13px;color:var(--green);margin-bottom:10px}
+
+/* board-access "email" simulation card */
+.ob-email{border:1px dashed var(--blue);background:var(--blue-l);border-radius:12px;padding:12px;font-size:13px}
+.ob-email .from{font-size:11.5px;color:var(--muted);font-weight:650}
+.ob-email .link{display:inline-block;margin-top:8px;background:var(--blue);color:#fff;border:none;border-radius:10px;padding:9px 14px;font-weight:700;font-size:13px;cursor:pointer}
+
+/* board-review banner that surfaces in the Board view */
+.ob-board-banner{background:linear-gradient(135deg,#b5790b,#8a5c06);color:#fff;border-radius:15px;padding:16px;margin-bottom:12px;box-shadow:var(--shadow)}
+.ob-board-banner h3{font-size:16px;margin:0 0 4px}
+.ob-board-banner p{font-size:13px;opacity:.92;margin:0 0 12px}
+.ob-board-banner .open{background:#fff;color:var(--amber);border:none;border-radius:10px;padding:10px 15px;font-weight:700;font-size:13.5px;cursor:pointer}
+
+/* office pipeline summary card button */
+.ob-newbtn{width:100%;border:1px dashed var(--teal);background:var(--teal-l);color:var(--teal-d);border-radius:12px;padding:13px;font-size:14px;font-weight:700;cursor:pointer;margin-top:4px}
+
+/* ---- print-only offer surface ---- */
+#ob-print{display:none}
+@media print{
+  body{background:#fff!important}
+  body > *{display:none!important}
+  #ob-print{display:block!important;padding:0;margin:0}
+  @page{margin:18mm}
+}
+.ob-doc{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#1c2421;max-width:760px;margin:0 auto;line-height:1.5}
+.ob-doc h1{font-size:26px;margin:0 0 2px;letter-spacing:-.02em}
+.ob-doc .docsub{color:#6b7670;font-size:13px;margin-bottom:18px}
+.ob-doc .docrow{display:flex;justify-content:space-between;gap:20px;border-bottom:1px solid #e3e6e2;padding:10px 0}
+.ob-doc .docrow .sc{font-weight:650}
+.ob-doc .docrow .fr{color:#6b7670;font-size:13px}
+.ob-doc .docrow .pr{font-weight:750;white-space:nowrap}
+.ob-doc .doctot{display:flex;justify-content:space-between;font-weight:800;font-size:18px;border-top:2px solid #1c2421;margin-top:8px;padding-top:10px}
+.ob-doc .upsell-tag{color:#b5790b;font-size:11px;font-weight:700}
+.ob-doc .note{margin-top:18px;font-size:13px;color:#3a423e;background:#f4f5f3;border-radius:10px;padding:12px}
+.ob-doc .sig{margin-top:34px;display:flex;justify-content:space-between;font-size:13px;color:#6b7670}
