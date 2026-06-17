@@ -21,32 +21,65 @@
   function nowStr(){ try{ return new Date().toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"}); }catch(e){ return "today"; } }
   function clone(o){ return JSON.parse(JSON.stringify(o)); }
 
-  /* ---------- the layer catalog (doc 33 table) ---------- */
+  /* ---------- service-type catalog — PHM Norge's 8 categories (doc 36) ----------
+     Markable sub-types (map layers) grouped under PHM's published service map.
+     `cat` = category key (see CATS). Mechanics unchanged — only set/grouping/labels. */
   var LAYERS = {
-    snow:      {emoji:"❄️", label:"Snow shoveling",      measure:"area",  unit:"m²",   rate:30,    service:"Winter clearing",                  freq:"Per event / seasonal",          feeds:"plan + winter tasks"},
-    grass:     {emoji:"🌿", label:"Grass cutting",        measure:"area",  unit:"m²",   rate:12,    service:"Mowing (tractor / manual / edge)", freq:"Weekly in season",              feeds:"plan + equipment", method:"Tractor"},
-    greenery:  {emoji:"🌳", label:"Greenery / beds",      measure:"count", unit:"bed",  rate:2500,  service:"Trimming & weeding",               freq:"Seasonal",                      feeds:"plan"},
-    laundry:   {emoji:"🧺", label:"Laundry rooms",        measure:"count", unit:"room", rate:6000,  service:"Cleaning + machine checks",        freq:"Weekly",                        feeds:"tasks", upsellService:"machine service contract"},
-    tech:      {emoji:"🔧", label:"Tech rooms",           measure:"count", unit:"room", rate:4000,  service:"Inspection rounds",                freq:"Monthly",                       feeds:"tasks + compliance", compliance:true},
-    playground:{emoji:"🛝", label:"Playground",           measure:"count", unit:"unit", rate:9000,  service:"Annual inspection (NS-EN 1176)",   freq:"Annual",                        feeds:"compliance", compliance:true, statutory:true},
-    fire:      {emoji:"🔥", label:"Fire / safety points", measure:"count", unit:"point",rate:3500,  service:"HMS round, extinguishers, detectors",freq:"Quarterly",                   feeds:"compliance pack", compliance:true, statutory:true},
-    lift:      {emoji:"🛗", label:"Lift",                 measure:"count", unit:"lift", rate:12000, service:"2-yearly safety control",          freq:"Biennial (certified partner)",  feeds:"compliance", compliance:true, statutory:true},
-    garage:    {emoji:"🅿️", label:"Garage / parking",     measure:"area",  unit:"m²",   rate:8,     service:"Sweeping, door checks",            freq:"Monthly",                       feeds:"tasks"},
-    entrance:  {emoji:"🚪", label:"Entrances / access",   measure:"count", unit:"door", rate:0,     service:"Access notes, keys / codes",       freq:"—",                             feeds:"building record", recordOnly:true},
-    /* interior layers unlocked in enrichment (Step 5) */
-    panel:     {emoji:"🔌", label:"Electric panel",       measure:"count", unit:"panel",rate:0,     service:"Location + inspection note",        freq:"—",                            feeds:"building record", recordOnly:true, enrich:true},
-    valve:     {emoji:"🚰", label:"Valve / shut-off",     measure:"count", unit:"valve",rate:0,     service:"Location note",                     freq:"—",                            feeds:"building record", recordOnly:true, enrich:true}
+    /* 1. Eiendomsdrift (core) */
+    tech:      {emoji:"🔧", cat:"drift",   label:"Teknisk rom",        measure:"count", unit:"rom",   rate:4000,  service:"Tilsynsrunde",                  freq:"Månedlig",                       compliance:true},
+    fire:      {emoji:"🔥", cat:"drift",   label:"Brannpunkt / HMS",   measure:"count", unit:"punkt", rate:3500,  service:"HMS- og brannvernrunde",        freq:"Kvartalsvis",                    compliance:true, statutory:true},
+    lift:      {emoji:"🛗", cat:"drift",   label:"Heis",               measure:"count", unit:"heis",  rate:12000, service:"Sikkerhetskontroll (2-årlig)",  freq:"Annethvert år (sert. partner)",  compliance:true, statutory:true},
+    entrance:  {emoji:"🚪", cat:"drift",   label:"Inngang / adkomst",  measure:"count", unit:"dør",   rate:0,     service:"Adkomst, nøkler / koder",       freq:"—",                              recordOnly:true},
+    playground:{emoji:"🛝", cat:"drift",   label:"Lekeplass",          measure:"count", unit:"stk",   rate:9000,  service:"Årlig kontroll (NS-EN 1176)",   freq:"Årlig",                          compliance:true, statutory:true},
+    /* 2. Renhold (core) */
+    stairwell: {emoji:"🧹", cat:"renhold", label:"Trappevask / renhold",measure:"count",unit:"oppgang",rate:14000,service:"Løpende renhold",               freq:"Ukentlig"},
+    facade:    {emoji:"🧼", cat:"renhold", label:"Fasadevask",         measure:"area",  unit:"m²",    rate:25,    service:"Fasadevask",                    freq:"Årlig"},
+    laundry:   {emoji:"🧺", cat:"renhold", label:"Vaskerom",           measure:"count", unit:"rom",   rate:6000,  service:"Renhold + maskinsjekk",         freq:"Ukentlig"},
+    /* 3. Hage & Gartner (core) */
+    grass:     {emoji:"🌿", cat:"hage",    label:"Gressklipping",      measure:"area",  unit:"m²",    rate:12,    service:"Klipping (traktor/manuell/kant)",freq:"Ukentlig i sesong",             method:"Traktor"},
+    greenery:  {emoji:"🌳", cat:"hage",    label:"Beskjæring / grønt", measure:"count", unit:"område",rate:2500,  service:"Beskjæring og luking",          freq:"Sesong"},
+    beds:      {emoji:"🌷", cat:"hage",    label:"Bed / beplantning",  measure:"count", unit:"bed",   rate:1800,  service:"Beplantning og stell",          freq:"Sesong"},
+    /* 4. Vintertjenester (core) */
+    snow:      {emoji:"❄️", cat:"vinter",  label:"Snøbrøyting",        measure:"area",  unit:"m²",    rate:30,    service:"Brøyting",                      freq:"Per hendelse / sesong"},
+    gritting:  {emoji:"🧂", cat:"vinter",  label:"Strøing / salting",  measure:"area",  unit:"m²",    rate:10,    service:"Strøing og salting",            freq:"Per hendelse"},
+    roofsafety:{emoji:"🏠", cat:"vinter",  label:"Taksikring",         measure:"count", unit:"tak",   rate:5000,  service:"Takras-sikring / snørydding tak",freq:"Ved behov (vinter)"},
+    /* 5. Servicetjenester (module) */
+    pest:      {emoji:"🐜", cat:"service", label:"Skadedyrkontroll",   measure:"count", unit:"punkt", rate:0,     service:"Skadedyrkontroll",              freq:"Planlagt"},
+    waste:     {emoji:"♻️", cat:"service", label:"Renovasjon / dunk",  measure:"count", unit:"dunk",  rate:0,     service:"Renovasjon / dunkvask",         freq:"—"},
+    plumbing:  {emoji:"🚰", cat:"service", label:"Rør & avløp",        measure:"count", unit:"punkt", rate:0,     service:"Rør & avløp",                   freq:"—"},
+    /* 6. Håndverkertjenester (module) */
+    montering: {emoji:"🔨", cat:"handverk",label:"Montering / installasjon",measure:"count",unit:"jobb",rate:0,   service:"Montering / installasjon",      freq:"Ved behov"},
+    oppussing: {emoji:"🛠️", cat:"handverk",label:"Oppussing / prosjekt",measure:"count",unit:"prosjekt",rate:0,   service:"Oppussing / prosjekt",          freq:"—"},
+    /* 7. Utemiljø, Bygg & Anlegg (module) */
+    grunnarbeid:{emoji:"🧱",cat:"anlegg",  label:"Anleggsgartner / grunnarbeid",measure:"area",unit:"m²",rate:0,  service:"Grunnarbeid (asfalt, drenering)",freq:"Prosjekt"},
+    /* interior building-record layers, unlocked in enrichment (Step 5) — under Eiendomsdrift */
+    panel:     {emoji:"🔌", cat:"drift",   label:"El-tavle",           measure:"count", unit:"tavle", rate:0,     service:"Plassering + tilsynsnotat",     freq:"—",  recordOnly:true, enrich:true},
+    valve:     {emoji:"🔩", cat:"drift",   label:"Ventil / stoppekran",measure:"count", unit:"ventil",rate:0,     service:"Plasseringsnotat",              freq:"—",  recordOnly:true, enrich:true}
   };
-  var SALES_LAYERS = ["snow","grass","greenery","laundry","tech","playground","fire","lift","garage","entrance"];
-  var ENRICH_LAYERS = SALES_LAYERS.concat(["panel","valve"]);
+
+  /* PHM Norge's 8 published service categories (phmgroup.no/tjenester). tier:
+     core = built now; module = phase-2 ("modul – kommer"); feeds = integrate/out, never markable. */
+  var CATS = [
+    {key:"drift",      label:"Eiendomsdrift",           tier:"core",   layers:["tech","fire","lift","entrance","playground","panel","valve"]},
+    {key:"renhold",    label:"Renhold",                 tier:"core",   layers:["stairwell","facade","laundry"]},
+    {key:"hage",       label:"Hage & Gartner",          tier:"core",   layers:["grass","greenery","beds"]},
+    {key:"vinter",     label:"Vintertjenester",         tier:"core",   layers:["snow","gritting","roofsafety"]},
+    {key:"service",    label:"Servicetjenester",        tier:"module", layers:["pest","waste","plumbing"]},
+    {key:"handverk",   label:"Håndverkertjenester",     tier:"module", layers:["montering","oppussing"]},
+    {key:"anlegg",     label:"Utemiljø, Bygg & Anlegg", tier:"module", layers:["grunnarbeid"]},
+    {key:"forvaltning",label:"Eiendomsforvaltning",     tier:"feeds",  layers:[], feedsNote:"Integreres — OnSite mater forretningsfører/styreportal (PHM Digital · Lettstyrt · OBOS Vibbo). Bygges ikke."}
+  ];
+  function catOf(key){ var c=null; CATS.forEach(function(x){ if(x.layers.indexOf(key)>=0) c=x; }); return c; }
+  function catLabel(key){ var c=catOf(key); return c?c.label:""; }
+  function layerTier(key){ var c=catOf(key); return c?c.tier:"core"; }
 
   var PROFILES = ["Residential — association","Residential — rental","Commercial — office","Commercial — retail","Commercial — warehouse/logistics","Mixed-use"];
   var SCOPE_OPTS = [
-    {key:"grass",    label:"🌿 Grass cutting"},
-    {key:"snow",     label:"❄️ Winter clearing"},
-    {key:"laundry",  label:"🧺 Common-area cleaning"},
-    {key:"greenery", label:"🌳 Greenery & beds"},
-    {key:"garage",   label:"🅿️ Garage / parking"}
+    {key:"grass",     label:"🌿 Gressklipping"},
+    {key:"snow",      label:"❄️ Snøbrøyting"},
+    {key:"laundry",   label:"🧺 Vaskerom / renhold"},
+    {key:"stairwell", label:"🧹 Trappevask"},
+    {key:"greenery",  label:"🌳 Beskjæring / grønt"}
   ];
   var STAGES = ["Prospect","Surveyed","Offer sent","Changes requested","Agreed","Live"];
   var STEP_NAMES = ["Office prep","Walkaround","Offer","Board review","Updated offer","Go-live"];
@@ -117,13 +150,13 @@
       center:{lat:cy, lon:cx, zoom:18}, baseLayer:"topo",
       accessNote:"Master key #4 at board chair. Gate code 1948.",
       markers:[
-        mk("sm1","grass",     0.00045,-0.00060, 1800, "Main lawn — tractor cut"),
-        mk("sm2","snow",     -0.00030, 0.00075,  650, "Front path + parking apron"),
-        mk("sm3","laundry",   0.00012, 0.00022,    1, "Block A basement"),
-        mk("sm4","laundry",  -0.00022,-0.00030,    1, "Block B basement"),
-        mk("sm5","playground",0.00052, 0.00040,    1, "Behind block B — present, not quoted"),
-        mk("sm6","lift",     -0.00040, 0.00020,    1, "Block A — 1998, due 2-yearly control"),
-        mk("sm7","fire",      0.00020,-0.00042,    1, "Main entrance: extinguisher + detectors")
+        mk("sm1","grass",     0.00045,-0.00060, 1800, "Hovedplen — traktorklipp"),
+        mk("sm2","snow",     -0.00030, 0.00075,  650, "Inngangsparti + parkering"),
+        mk("sm3","laundry",   0.00012, 0.00022,    1, "Blokk A kjeller"),
+        mk("sm4","laundry",  -0.00022,-0.00030,    1, "Blokk B kjeller"),
+        mk("sm5","playground",0.00052, 0.00040,    1, "Bak blokk B — finnes, ikke tilbudt"),
+        mk("sm6","lift",     -0.00040, 0.00020,    1, "Blokk A — 1998, 2-årlig kontroll"),
+        mk("sm7","fire",      0.00020,-0.00042,    1, "Hovedinngang: slukker + detektorer")
       ],
       offer:null, offerHistory:[], changeRequests:[], buildingId:null, handover:null, enrichment:false,
       log:[{ts:"14 Jun 2026", text:"Surveyed on site — 7 zones marked, 3 upsell flags"},
@@ -261,6 +294,7 @@
     var lines=(c.markers||[]).filter(function(m){ return !LAYERS[m.layer].recordOnly; }).map(function(m){
       var d=LAYERS[m.layer];
       return { id:"L"+uid(), markerId:m.id, layer:m.layer,
+        category:catLabel(m.layer), subtype:d.label,
         scope:m.service||d.service, frequency:m.frequency||d.freq,
         qty:m.qty, unit:m.unit||d.unit, price:m.price, recurring:true, inScope:m.inScope,
         review:{decision:null, comment:""} };
@@ -323,9 +357,11 @@
     text=(text||"").trim(); if(!text){ toast("Paste the board's email reply first"); return; }
     var lc=text.toLowerCase();
     var KW={ playground:["playground","lekeplass","lekeapparat"], lift:["lift","elevator","heis"],
-      snow:["snow","brøyt","snø","winter","vinter"], grass:["grass","lawn","gress","plen","mow","mowing"],
-      laundry:["laundry","vaskeri","cleaning","renhold","clean"], fire:["fire","brann","extinguisher","slukker","detector"],
-      tech:["tech","teknisk"], garage:["garage","garasje","parking"], greenery:["hedge","hekk","bed","greenery","planting","shrub"] };
+      snow:["snow","brøyt","snø","winter","vinter"], grass:["grass","lawn","gress","plen","mow","mowing","klipp"],
+      laundry:["laundry","vaskeri","vaskerom"], stairwell:["trappevask","trapp","renhold","cleaning","clean"],
+      facade:["fasade","facade"], fire:["fire","brann","extinguisher","slukker","detector","hms"],
+      tech:["tech","teknisk"], greenery:["hedge","hekk","beskjær","greenery","busk","shrub"],
+      beds:["bed","beplantning","blomst","plant"], gritting:["strø","salt","grit"], roofsafety:["tak","taksikring","roof"] };
     function tone(){
       if(/remove|drop|don'?t need|ikke behov|fjern|cut from|take.*off/.test(lc)) return "remove";
       if(/cheap|expensive|too high|price|pris|dyrt|reduce|lower|discount|rabatt/.test(lc)) return "change";
@@ -426,19 +462,19 @@
     nTask++;
     // 3. each recurring zone → service plan (+ compliance routine / day-1 task)
     active.forEach(function(l){
-      var d=LAYERS[l.layer];
+      var d=LAYERS[l.layer], cl=l.category||catLabel(l.layer), sub=l.subtype||d.label;
       st.items.push({ id:uid(), kind:"plan", bld:b.id,
-        title:d.emoji+" "+l.scope, detail:l.frequency+" · "+kr(l.price)+"/yr"+(l.inScope?"":" · added as upsell")+" — from agreed offer",
+        title:d.emoji+" "+cl+" → "+sub, detail:l.frequency+" · "+kr(l.price)+"/yr"+(l.inScope?"":" · added as upsell")+" — from agreed offer",
         status:"approved", billable:true, cost:l.price, hours:0, time:"—", who:"System", proof:null });
       nPlan++;
       if(d.compliance){
         st.items.push({ id:uid(), kind:"task", bld:b.id,
-          title:"📋 "+l.scope, detail:"Statutory routine"+(d.statutory?" (NS / certified partner)":"")+" — schedule first inspection.",
+          title:"📋 "+sub, detail:"Statutory routine"+(d.statutory?" (NS / certified partner)":"")+" — schedule first inspection.",
           status:"todo", billable:true, hours:0.5, time:"—", who:"System", proof:null });
         nComp++;
       } else if(opCount<2){
         st.items.push({ id:uid(), kind:"task", bld:b.id,
-          title:"▶ First "+l.scope.toLowerCase(), detail:"Day-1 occurrence from the service plan ("+l.frequency+").",
+          title:"▶ Day-1: "+sub, detail:"Day-1 occurrence from the service plan ("+l.frequency+").",
           status:"todo", billable:true, hours:1, time:"09:00", who:"Martin", proof:null });
         nTask++; opCount++;
       }
@@ -572,15 +608,34 @@
     var d=LAYERS[key]; var n=tallyStr(c,key);
     var on=(c.layers||[]).indexOf(key)>=0;
     var active=ui.activeLayer===key;
-    return '<button class="ob-layer'+(on?" on":"")+(active?" active":"")+'" '+(selectable?'data-ob="pick" data-id="'+key+'"':'')+'>'
-      +d.emoji+' '+d.label+' <span class="c">'+n+'</span></button>';
+    var module=layerTier(key)==="module";
+    var cls="ob-layer"+(on&&!module?" on":"")+(active?" active":"")+(module?" modul":"");
+    var attr=(selectable&&!module)?'data-ob="pick" data-id="'+key+'"':'disabled';
+    var badge=module?'<span class="c modul">modul</span>':'<span class="c">'+n+'</span>';
+    return '<button class="'+cls+'" '+attr+'>'+d.emoji+' '+d.label+' '+badge+'</button>';
+  }
+  // grouped picker — the 8 PHM categories; core active, module disabled ("modul – kommer"),
+  // forvaltning shown as a non-markable "integreres / feeds" chip. mode: "sales" | "enrich".
+  function layerPickerHTML(c, mode){
+    return CATS.map(function(cat){
+      if(cat.tier==="feeds"){
+        return '<div class="ob-cat feeds"><div class="ob-cat-h"><span class="ob-cat-name">'+esc(cat.label)
+          +'</span><span class="ob-tier feeds">integreres</span></div>'
+          +'<div class="ob-feeds-chip">⚙️ '+esc(cat.feedsNote)+'</div></div>';
+      }
+      var keys=cat.layers.filter(function(k){ var d=LAYERS[k]; if(!d) return false; if(d.enrich && mode!=="enrich") return false; return true; });
+      if(!keys.length) return "";
+      var tag = cat.tier==="module" ? '<span class="ob-tier modul">modul – kommer</span>' : '';
+      return '<div class="ob-cat '+cat.tier+'"><div class="ob-cat-h"><span class="ob-cat-name">'+esc(cat.label)+'</span>'+tag+'</div>'
+        +'<div class="ob-cat-chips">'+keys.map(function(k){return layerChip(c,k,cat.tier==="core");}).join("")+'</div></div>';
+    }).join("");
   }
   function stepWalk(c){
     var hasZones=(c.markers||[]).some(function(m){return !LAYERS[m.layer].recordOnly;});
     return '<div class="ob-grid split">'
       +'<div>'
-        +'<div class="ob-hint">Pick a layer, then <b>tap the map</b> to drop a marker. Counts tally per layer. Anything outside the requested scope auto-flags as an <b>upsell</b>.</div>'
-        +'<div class="ob-layers" id="ob-layers">'+SALES_LAYERS.map(function(k){return layerChip(c,k,true);}).join("")+'</div>'
+        +'<div class="ob-hint">Pick a layer, then <b>tap the map</b> to drop a marker. Counts tally per layer. Anything outside the requested scope auto-flags as an <b>upsell</b>. Categories follow PHM Norge\'s service map — <b>modul</b> lines are phase-2.</div>'
+        +'<div class="ob-picker" id="ob-layers">'+layerPickerHTML(c,"sales")+'</div>'
         +'<div class="ob-maptools"><span class="ob-active-note" id="ob-active">'+activeNote()+'</span><span class="spacer" style="flex:1"></span>'
           +'<button class="ob-btn ghost" data-ob="locateWalk">📍 Locate address</button>'
           +'<button class="ob-btn ghost" data-ob="geotag">📍 Use my location</button></div>'
@@ -596,19 +651,22 @@
   function activeNote(){ return ui.activeLayer ? ('Active layer: '+LAYERS[ui.activeLayer].emoji+' '+LAYERS[ui.activeLayer].label+' — tap the map') : 'No layer selected — pick one above'; }
   function walkTotal(c){ return (c.markers||[]).reduce(function(s,m){return s+(m.price||0);},0); }
   function zonesHTML(c){
-    var groups=SALES_LAYERS.concat(["panel","valve"]).filter(function(k){return (c.markers||[]).some(function(m){return m.layer===k;});});
-    if(!groups.length) return '<div class="empty">No zones yet — tap the map to mark what you see.</div>';
-    return groups.map(function(k){
-      var d=LAYERS[k];
-      var ms=(c.markers||[]).filter(function(m){return m.layer===k;});
-      var rows=ms.map(function(m){
-        return '<div class="ob-row'+(isUpsell(c,m)?' up':'')+'"><div class="ob-line-top"><div class="rt">'+d.emoji+' '+esc(m.service)
-          +(isUpsell(c,m)?' <span class="chip amber">upsell</span>':'')+(m.source==="caretaker"?' <span class="chip blue">interior</span>':'')
-          +(m.photo?' <span class="chip grey">📷</span>':'')+'</div>'
-          +(d.recordOnly?'':'<div class="rp">'+kr(m.price)+'</div>')+'</div>'
-          +'<div class="rd">'+esc(m.frequency)+' · '+(d.measure==="area"?(m.qty+" m²"):(m.qty+" "+d.unit))+(m.note?' · '+esc(m.note):'')+(m.accuracy?' · 📍±'+m.accuracy+'m':'')+'</div></div>';
+    if(!(c.markers||[]).length) return '<div class="empty">No zones yet — tap the map to mark what you see.</div>';
+    return CATS.map(function(cat){
+      var keys=cat.layers.filter(function(k){return (c.markers||[]).some(function(m){return m.layer===k;});});
+      if(!keys.length) return "";
+      var inner=keys.map(function(k){
+        var d=LAYERS[k];
+        var rows=(c.markers||[]).filter(function(m){return m.layer===k;}).map(function(m){
+          return '<div class="ob-row'+(isUpsell(c,m)?' up':'')+'"><div class="ob-line-top"><div class="rt">'+d.emoji+' '+esc(m.service)
+            +(isUpsell(c,m)?' <span class="chip amber">upsell</span>':'')+(m.source==="caretaker"?' <span class="chip blue">interiør</span>':'')
+            +(m.photo?' <span class="chip grey">📷</span>':'')+'</div>'
+            +(d.recordOnly?'':'<div class="rp">'+kr(m.price)+'</div>')+'</div>'
+            +'<div class="rd">'+esc(m.frequency)+' · '+(d.measure==="area"?(m.qty+" m²"):(m.qty+" "+d.unit))+(m.note?' · '+esc(m.note):'')+(m.accuracy?' · 📍±'+m.accuracy+'m':'')+'</div></div>';
+        }).join("");
+        return '<div class="ob-zgroup"><div class="ob-zlabel">'+d.emoji+' '+d.label+' · '+tallyStr(c,k)+'</div>'+rows+'</div>';
       }).join("");
-      return '<div style="margin-bottom:10px"><div style="font-weight:700;font-size:12.5px;color:var(--muted);margin-bottom:5px">'+d.emoji+' '+d.label+' · '+tallyStr(c,k)+'</div>'+rows+'</div>';
+      return '<div class="ob-zcat">'+esc(cat.label)+'</div>'+inner;
     }).join("");
   }
   function upsellHTML(c){
@@ -618,7 +676,7 @@
       +ups.map(function(m){return LAYERS[m.layer].emoji+" "+LAYERS[m.layer].label;}).join(", ")+'. Nothing seen is lost.</div>';
   }
   function refreshWalk(c){
-    setHTML("ob-layers", SALES_LAYERS.map(function(k){return layerChip(c,k,true);}).join(""));
+    setHTML("ob-layers", layerPickerHTML(c, c.stage==="Live"?"enrich":"sales"));
     setHTML("ob-zones", zonesHTML(c));
     setHTML("ob-upsell", upsellHTML(c));
     setText("ob-walktotal", kr(walkTotal(c)));
@@ -655,12 +713,12 @@
   }
   function offerLinesHTML(c, editable){
     return c.offer.lines.map(function(l){
-      var d=LAYERS[l.layer];
+      var d=LAYERS[l.layer], cl=l.category||catLabel(l.layer), sub=l.subtype||d.label;
       var removed=l.review.decision==="remove";
       return '<div class="ob-row'+(!l.inScope?' up':'')+'" style="'+(removed?'opacity:.5':'')+'"><div class="ob-line-top">'
-        +'<div class="rt">'+d.emoji+' '+esc(l.scope)+(!l.inScope?' <span class="chip amber">upsell</span>':'')+'</div>'
+        +'<div class="rt">'+d.emoji+' '+esc(sub)+' <span class="ob-catmini">'+esc(cl)+'</span>'+(!l.inScope?' <span class="chip amber">upsell</span>':'')+'</div>'
         +'<div class="rp">'+kr(l.price)+'/yr</div></div>'
-        +'<div class="rd">'+esc(l.frequency)+' · '+(d.measure==="area"?(l.qty+" m²"):(l.qty+" "+d.unit))+'</div></div>';
+        +'<div class="rd">'+esc(l.scope)+' · '+esc(l.frequency)+' · '+(d.measure==="area"?(l.qty+" m²"):(l.qty+" "+d.unit))+'</div></div>';
     }).join("");
   }
   function boardEmailCard(c){
@@ -681,11 +739,11 @@
   }
   function boardReviewHTML(c){
     var lines=c.offer.lines.map(function(l){
-      var d=LAYERS[l.layer]; var dec=l.review.decision;
+      var d=LAYERS[l.layer], cl=l.category||catLabel(l.layer), sub=l.subtype||d.label; var dec=l.review.decision;
       function b(act,label,cls){ return '<button class="ob-mini '+cls+(dec===act?' on':'')+'" data-ob="dec" data-id="'+l.id+'" data-arg="'+act+'">'+label+'</button>'; }
       return '<div class="ob-row'+(!l.inScope?' up':'')+'">'
-        +'<div class="ob-line-top"><div class="rt">'+d.emoji+' '+esc(l.scope)+(!l.inScope?' <span class="chip amber">new / upsell</span>':'')+'</div><div class="rp">'+kr(l.price)+'/yr</div></div>'
-        +'<div class="rd">'+esc(l.frequency)+'</div>'
+        +'<div class="ob-line-top"><div class="rt">'+d.emoji+' '+esc(sub)+' <span class="ob-catmini">'+esc(cl)+'</span>'+(!l.inScope?' <span class="chip amber">new / upsell</span>':'')+'</div><div class="rp">'+kr(l.price)+'/yr</div></div>'
+        +'<div class="rd">'+esc(l.scope)+' · '+esc(l.frequency)+'</div>'
         +'<div class="ob-acts">'+b("approve","✓ Approve","ok")+b("question","? Question","")+b("change","✎ Change","warn")+b("remove","✕ Remove","no")+'</div>'
         +'<textarea class="ob-cmt'+(dec&&dec!=="approve"?' show':'')+'" data-obf="bcomment" data-id="'+l.id+'" placeholder="Add a comment for the office…">'+esc(l.review.comment||"")+'</textarea>'
       +'</div>';
@@ -762,7 +820,7 @@
       +'<div class="ob-grid split">'
       +'<div>'
         +'<div class="ob-callout" style="border-color:var(--blue);background:var(--blue-l);color:var(--blue)"><b>🧭 Learn the building (enrichment).</b> The sales walk caught the outside &amp; obvious. Now add interior items room by room — tech/laundry rooms, 🔌 panels, 🚰 valves/shut-offs — and correct counts. The record keeps thickening.</div>'
-        +'<div class="ob-layers" id="ob-layers">'+ENRICH_LAYERS.map(function(k){return layerChip(c,k,true);}).join("")+'</div>'
+        +'<div class="ob-picker" id="ob-layers">'+layerPickerHTML(c,"enrich")+'</div>'
         +'<div class="ob-maptools"><span class="ob-active-note" id="ob-active">'+activeNote()+'</span><span style="flex:1"></span>'
           +'<button class="ob-btn ghost" data-ob="geotag">📍 Use my location</button></div>'
         +'<div id="ob-map"></div>'
@@ -823,8 +881,9 @@
     if(!c.offer){ toast("Generate the offer first"); return; }
     var lines=c.offer.lines.filter(function(l){return l.review.decision!=="remove";}).map(function(l){
       var d=LAYERS[l.layer];
-      return '<div class="docrow"><div><div class="sc">'+d.emoji+' '+esc(l.scope)+(!l.inScope?' <span class="upsell-tag">NEW</span>':'')+'</div>'
-        +'<div class="fr">'+esc(l.frequency)+' · '+(d.measure==="area"?(l.qty+" m²"):(l.qty+" "+d.unit))+'</div></div>'
+      var cl=l.category||catLabel(l.layer), sub=l.subtype||d.label;
+      return '<div class="docrow"><div><div class="sc">'+d.emoji+' '+esc(cl)+' › '+esc(sub)+(!l.inScope?' <span class="upsell-tag">NY</span>':'')+'</div>'
+        +'<div class="fr">'+esc(l.scope)+' · '+esc(l.frequency)+' · '+(d.measure==="area"?(l.qty+" m²"):(l.qty+" "+d.unit))+'</div></div>'
         +'<div class="pr">'+kr(l.price)+'/yr</div></div>';
     }).join("");
     var ct=c.contacts[0]||{};
@@ -929,11 +988,8 @@
     ui.activeLayer = (ui.activeLayer===key ? null : key);
     // toggle chip highlight + active note without full re-render (keeps map stable)
     var box=document.getElementById("ob-layers");
-    if(box){ [].forEach.call(box.querySelectorAll(".ob-layer"), function(b){ b.classList.remove("active"); });
-      // re-render chips to reflect "on" set + active
-      var layers = (c.stage==="Live") ? ENRICH_LAYERS : SALES_LAYERS;
-      box.innerHTML = layers.map(function(k){return layerChip(c,k,true);}).join("");
-    }
+    // re-render the grouped picker to reflect "on" set + active (keeps the map stable)
+    if(box){ box.innerHTML = layerPickerHTML(c, c.stage==="Live"?"enrich":"sales"); }
     setText("ob-active", activeNote());
   }
   function togglePhoto(id){

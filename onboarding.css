@@ -62,6 +62,29 @@
 .ob-layer.on{border-color:var(--teal);background:var(--teal-l);color:var(--teal-d)}
 .ob-layer.on .c{background:var(--teal);color:#fff}
 .ob-layer.active{outline:2px solid var(--teal);outline-offset:1px}
+.ob-layer.modul{opacity:.7;border-style:dashed;cursor:default;color:var(--muted)}
+.ob-layer .c.modul{background:var(--amber-l);color:var(--amber)}
+
+/* grouped category picker (PHM Norge's 8 service categories) */
+.ob-picker{margin-bottom:10px}
+.ob-cat{margin-bottom:11px}
+.ob-cat-h{display:flex;align-items:center;gap:8px;margin:0 2px 6px}
+.ob-cat-name{font-size:11.5px;font-weight:800;letter-spacing:.03em;text-transform:uppercase;color:var(--ink)}
+.ob-cat.module .ob-cat-name,.ob-cat.feeds .ob-cat-name{color:var(--muted)}
+.ob-tier{font-size:10px;font-weight:700;padding:2px 7px;border-radius:999px;white-space:nowrap}
+.ob-tier.modul{background:var(--amber-l);color:var(--amber)}
+.ob-tier.feeds{background:#eef0ee;color:var(--muted)}
+.ob-cat-chips{display:flex;gap:7px;flex-wrap:wrap}
+.ob-feeds-chip{font-size:12px;font-weight:600;color:var(--muted);background:#f4f5f3;border:1px dashed var(--line);border-radius:11px;padding:9px 11px;line-height:1.4}
+
+/* zone list — category grouped */
+.ob-zcat{font-size:10.5px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:var(--teal-d);margin:12px 0 5px}
+.ob-zcat:first-child{margin-top:0}
+.ob-zgroup{margin-bottom:9px}
+.ob-zlabel{font-weight:700;font-size:12.5px;color:var(--muted);margin-bottom:5px}
+
+/* offer-line category mini chip */
+.ob-catmini{font-size:10px;font-weight:700;color:var(--blue);background:var(--blue-l);padding:1px 7px;border-radius:999px;white-space:nowrap}
 
 .ob-maptools{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0}
 .ob-hint{font-size:12.5px;color:var(--muted);background:var(--teal-l);border-radius:10px;padding:8px 11px;margin:0 0 10px}
