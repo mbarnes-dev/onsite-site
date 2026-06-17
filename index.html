@@ -5,6 +5,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>OnSite — One Day, Three Roles</title>
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
 <style>
   :root{
     --bg:#f4f5f3; --card:#ffffff; --ink:#1c2421; --muted:#6b7670;
@@ -110,6 +111,7 @@
     transition:opacity .2s,transform .2s;box-shadow:var(--shadow);max-width:90vw;text-align:center}
   #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 </style>
+<link rel="stylesheet" href="onboarding.css">
 </head>
 <body>
 
@@ -142,6 +144,7 @@
     </div>
   </div>
   <button class="all-btn" data-enter="all">▦  See all three side by side</button>
+  <button class="all-btn" data-enter="sales" style="background:#0b5a54;color:#fff;margin-top:12px">🧭  Set up a new client (sales → onboarding)</button>
   <div class="hint">Tip: open as <b>All three</b>, then add or complete a task — you'll see it appear in every lane at once. Your day is saved in this browser, so notes survive a reload.</div>
 </div>
 
@@ -153,6 +156,7 @@
       <button data-view="field">🧰 Field</button>
       <button data-view="board">🏛️ Board</button>
       <button data-view="office">🗂️ Office</button>
+      <button data-view="sales">🧭 Sales</button>
       <button data-view="all">▦ All three</button>
     </div>
     <div class="spacer"></div>
@@ -165,6 +169,9 @@
 <!-- ADD / EDIT SHEET -->
 <div class="scrim" id="scrim"><div class="sheet" id="sheet"></div></div>
 <div id="toast"></div>
+
+<!-- print-only surface for the offer "Save as PDF" view (filled by onboarding.js) -->
+<div id="ob-print" aria-hidden="true"></div>
 
 <script>
 (function(){
@@ -187,7 +194,9 @@
         {id:4, kind:"request", bld:"solbakken", title:"Water damage in stairwell — plumber needed", detail:"Approve ~kr 3 000 to call plumber?", status:"pending", cost:3000, billable:true, time:"13:00", who:"Martin", proof:{photo:true,note:""}},
         {id:5, kind:"task", bld:"osalle", title:"Spring hedge cut — row A 120cm / row B 80cm", detail:"From standing service plan.", status:"todo", billable:true, hours:1.5, time:"14:30", who:"Martin", proof:null},
         {id:6, kind:"plan", bld:"osalle", title:"Hedge cut — spring + fall (Fru Hansen)", detail:"Standing service plan, kr 9 600/yr. Approve once, runs every year.", status:"pending", cost:9600, billable:true, time:"—", who:"System", proof:null}
-      ]
+      ],
+      customers: [],     // sales → onboarding records; seeded by onboarding.js
+      obSeeded: false     // false => onboarding may (re)seed the demo customer
     };
   }
 
@@ -304,7 +313,7 @@
     var act=d.getAttribute("data-do");
     if(act==="close"){ hideScrim(); }
     else if(act==="seed"){ state=demo(); save(); hideScrim(); render(); toast("Loaded the storyboard demo day"); }
-    else if(act==="clear"){ state={nextId:100, buildings:state.buildings, items:[]}; save(); hideScrim(); render(); toast("Cleared — enter your real day with “+ Add”"); }
+    else if(act==="clear"){ state={nextId:100, buildings:state.buildings, items:[], customers:state.customers||[], obSeeded:state.obSeeded}; save(); hideScrim(); render(); toast("Cleared — enter your real day with “+ Add”"); }
     else if(act==="save"){ saveDraft(); }
   });
 
@@ -333,9 +342,16 @@
     if(view==="all"){
       cols.className="cols three";
       cols.innerHTML = lane("field")+lane("board")+lane("office");
-    } else {
+    } else if(view==="field"||view==="board"||view==="office"){
       cols.className="cols";
       cols.innerHTML = lane(view);
+    } else {
+      cols.className="cols";
+      cols.innerHTML = "";   // e.g. "sales" view — content owned by the extras hook
+    }
+    // let the onboarding module (if loaded) take over / augment the current view
+    if(window.OnSite && typeof OnSite.renderExtras==="function"){
+      try{ OnSite.renderExtras(view, cols); }catch(e){ console.error(e); }
     }
   }
 
@@ -438,8 +454,27 @@
 
   function esc(s){ return (s||"").replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];}); }
 
+  /* ---------- shared store (used by onboarding.js for the sales→onboarding flow) ---------- */
+  // state is reassigned by seed/clear, so expose it via a getter (never a stale snapshot).
+  window.OnSite = {
+    get state(){ return state; },
+    save: save,
+    render: render,
+    toast: toast,
+    bldName: bldName,
+    esc: esc,
+    uid: function(){ return state.nextId++; },
+    go: function(v){ view = v; render(); },   // switch top-level view (e.g. board access grant)
+    LS_KEY: LS_KEY
+  };
+
   // start on landing
 })();
 </script>
+
+<!-- Leaflet (vendored, no CDN) + the sales→onboarding module. Order matters:
+     Leaflet defines L; the day-app IIFE above defines window.OnSite; then onboarding.js binds to both. -->
+<script src="vendor/leaflet/leaflet.js"></script>
+<script src="onboarding.js"></script>
 </body>
 </html>
