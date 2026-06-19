@@ -189,7 +189,7 @@
   }
 
   /* ---------- ui (ephemeral, not persisted) ---------- */
-  var ui = { openId:null, step:0, activeLayer:null, draftNew:false, zonesOpen:{} };
+  var ui = { openId:null, step:0, activeLayer:null, draftNew:false, zonesOpen:{}, refMs:null };
 
   /* ---------- record helpers ---------- */
   function customers(){ var st=S(); if(!st.customers) st.customers=[]; return st.customers; }
@@ -327,6 +327,7 @@
   function seedIfNeeded(){
     var st=S(); if(!st) return;
     if(!st.customers) st.customers=[];
+    if(!st.completedInstances) st.completedInstances={};   // schedule-engine completion set (lineId|isoDate)
     if(!st.obSeeded){
       if(!cust("holtet-cust")) st.customers.push(seedHoltet());      // featured real client
       if(!cust("solbakken-cust")) st.customers.push(seedSolbakken()); // demo client
@@ -690,12 +691,208 @@
   /* ===========================================================================
      RENDER — pipeline + wizard
      =========================================================================== */
+  /* ===========================================================================
+     SKJØTSELSPLAN / FREQUENCY ENGINE (doc 19) — expand line cadences into dated instances
+     =========================================================================== */
+  var VEKST_START=[4,20], VEKST_END=[10,15];          // vekstsesong ≈ 20 Apr – 15 Oct
+  var EVT_SNOW={type:"event", season:"winter", events:[{name:"Snøbrøyting (>5 cm)", trigger:"Registrer snøfall >5 cm"},{name:"Strøing ved is", trigger:"Registrer is / glatt føre"}]};
+  // explicit cadence map for the doc-38 residential-template line ids
+  var SCHEDULE_MAP = {
+    round:    {type:"weekly"},
+    oppganger:{type:"weekly"},
+    heiser:   {type:"weekly"},
+    glass:    {type:"weekly"},
+    mats:     {type:"monthly"},
+    weeds:    {type:"nPerYear", count:3, season:true},          // spraying 3×/sesong
+    beds:     {type:"seasonal", windows:[[[4,1],[4,30]]]},       // vårrydding
+    svalg:    {type:"seasonal", windows:[[[4,1],[4,30]]]},       // svalganger vår
+    taps:     {type:"seasonal", windows:[[[4,10],[4,20]],[[10,1],[10,10]]]}, // vår/høst
+    hedges:   {type:"seasonal", windows:[[[5,1],[7,15]],[[9,1],[10,31]]]},   // mai–medio juli, sep–okt
+    lawn:     {type:"growingSeason"},                            // mowing ukentlig i vekstsesong
+    paths:    {type:"dateAnchored", anchor:"before17mai"},
+    garage:   {type:"dateAnchored", anchor:"beforeSthans"},
+    roof:     {type:"dateAnchored", anchor:"autumn"},
+    snow:     EVT_SNOW
+  };
+  var COMPLIANCE_DUE = {
+    "Heiskontroll (2-årlig)":  {month:9,  day:15, type:"intervalYears", years:2},
+    "Sprinkler — årskontroll": {month:5,  day:5,  type:"annual"},
+    "Brannvernrunde":          {month:11, day:10, type:"annual"}
+  };
+  function layerSchedule(layer){
+    return ({
+      grass:{type:"growingSeason"}, snow:EVT_SNOW, gritting:{type:"event", season:"winter", events:[{name:"Strøing ved is", trigger:"Registrer is / glatt føre"}]},
+      laundry:{type:"weekly"}, stairwell:{type:"weekly"}, facade:{type:"seasonal", windows:[[[5,1],[5,31]]]},
+      greenery:{type:"seasonal", windows:[[[5,1],[7,15]],[[9,1],[10,31]]]}, beds:{type:"seasonal", windows:[[[4,1],[4,30]]]},
+      tech:{type:"monthly"}, fire:{type:"annual", dueMonth:11, dueDay:10},
+      lift:{type:"intervalYears", years:2, dueMonth:9, dueDay:15}, playground:{type:"annual", dueMonth:5, dueDay:1}
+    })[layer] || {type:"monthly"};
+  }
+  function freqText(s){
+    switch(s.type){
+      case "weekly": return "ukentlig"; case "monthly": return "månedlig"; case "nPerYear": return s.count+"×/år";
+      case "seasonal": return "sesong ("+s.windows.length+" vindu)"; case "growingSeason": return "ukentlig i vekstsesong";
+      case "dateAnchored": return {before17mai:"før 17. mai", beforeSthans:"før st.hans", autumn:"høst", spring:"vår"}[s.anchor]||"årlig";
+      case "intervalYears": return s.years+"-årlig"; case "annual": return "årlig"; case "event": return "beredskap";
+    } return "";
+  }
+  /* ---- date helpers (browser Date is fine here) ---- */
+  function refDate(){ return ui.refMs!=null ? new Date(ui.refMs) : new Date(); }
+  function pad2(n){ return (n<10?"0":"")+n; }
+  function iso(d){ return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate()); }
+  function addDays(d,n){ var x=new Date(d.getTime()); x.setDate(x.getDate()+n); return x; }
+  function mondayOf(d){ return addDays(d, -((d.getDay()+6)%7)); }
+  function ymd(y,m,day){ return new Date(y, m-1, day); }
+  function inRange(d,from,to){ return d.getTime()>=from.getTime() && d.getTime()<=to.getTime(); }
+  var MON_NO=["jan","feb","mar","apr","mai","jun","jul","aug","sep","okt","nov","des"];
+  function dateLabel(d){ return d.getDate()+". "+MON_NO[d.getMonth()]; }
+  function inGrowing(d){ var m=d.getMonth()+1, day=d.getDate();
+    return ((m>VEKST_START[0])||(m===VEKST_START[0]&&day>=VEKST_START[1])) && ((m<VEKST_END[0])||(m===VEKST_END[0]&&day<=VEKST_END[1])); }
+  function isoWeek(d){ var x=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate())); var dn=(x.getUTCDay()+6)%7; x.setUTCDate(x.getUTCDate()-dn+3); var f=new Date(Date.UTC(x.getUTCFullYear(),0,4)); return 1+Math.round(((x-f)/86400000-3+((f.getUTCDay()+6)%7))/7); }
+
+  function expandLine(line, from, to){
+    var s=line.schedule, out=[], y0=from.getFullYear(), y1=to.getFullYear();
+    function push(d){ if(inRange(d,from,to)) out.push({lineId:line.lineId, building:line.building, title:line.title, category:line.category, zone:line.zone, partner:line.partner, statutory:line.statutory, date:iso(d), freq:freqText(s)}); }
+    if(s.type==="weekly"){ for(var d=mondayOf(from); d.getTime()<=to.getTime(); d=addDays(d,7)) push(addDays(d,2)); }
+    else if(s.type==="growingSeason"){ for(var d2=mondayOf(from); d2.getTime()<=to.getTime(); d2=addDays(d2,7)){ var w=addDays(d2,2); if(inGrowing(w)) push(w); } }
+    else if(s.type==="monthly"){ for(var y=y0;y<=y1;y++) for(var m=1;m<=12;m++) push(ymd(y,m,1)); }
+    else if(s.type==="nPerYear"){ for(var y3=y0;y3<=y1;y3++){ var st0=s.season?ymd(y3,VEKST_START[0],VEKST_START[1]):ymd(y3,1,1), en=s.season?ymd(y3,VEKST_END[0],VEKST_END[1]):ymd(y3,12,31); for(var i=0;i<s.count;i++) push(new Date(st0.getTime()+((i+0.5)/s.count)*(en.getTime()-st0.getTime()))); } }
+    else if(s.type==="seasonal"){ for(var y4=y0;y4<=y1;y4++) s.windows.forEach(function(wd){ push(ymd(y4,wd[0][0],wd[0][1])); }); }
+    else if(s.type==="dateAnchored"){ var a={before17mai:[5,10], beforeSthans:[6,20], autumn:[10,10], spring:[4,15]}[s.anchor]||[6,1]; for(var y5=y0;y5<=y1;y5++) push(ymd(y5,a[0],a[1])); }
+    else if(s.type==="annual"||s.type==="intervalYears"){ for(var y6=y0;y6<=y1;y6++) push(ymd(y6, s.dueMonth||6, s.dueDay||1)); }
+    return out;
+  }
+  function scheduleLines(client){
+    var out=[], bld=client.name;
+    if(client.checklist&&client.checklist.length){
+      client.checklist.filter(function(it){return it.scope==="in" && SCHEDULE_MAP[it.id];}).forEach(function(it){
+        out.push({ lineId:client.id+":"+it.id, building:bld, title:it.subtype||it.label, category:catKeyLabel(it.category), zone:it.zone, schedule:SCHEDULE_MAP[it.id], partner:(it.deliveredBy==="partner"?it.partnerName:null) });
+      });
+    } else {
+      (client.markers||[]).filter(function(m){return m.inScope && !LAYERS[m.layer].recordOnly;}).forEach(function(m){
+        out.push({ lineId:client.id+":"+m.id, building:bld, title:LAYERS[m.layer].label, category:catLabel(m.layer), zone:0, schedule:layerSchedule(m.layer), partner:null });
+      });
+    }
+    (client.compliance||[]).forEach(function(r,i){
+      var due=COMPLIANCE_DUE[r.label]||{month:6,day:1,type:"annual"};
+      out.push({ lineId:client.id+":comp"+i, building:bld, title:r.label, category:"Eiendomsdrift", zone:6, statutory:true, schedule:{type:due.type, years:due.years, dueMonth:due.month, dueDay:due.day} });
+    });
+    return out;
+  }
+  function liveClients(){ return customers().filter(function(c){return c.stage==="Live";}); }
+  function liveLines(){ var a=[]; liveClients().forEach(function(c){ a=a.concat(scheduleLines(c)); }); return a; }
+  function generateInstances(lines, from, to){ var out=[]; lines.filter(function(l){return l.schedule.type!=="event";}).forEach(function(l){ out=out.concat(expandLine(l,from,to)); }); return out; }
+  function instKey(i){ return i.lineId+"|"+i.date; }
+  function isDone(i){ var st=S(); return !!(st.completedInstances&&st.completedInstances[instKey(i)]); }
+  function clientOf(lineId){ return cust(lineId.split(":")[0]); }
+  function completeInstance(inst){
+    var st=S(); st.completedInstances=st.completedInstances||{}; st.completedInstances[instKey(inst)]=true;
+    var c=clientOf(inst.lineId); var bldId=(c&&c.buildingId)?c.buildingId:(st.buildings[0]&&st.buildings[0].id);
+    st.items.push({ id:uid(), kind:"task", bld:bldId, title:inst.title, detail:"Fra skjøtselsplan ("+inst.freq+") · "+inst.building, status:"done", billable:true, hours:0.5, time:new Date().toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}), who:"Martin", proof:{photo:true, note:"Utført på plan"} });
+    save(); render(); toast("✓ Utført — dokumentert (Board) og fakturerbart (Office)");
+  }
+  function spawnEvent(name){
+    var st=S(); var c=liveClients()[0]; var bldId=(c&&c.buildingId)?c.buildingId:(st.buildings[0]&&st.buildings[0].id);
+    st.items.push({ id:uid(), kind:"task", bld:bldId, title:name+" — utløst i dag", detail:"Beredskap utløst (snø/is) — utfør i dag.", status:"todo", billable:true, hours:1, time:new Date().toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}), who:"Martin", proof:null });
+    save(); render(); toast("❄️ "+name+" lagt i dagens oppgaver");
+  }
+  function groupByBuilding(list){ var m={}, order=[]; list.forEach(function(i){ if(!m[i.building]){m[i.building]=[];order.push(i.building);} m[i.building].push(i); }); return order.map(function(b){return {building:b, items:m[b]};}); }
+
+  /* ---- Field: scheduled work ---- */
+  function weekStepperHTML(today){
+    return '<div class="card"><div class="ob-stepbar">'
+      +'<span class="ct" style="margin:0">Skjøtselsplan · uke '+isoWeek(today)+' · '+dateLabel(today)+' '+today.getFullYear()+'</span><span style="flex:1"></span>'
+      +'<button class="ob-mini" data-ob="weekStep" data-arg="-4">◀◀</button>'
+      +'<button class="ob-mini" data-ob="weekStep" data-arg="-1">◀ uke</button>'
+      +'<button class="ob-mini" data-ob="weekStep" data-arg="1">uke ▶</button>'
+      +'<button class="ob-mini" data-ob="weekStep" data-arg="4">▶▶</button>'
+      +'<button class="ob-mini" data-ob="jumpTo" data-arg="winter">❄️ Vinter</button>'
+      +'<button class="ob-mini" data-ob="jumpTo" data-arg="spring">🌿 Vår</button>'
+      +'<button class="ob-mini" data-ob="jumpTo" data-arg="today">I dag</button>'
+      +'</div></div>';
+  }
+  function planRow(i, completable){
+    return '<div class="ob-row"><div class="ob-line-top"><div class="rt">'+esc(i.title)
+      +(i.partner?' <span class="chip blue">'+esc(i.partner)+' · partner</span>':'')+(i.statutory?' <span class="chip blue">lovpålagt</span>':'')+'</div>'
+      +(completable?'<button class="ob-mini ok on" data-ob="planDone" data-arg="'+i.lineId+'|'+i.date+'|'+encodeURIComponent(i.title)+'|'+encodeURIComponent(i.freq)+'|'+encodeURIComponent(i.building)+'">✓ Utført</button>':'')+'</div>'
+      +'<div class="rd">'+esc(i.category)+(i.zone?' · sone '+i.zone:'')+' · fra plan: '+esc(i.freq)+' · '+dateLabel(new Date(i.date))+'</div></div>';
+  }
+  function planSection(title, list, completable){
+    var inner = list.length ? groupByBuilding(list).map(function(g){
+      return '<div class="ob-plan-bld">📍 '+esc(g.building)+'</div>'+g.items.map(function(i){return planRow(i,completable);}).join("");
+    }).join("") : '<div class="empty">Ingenting planlagt her.</div>';
+    return '<div class="card"><div class="ct">'+esc(title)+' <span class="chip grey">'+list.length+'</span></div>'+inner+'</div>';
+  }
+  function planCondensed(title, list){
+    var rows=list.slice(0,40).map(function(i){ return '<div class="ob-kom"><span class="ob-komdate">'+dateLabel(new Date(i.date))+'</span> '+esc(i.title)+' <span class="muted">· '+esc(i.building)+'</span></div>'; }).join("");
+    return '<div class="card"><div class="ct">'+esc(title)+' <span class="chip grey">'+list.length+'</span></div>'+rows+'</div>';
+  }
+  function beredskapHTML(month){
+    var winter=(month>=11||month<=4), bered=[];
+    liveLines().filter(function(l){return l.schedule.type==="event";}).forEach(function(l){
+      if(l.schedule.season==="winter" && !winter) return;
+      (l.schedule.events||[{name:l.title, trigger:"Registrer"}]).forEach(function(ev){ bered.push({line:l, ev:ev}); });
+    });
+    // de-dupe identical event names across lines
+    var seen={}, uniq=[]; bered.forEach(function(b){ if(!seen[b.ev.name]){seen[b.ev.name]=1; uniq.push(b);} });
+    var body=uniq.length? uniq.map(function(b){
+      return '<div class="ob-row"><div class="ob-line-top"><div class="rt">⚡ '+esc(b.ev.name)+'</div>'
+        +'<button class="ob-mini warn on" data-ob="spawnEvt" data-arg="'+encodeURIComponent(b.ev.name)+'">'+esc(b.ev.trigger)+'</button></div>'
+        +'<div class="rd">utløses ved forhold · ikke kalenderstyrt</div></div>';
+    }).join("") : '<div class="empty">Ingen beredskapstjenester i denne sesongen.</div>';
+    return '<div class="card"><div class="ct">Beredskap · utløses ved forhold '+(winter?'<span class="chip blue">vintersesong</span>':'')+'</div>'+body+'</div>';
+  }
+  function renderFieldExtras(cols){
+    if(!liveClients().length) return;
+    var today=refDate(), ws=mondayOf(today), we=addDays(ws,6), tIso=iso(today), month=today.getMonth()+1;
+    var inst=generateInstances(liveLines(), ws, addDays(today,28)).filter(function(i){return !isDone(i);});
+    var todayL=inst.filter(function(i){return i.date===tIso;});
+    var weekL=inst.filter(function(i){return i.date>=iso(ws)&&i.date<=iso(we)&&i.date!==tIso;});
+    var komL=inst.filter(function(i){return i.date>iso(we);}).sort(function(a,b){return a.date<b.date?-1:1;});
+    var host=document.createElement("div"); host.className="lane"; host.style.gridColumn="1 / -1";
+    host.innerHTML = weekStepperHTML(today)
+      + planSection("I dag · "+dateLabel(today), todayL, true)
+      + planSection("Denne uka", weekL, true)
+      + (komL.length? planCondensed("Kommende (4 uker)", komL) : "")
+      + beredskapHTML(month);
+    cols.insertBefore(host, cols.firstChild);
+  }
+
+  /* ---- Office: Årsplan (doc 19 year planner, light) ---- */
+  function yearPlan(client, year){
+    var lines=scheduleLines(client), inst=generateInstances(lines, ymd(year,1,1), ymd(year,12,31));
+    var months=[]; for(var m=1;m<=12;m++) months.push({m:m, count:0, statutory:[]});
+    inst.forEach(function(i){ months[parseInt(i.date.split("-")[1],10)-1].count++; });
+    lines.filter(function(l){return l.statutory;}).forEach(function(l){ months[(l.schedule.dueMonth||6)-1].statutory.push(l.title); });
+    return months;
+  }
+  var MON_ABBR=["Jan","Feb","Mar","Apr","Mai","Jun","Jul","Aug","Sep","Okt","Nov","Des"];
+  function arsplanHTML(client){
+    var year=refDate().getFullYear(), mp=yearPlan(client,year);
+    var counts=mp.map(function(x){return x.count;});
+    var max=Math.max.apply(null, counts.concat([1]));
+    var avg=counts.reduce(function(s,x){return s+x;},0)/12;
+    var sorted=counts.slice().sort(function(a,b){return b-a;});
+    var thr=Math.max(sorted[Math.min(3,sorted.length-1)]||1, avg*1.05);  // top-load months (≈ top 4, spring/early-summer)
+    var bars=mp.map(function(x,i){
+      var peak=x.count>0 && x.count>=thr;
+      return '<div class="ob-mcol'+(peak?' peak':'')+'">'+(x.statutory.length?'<div class="ob-mstat" title="'+esc(x.statutory.join(", "))+'">📋</div>':'<div class="ob-mstat" style="visibility:hidden">·</div>')
+        +'<div class="ob-mbar" style="height:'+(Math.round((x.count/max)*64)+3)+'px" title="'+x.count+' planlagte"></div>'
+        +'<div class="ob-mcount">'+x.count+'</div><div class="ob-mname">'+MON_ABBR[i]+'</div></div>';
+    }).join("");
+    return '<div class="card"><div class="ct">Årsplan '+year+' — '+esc(client.name)+' <span class="muted" style="font-weight:600">· planlagte oppgaver/mnd</span></div>'
+      +'<div class="ob-year">'+bars+'</div>'
+      +'<div class="ob-yearlegend"><span class="ob-sw peak"></span> topp-måneder (vår/forsommer) · 📋 lovpålagt: heis (2-årlig) · sprinkler + brann (årlig)</div>'
+      +'<div class="ob-stepbar" style="margin-top:8px"><span style="flex:1"></span><button class="ob-mini" data-ob="yearStep" data-arg="-1">◀ '+(year-1)+'</button><button class="ob-mini" data-ob="yearStep" data-arg="1">'+(year+1)+' ▶</button></div></div>';
+  }
+
   function renderExtras(view, cols){
     seedIfNeeded();
     destroyMap();
     if(view==="sales"){ renderSales(cols); }
     else if(view==="board"){ renderBoardExtras(cols); }
     else if(view==="office"){ renderOfficeExtras(cols); }
+    else if(view==="field"){ renderFieldExtras(cols); }
   }
 
   function renderSales(cols){
@@ -1155,8 +1352,9 @@
         +'<div class="rp">'+(c.offer?kr(offerTotal(c.offer))+'/'+perL(c.offer):'—')+'</div></div>'
         +'<div class="rd">'+(c.markers?c.markers.length:0)+' zones'+(up?' · '+up+' upsell':'')+(c.buildingId?' · live building':'')+'</div></div>';
     }).join(""):'<div class="empty">No customers in the pipeline yet.</div>';
+    var ars=liveClients().map(function(c){return arsplanHTML(c);}).join("");
     host.innerHTML='<div class="card"><div class="ct">Sales pipeline — new customers</div>'+rows
-      +'<button class="ob-newbtn" data-ob="new">＋ Set up a new client (sales → onboarding)</button></div>';
+      +'<button class="ob-newbtn" data-ob="new">＋ Set up a new client (sales → onboarding)</button></div>'+ars;
     cols.insertBefore(host, cols.firstChild);
   }
 
@@ -1214,6 +1412,11 @@
       case "open": ui.openId=id; var co=cust(id); ui.step=co?defaultStep(co):0; ui.draftNew=false; ui.activeLayer=null; ui.zonesOpen={1:true,3:true}; OnSite.go("sales"); break;
       case "cliScope": { if(c){ var cit=(c.checklist||[]).filter(function(x){return x.id===id;})[0]; if(cit){ cit.scope=arg; save(); refreshChecklist(c); } } break; }
       case "cliZone": { ui.zonesOpen[id]=!ui.zonesOpen[id]; if(c) setHTML("ob-checklist", checklistRowsHTML(c)); break; }
+      case "weekStep": { var base=(ui.refMs!=null?ui.refMs:Date.now()); ui.refMs=base+parseInt(arg,10)*7*86400000; render(); break; }
+      case "jumpTo": { var rd=refDate(), yy=rd.getFullYear(); ui.refMs = arg==="winter"?new Date(yy,0,15).getTime() : arg==="spring"?new Date(yy,4,6).getTime() : null; render(); break; }
+      case "yearStep": { var rd2=refDate(); ui.refMs=new Date(rd2.getFullYear()+parseInt(arg,10), rd2.getMonth(), rd2.getDate()).getTime(); render(); break; }
+      case "planDone": { var p=(arg||"").split("|"); completeInstance({lineId:p[0], date:p[1], title:decodeURIComponent(p[2]||""), freq:decodeURIComponent(p[3]||""), building:decodeURIComponent(p[4]||"")}); break; }
+      case "spawnEvt": spawnEvent(decodeURIComponent(arg||"")); break;
       case "back": ui.openId=null; ui.draftNew=false; repaintSales(); break;
       case "step": { var n=parseInt(id,10); if(c && n<=maxStep(c)){ ui.step=n; ui.activeLayer=null; repaintSales(); } break; }
       case "new": startNew(); break;
