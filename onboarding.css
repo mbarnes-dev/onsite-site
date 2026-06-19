@@ -86,6 +86,40 @@
 /* offer-line category mini chip */
 .ob-catmini{font-size:10px;font-weight:700;color:var(--blue);background:var(--blue-l);padding:1px 7px;border-radius:999px;white-space:nowrap}
 
+/* ---- Step 0 — suggested systems chips ---- */
+.ob-syschips{display:flex;gap:6px;flex-wrap:wrap}
+.ob-sys{font-size:11.5px;font-weight:650;padding:4px 9px;border-radius:999px;background:var(--amber-l);color:var(--amber)}
+.ob-sys.comp{background:var(--blue-l);color:var(--blue)}
+
+/* ---- walkaround checklist (doc 38) ---- */
+.ob-clhint{font-size:11.5px;color:var(--muted);background:#f4f5f3;border-radius:9px;padding:7px 9px;margin-bottom:9px;line-height:1.4}
+.ob-zoneblock{border:1px solid var(--line);border-radius:11px;margin-bottom:7px;overflow:hidden}
+.ob-zonehead{width:100%;display:flex;align-items:center;gap:8px;background:#fafbfa;border:none;padding:9px 10px;font-size:12.5px;font-weight:700;color:var(--ink);cursor:pointer;text-align:left}
+.ob-zonehead:hover{background:#f1f3f1}
+.ob-zn{display:inline-flex;width:18px;height:18px;border-radius:50%;background:var(--teal);color:#fff;align-items:center;justify-content:center;font-size:10.5px;font-weight:700;flex:none}
+.ob-zt{flex:1}
+.ob-zsum{display:flex;gap:4px}
+.ob-zchev{color:var(--muted);font-size:11px}
+.ob-zoneitems{padding:4px 9px 8px;background:#fff}
+.ob-clitem{border-top:1px dashed var(--line);padding:8px 0}
+.ob-clitem:first-child{border-top:none}
+.ob-clitem.up{background:var(--amber-l);border-radius:9px;padding:8px;margin:3px 0;border-top:none}
+.ob-clitem.out{opacity:.5}
+.ob-cltop{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.ob-cllabel{font-size:12.8px;font-weight:600;line-height:1.35}
+.ob-clprice{font-size:11px;font-weight:700;color:var(--teal-d);background:var(--teal-l);padding:1px 6px;border-radius:999px;white-space:nowrap;margin-left:2px}
+.ob-scopes{display:flex;gap:3px;flex:none}
+.ob-scope{border:1px solid var(--line);background:#fff;border-radius:7px;width:27px;height:27px;font-size:12px;cursor:pointer;padding:0;line-height:1}
+.ob-scope.s-in.on{background:var(--green-l);border-color:var(--green)}
+.ob-scope.s-upsell.on{background:var(--amber-l);border-color:var(--amber)}
+.ob-scope.s-out.on{background:var(--red-l);border-color:var(--red)}
+.ob-scope.s-unknown.on{background:#eef0ee;border-color:#cfd5d1}
+.ob-clcap{display:flex;align-items:center;gap:8px;margin-top:6px}
+.ob-clcap input[type=number],.ob-clcap input:not([type]){width:auto;flex:1;padding:6px 9px;font-size:12.5px}
+.ob-clfreq{font-size:11px;color:var(--muted);white-space:nowrap}
+.ob-clbool{display:flex;align-items:center;gap:5px;font-size:12.5px;font-weight:600;color:var(--muted)}
+.ob-clbool input{width:auto}
+
 .ob-maptools{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0}
 .ob-hint{font-size:12.5px;color:var(--muted);background:var(--teal-l);border-radius:10px;padding:8px 11px;margin:0 0 10px}
 .ob-active-note{font-size:12.8px;font-weight:650;color:var(--teal-d)}

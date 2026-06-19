@@ -84,6 +84,92 @@
   var STAGES = ["Prospect","Surveyed","Offer sent","Changes requested","Agreed","Live"];
   var STEP_NAMES = ["Office prep","Walkaround","Offer","Board review","Updated offer","Go-live"];
 
+  function catKeyLabel(k){ for(var i=0;i<CATS.length;i++){ if(CATS[i].key===k) return CATS[i].label; } return k; }
+  function catEmoji(k){ return {drift:"🔧",renhold:"🧹",hage:"🌿",vinter:"❄️",service:"🛠️",handverk:"🔨",anlegg:"🧱",forvaltning:"📋"}[k]||"•"; }
+
+  /* ---------- Step-0 walkaround checklist (doc 38, Part A) ----------
+     A checklist template per building profile. The residential-association
+     profile = doc-38's 10-zone walk sequence. Each template item:
+     {id, zone, label, category(one of the PHM 8 keys), captureType, emoji, freq, upsell, compliance}.
+     A client carries an *instantiated* copy with per-item {value, scope, deliveredBy, partnerName, price, subtype}. */
+  var ZONES = [
+    {n:1,  title:"Approach & grounds"},
+    {n:2,  title:"Waste"},
+    {n:3,  title:"Entrances & stairwells"},
+    {n:4,  title:"Lifts"},
+    {n:5,  title:"Common indoor / svalganger / bod"},
+    {n:6,  title:"Basement / teknisk rom"},
+    {n:7,  title:"Garage"},
+    {n:8,  title:"Doors & access"},
+    {n:9,  title:"Roof"},
+    {n:10, title:"Stakeholders & admin"}
+  ];
+  var CHECKLIST_TEMPLATE = {
+    "Residential — association": [
+      // 1. Approach & grounds
+      {id:"lawn",      zone:1, label:"Plen — areal + klippefrekvens",            category:"hage",   captureType:"area",      emoji:"🌿", freq:"Ukentlig i sesong"},
+      {id:"hedges",    zone:1, label:"Hekk/busker — antall + maks høyde",         category:"hage",   captureType:"count",     emoji:"🌳", freq:"2×/sesong"},
+      {id:"trees",     zone:1, label:"Trær <3,5 m (i scope) vs høye ⬆",           category:"hage",   captureType:"count",     emoji:"🌳"},
+      {id:"beds",      zone:1, label:"Staudebed — luking + vårrydding",           category:"hage",   captureType:"count",     emoji:"🌷"},
+      {id:"weeds",     zone:1, label:"Ugras/mose/alger — sprøyterunder",          category:"hage",   captureType:"condition", emoji:"🌿", freq:"3×/sesong"},
+      {id:"gravel",    zone:1, label:"Elvestein/grus — eddikbehandling",          category:"hage",   captureType:"note",      emoji:"🪨"},
+      {id:"greenwaste",zone:1, label:"Grøntavfall — rute + deponi",               category:"hage",   captureType:"note",      emoji:"🍂"},
+      {id:"taps",      zone:1, label:"Utekraner — åpne/steng vår/høst",           category:"drift",  captureType:"count",     emoji:"🚰"},
+      {id:"bootscr",   zone:1, label:"Fotskraperister ved innganger",            category:"drift",  captureType:"count",     emoji:"🚪"},
+      {id:"paths",     zone:1, label:"Veier/stier — maskinkost vår (før 17. mai)",category:"anlegg", captureType:"area",      emoji:"🧹"},
+      {id:"snow",      zone:1, label:"Snø — brøyteareal, dumpested, strøsoner",   category:"vinter", captureType:"area",      emoji:"❄️", freq:"Per snøfall >5 cm"},
+      {id:"roofsnow",  zone:1, label:"Takras/snø → taksikring ⬆",                 category:"vinter", captureType:"condition", emoji:"🏠", upsell:true},
+      // 2. Waste
+      {id:"wells",     zone:2, label:"Avfallsbrønner + bøtter/askebeger — antall",category:"drift",  captureType:"count",     emoji:"♻️"},
+      {id:"binwash",   zone:2, label:"Dunk-/containervask ⬆",                     category:"service",captureType:"boolean",   emoji:"♻️", upsell:true},
+      {id:"bulky",     zone:2, label:"Grovavfall — lagringspunkt + henting",      category:"drift",  captureType:"note",      emoji:"📦"},
+      // 3. Entrances & stairwells
+      {id:"oppganger", zone:3, label:"Antall oppganger — trappevask",             category:"renhold",captureType:"count",     emoji:"🧹", freq:"Ukentlig"},
+      {id:"mats",      zone:3, label:"Inngangsmatter — antall + leverandør",      category:"renhold",captureType:"count",     emoji:"🧺"},
+      {id:"glass",     zone:3, label:"Glass ytterdør / fellesvindu / rekkverk",   category:"renhold",captureType:"condition", emoji:"🧼"},
+      {id:"lighting",  zone:3, label:"Lysarmatur — type + reservelager (LED)",    category:"drift",  captureType:"note",      emoji:"💡"},
+      {id:"facade",    zone:3, label:"Fasade → svertesopp/fasadevask ⬆",          category:"renhold",captureType:"condition", emoji:"🧼", upsell:true},
+      // 4. Lifts
+      {id:"heiser",    zone:4, label:"Antall heiser — gulv/speil/metall",         category:"renhold",captureType:"count",     emoji:"🛗", freq:"Ukentlig"},
+      {id:"liftctrl",  zone:4, label:"Heis sikkerhetskontroll (2-årlig) — hvem",  category:"drift",  captureType:"note",      emoji:"🛗", compliance:true},
+      // 5. Common indoor / svalganger / bod
+      {id:"svalg",     zone:5, label:"Svalganger — feiing + glassrekkverk (vår)", category:"renhold",captureType:"condition", emoji:"🧹"},
+      {id:"bodarea",   zone:5, label:"Bod-/korridorareal",                        category:"renhold",captureType:"note",      emoji:"🧹"},
+      // 6. Basement / teknisk rom
+      {id:"pipes",     zone:6, label:"Synlige rør/kraner — lekkasjer",            category:"drift",  captureType:"condition", emoji:"🔧"},
+      {id:"water",     zone:6, label:"Varmtvann/varmepumpe/sluk åpne",            category:"drift",  captureType:"condition", emoji:"🔧"},
+      {id:"sprinkler", zone:6, label:"Sprinkler — logg trykk (årskontroll)",      category:"drift",  captureType:"condition", emoji:"🔧", compliance:true},
+      {id:"vent",      zone:6, label:"Ventilasjon vifter/filter — hvem ⬆",        category:"service",captureType:"note",      emoji:"🌀", upsell:true},
+      {id:"firepanel", zone:6, label:"Brannsentral; rømningsveier; brannutstyr",  category:"drift",  captureType:"condition", emoji:"🔥"},
+      {id:"pumpekum",  zone:6, label:"Pumpekum; varmekabler (sesong)",            category:"drift",  captureType:"condition", emoji:"🔧"},
+      // 7. Garage
+      {id:"garage",    zone:7, label:"Garasje — vask/feiing; rampesluk; porter",  category:"drift",  captureType:"condition", emoji:"🅿️"},
+      // 8. Doors & access
+      {id:"doors",     zone:8, label:"Dørpumper/el-sluttstykke/låskasse; hengsler",category:"drift", captureType:"condition", emoji:"🚪"},
+      {id:"access",    zone:8, label:"Nøkler/adgangskoder — fanget",              category:"drift",  captureType:"note",      emoji:"🔑"},
+      // 9. Roof
+      {id:"roof",      zone:9, label:"Tak/takrenner/nedløp; vannbord tilstand",   category:"anlegg", captureType:"condition", emoji:"🏠"},
+      // 10. Stakeholders & admin
+      {id:"round",     zone:10,label:"Ukentlig vaktmesterrunde + tilsyn + rapport",category:"drift", captureType:"note",      emoji:"🧰", freq:"Ukentlig"},
+      {id:"approver",  zone:10,label:"Styreleder + preferanser",                  category:"drift",  captureType:"note",      emoji:"🏛️"},
+      {id:"manager",   zone:10,label:"Forvalter + rapportering",                  category:"drift",  captureType:"note",      emoji:"🗂️"},
+      {id:"vakttlf",   zone:10,label:"Vakttelefon/beredskap 24t",                 category:"drift",  captureType:"boolean",   emoji:"📞"},
+      // Always-on upsell scan
+      {id:"pest",      zone:10,label:"Skadedyr — tegn? ⬆",                        category:"service",captureType:"boolean",   emoji:"🐜", upsell:true},
+      {id:"playground",zone:10,label:"Lekeplass — antall + årskontroll ⬆",        category:"drift",  captureType:"count",     emoji:"🛝", upsell:true},
+      {id:"painting",  zone:10,label:"Maling / vannbord / asfalt ⬆",              category:"anlegg", captureType:"note",      emoji:"🖌️", upsell:true}
+    ]
+  };
+  function instantiateChecklist(profile){
+    var tpl = CHECKLIST_TEMPLATE[profile] || CHECKLIST_TEMPLATE["Residential — association"];
+    return tpl.map(function(it){
+      return { id:it.id, zone:it.zone, label:it.label, category:it.category, captureType:it.captureType,
+        emoji:it.emoji, freq:it.freq||"", upsell:!!it.upsell, compliance:!!it.compliance,
+        value:null, scope:"unknown", deliveredBy:"in-house", partnerName:null, price:0, subtype:it.label };
+    });
+  }
+  function scopeIcon(s){ return {"in":"✅","upsell":"⬆","out":"✖","unknown":"⬜"}[s]||"⬜"; }
+
   function badgeClass(stage){
     return "ob-badge s-" + ({"Prospect":"prospect","Surveyed":"surveyed","Offer sent":"offer","Changes requested":"changes","Agreed":"agreed","Live":"live"}[stage] || "prospect");
   }
@@ -103,7 +189,7 @@
   }
 
   /* ---------- ui (ephemeral, not persisted) ---------- */
-  var ui = { openId:null, step:0, activeLayer:null, draftNew:false };
+  var ui = { openId:null, step:0, activeLayer:null, draftNew:false, zonesOpen:{} };
 
   /* ---------- record helpers ---------- */
   function customers(){ var st=S(); if(!st.customers) st.customers=[]; return st.customers; }
@@ -128,6 +214,81 @@
   /* ===========================================================================
      SEED — one realistic customer (Solbakken Borettslag, Halden) end-to-end
      =========================================================================== */
+  // Holtet's pre-filled checklist (doc 37 contract → scope/value/price/delivered-by)
+  function holtetChecklist(){
+    var cl=instantiateChecklist("Residential — association");
+    cl.forEach(function(it){ it.scope="in"; });   // contract covers the standard round
+    var O={
+      lawn:     {value:"~1 500 m²", price:1400, subtype:"Gressklipping (ukentlig)"},
+      hedges:   {value:"maks 180 cm", subtype:"Hekk/busker (2×, maks 180 cm)"},
+      trees:    {value:"<3,5 m"},
+      weeds:    {price:2667, subtype:"Grøntområde excl. klipping (sprøyting 3×, bed, hekk, trær)"},
+      gravel:   {value:"eddik"},
+      snow:     {value:">5 cm samme døgn", price:1800, subtype:"Brøyting (>5 cm) + strøing"},
+      roofsnow: {scope:"upsell", subtype:"Taksikring"},
+      wells:    {value:"brønner + bøtter"},
+      binwash:  {scope:"upsell", price:600, subtype:"Dunk-/containervask"},
+      oppganger:{value:4, price:4800, subtype:"Trappevask (4 oppg., 4 heis, svalganger)"},
+      mats:     {value:8, price:1200, deliveredBy:"partner", partnerName:"Dørmatte Gutta AS", subtype:"Inngangsmatter (8 stk, månedlig)", freq:"Månedlig"},
+      facade:   {scope:"upsell", price:45000, oneOff:true, subtype:"Fasadevask (svertesopp)"},
+      heiser:   {value:4, subtype:"Heiser (4 stk) — renhold"},
+      liftctrl: {value:"bekreft leverandør"},
+      svalg:    {value:"vår"},
+      water:    {price:491, subtype:"Teknisk rom — tilsyn (varmtvann, varmepumpe, sluk)"},
+      sprinkler:{scope:"unknown", value:"logg trykk på stedet"},
+      vent:     {scope:"upsell", price:900, subtype:"Ventilasjon — servicekontrakt"},
+      access:   {scope:"unknown", value:"hentes på befaring"},
+      roof:     {value:"høst-sjekk"},
+      garage:   {value:"før st.hans"},
+      round:    {price:4200, value:"man–fre 08–16", subtype:"Ukentlig vaktmesterrunde + tilsyn + rapport"},
+      approver: {value:"Egil Svoren (styreleder)"},
+      manager:  {value:"USBL · rapport: Viscenario → OnSite"},
+      vakttlf:  {value:true},
+      pest:     {scope:"upsell", price:350, subtype:"Skadedyrkontroll"},
+      playground:{scope:"out", value:"ingen lekeplass"},
+      painting: {scope:"upsell", price:28000, oneOff:true, subtype:"Vannbord / utvendig maling"}
+    };
+    cl.forEach(function(it){ var o=O[it.id]; if(o){ for(var k in o){ it[k]=o[k]; } } });
+    return cl;
+  }
+  function seedHoltet(){
+    var cy=59.89305, cx=10.78000;
+    var blocks=["A","B","C","D","E","F","G"];
+    var markers=blocks.map(function(b,i){
+      var ang=(i/blocks.length)*Math.PI*2;
+      return { id:"hm"+(i+1), layer:"entrance", lat:cy+Math.sin(ang)*0.00045, lon:cx+Math.cos(ang)*0.00075,
+        service:"Inngang "+b, frequency:LAYERS.entrance.freq, equipment:"", method:"",
+        qty:1, unit:LAYERS.entrance.unit, price:0, note:"Oppgang "+b, photo:false, inScope:true, source:"sales", accuracy:null };
+    });
+    return {
+      id:"holtet-cust",
+      name:"Sameiet Holtet Horisont I", addr:"Kongsveien 82 A–G, 1177 Oslo", gnr:"154", bnr:"53",
+      profile:"Residential — association", buildYear:2018, size:0,
+      manager:"Boligbyggelaget USBL", revisor:"KPMG AS",
+      contacts:[
+        {name:"Egil Svoren", role:"Styreleder", email:"styret@holtet-horisont-1.no"},
+        {name:"Torill E. Saltnes Hansen", role:"Styremedlem", email:""},
+        {name:"Jorunn Marie Nordermoen", role:"Styremedlem", email:""},
+        {name:"Sven Røst", role:"Styremedlem", email:""}
+      ],
+      meetingTime:"Befaring uke 26",
+      stage:"Surveyed", period:"mnd",
+      requestedScope:["stairwell","grass","greenery","snow","gritting","lift","tech","entrance"],
+      layers:["entrance","stairwell","grass","greenery","snow","gritting","lift","fire","tech"],
+      systems:["~4 oppganger","~4 heiser","Sprinkleranlegg","Varmepumpe","Ventilasjon","Garasjeanlegg","Pumpekum","Varmekabler"],
+      compliance:[{label:"Heiskontroll (2-årlig)"},{label:"Sprinkler — årskontroll"},{label:"Brannvernrunde"}],
+      terms:{ total:16558, green:"kr 32 000/sesong (≈ kr 2 667/mnd)", hourly:"kr 610/t",
+        consumables:"Forbruksmateriell faktureres (lys, LED, salt, filter, Roundup, deponi)",
+        notice:"3 mnd gjensidig oppsigelse", kpi:"Halvårlig KPI-regulering (SSB)", start:"Oppstart 01.01.2024" },
+      center:{lat:cy, lon:cx, zoom:17}, baseLayer:"topo",
+      accessNote:"Nøkler/koder hentes på befaring. Forvalter: USBL.",
+      markers:markers,
+      checklist:holtetChecklist(),
+      offer:null, offerHistory:[], changeRequests:[], buildingId:null, handover:null, enrichment:false,
+      log:[{ts:"16 Jun 2026", text:"Step 0 ferdig fra registre — USBL + styret hentet, 7 oppganger pinnet, sjekkliste forhåndsutfylt"},
+           {ts:"15 Jun 2026", text:"Prospect opprettet fra Bygårdsservice-kontrakt (Kongsveien 82 A–G)"}]
+    };
+  }
   function seedSolbakken(){
     var cy=59.12880, cx=11.38730;
     var req=["grass","snow","laundry"];
@@ -167,7 +328,8 @@
     var st=S(); if(!st) return;
     if(!st.customers) st.customers=[];
     if(!st.obSeeded){
-      if(!cust("solbakken-cust")) st.customers.push(seedSolbakken());
+      if(!cust("holtet-cust")) st.customers.push(seedHoltet());      // featured real client
+      if(!cust("solbakken-cust")) st.customers.push(seedSolbakken()); // demo client
       st.obSeeded=true; save();
     }
   }
@@ -221,7 +383,7 @@
       +'<label>Frequency</label><input data-obf="mkfreq" data-id="'+m.id+'" value="'+esc(m.frequency)+'">'
       +'<label>'+qtyLabel+'</label><input type="number" step="1" min="0" data-obf="mkqty" data-id="'+m.id+'" value="'+(m.qty||0)+'">'
       +'<label>Note</label><input data-obf="mknote" data-id="'+m.id+'" value="'+esc(m.note||"")+'" placeholder="optional">'
-      +(d.recordOnly?'':'<div style="margin-top:8px;font-weight:750">'+kr(m.price)+' /yr</div>')
+      +(d.recordOnly?'':'<div style="margin-top:8px;font-weight:750">'+kr(m.price)+' /år</div>')
       +'<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">'
         +'<button class="ob-mini'+(m.photo?' on':'')+'" data-ob="photo" data-id="'+m.id+'">📷 '+(m.photo?'photo ✓':'add photo')+'</button>'
         +'<button class="ob-mini no on" data-ob="delMarker" data-id="'+m.id+'">🗑 delete</button>'
@@ -290,18 +452,43 @@
   /* ===========================================================================
      OFFER
      =========================================================================== */
+  function perL(offer){ return (offer && offer.period==="mnd") ? "mnd" : "år"; }
+  // resolve display fields for an offer line (marker-derived lines use LAYERS; checklist lines carry their own)
+  function lineDef(l){
+    var b=LAYERS[l.layer]||{};
+    return { emoji:l.emoji||b.emoji||"•", measure:l.measure||b.measure||"count", unit:l.unit||b.unit||"",
+      recordOnly:!!b.recordOnly, compliance:l.compliance||b.compliance||false, statutory:l.statutory||b.statutory||false };
+  }
+  function checklistLine(it, asUpsell){
+    return { id:"L"+uid(), src:"checklist", itemId:it.id, layer:it.layer||null, emoji:it.emoji||catEmoji(it.category),
+      category:catKeyLabel(it.category), subtype:it.subtype||it.label,
+      scope:it.subtype||it.label, frequency:it.freq||"", qty:(it.value==null?"":it.value), unit:"", measure:"count",
+      price:it.price||0, recurring:!it.oneOff, oneOff:!!it.oneOff, inScope:!asUpsell,
+      compliance:!!it.compliance, deliveredBy:it.deliveredBy||"in-house", partnerName:it.partnerName||null,
+      review:{decision:null, comment:""} };
+  }
   function generateOffer(c){
-    var lines=(c.markers||[]).filter(function(m){ return !LAYERS[m.layer].recordOnly; }).map(function(m){
+    var lines=[];
+    // (a) map markers (non-record-only) — the existing path
+    (c.markers||[]).filter(function(m){ return !LAYERS[m.layer].recordOnly; }).forEach(function(m){
       var d=LAYERS[m.layer];
-      return { id:"L"+uid(), markerId:m.id, layer:m.layer,
-        category:catLabel(m.layer), subtype:d.label,
-        scope:m.service||d.service, frequency:m.frequency||d.freq,
-        qty:m.qty, unit:m.unit||d.unit, price:m.price, recurring:true, inScope:m.inScope,
-        review:{decision:null, comment:""} };
+      lines.push({ id:"L"+uid(), src:"marker", markerId:m.id, layer:m.layer, emoji:d.emoji,
+        category:catLabel(m.layer), subtype:d.label, scope:m.service||d.service, frequency:m.frequency||d.freq,
+        qty:m.qty, unit:m.unit||d.unit, measure:d.measure, price:m.price, recurring:true, inScope:m.inScope,
+        compliance:d.compliance, deliveredBy:"in-house", partnerName:null, oneOff:false, review:{decision:null,comment:""} });
     });
-    c.offer={ version:1, createdAt:nowStr(), coverNote:"Annual service plan for "+c.name+", priced per zone from our on-site survey. Statutory inspections included where present.", travel:0, lines:lines };
+    // (b) in-scope checklist items with a price share → base offer lines
+    (c.checklist||[]).filter(function(it){ return it.scope==="in" && (it.price||0)>0; }).forEach(function(it){ lines.push(checklistLine(it,false)); });
+    // (c) upsell checklist items with a price → optional add-on lines (excluded from base total)
+    var upsells=(c.checklist||[]).filter(function(it){ return it.scope==="upsell" && (it.price||0)>0; }).map(function(it){ return checklistLine(it,true); });
+    var per=perL({period:c.period});
+    c.offer={ version:1, createdAt:nowStr(), period:c.period||"år", lines:lines, upsells:upsells, travel:0,
+      terms: c.terms||null,
+      coverNote: c.period==="mnd"
+        ? "Månedlig serviceavtale for "+c.name+", satt opp fra befaring + kontrakt. Lovpålagte kontroller inkludert der de finnes. Upsell-linjer holdes utenfor grunnbeløpet til de aksepteres."
+        : "Annual service plan for "+c.name+", priced per zone from our on-site survey. Statutory inspections included where present." };
     if(!c.offerHistory) c.offerHistory=[];
-    logEvent(c,"Offer v1 generated from "+lines.length+" zones ("+kr(offerTotal(c.offer))+"/yr)");
+    logEvent(c,"Tilbud v1 generert — "+lines.length+" linjer ("+kr(offerTotal(c.offer))+"/"+per+")"+(upsells.length?" + "+upsells.length+" upsell":""));
     save();
   }
   function offerTotal(offer){
@@ -407,16 +594,16 @@
     oldLines.forEach(function(l){oldById[l.id]=l;});
     newLines.forEach(function(l){newById[l.id]=l;});
     newLines.forEach(function(l){
-      var o=oldById[l.id];
-      if(!o){ out.push({type:"add", text:"Added — "+LAYERS[l.layer].emoji+" "+l.scope+" ("+kr(l.price)+"/yr)"}); return; }
+      var o=oldById[l.id], nm=l.subtype||l.scope;
+      if(!o){ out.push({type:"add", text:"Lagt til — "+lineDef(l).emoji+" "+nm+" ("+kr(l.price)+")"}); return; }
       var ch=[];
-      if((o.price||0)!==(l.price||0)) ch.push("price "+kr(o.price)+" → "+kr(l.price));
-      if((o.qty||0)!==(l.qty||0)) ch.push("qty "+o.qty+" → "+l.qty);
+      if((o.price||0)!==(l.price||0)) ch.push("pris "+kr(o.price)+" → "+kr(l.price));
+      if((o.qty||0)!==(l.qty||0)) ch.push("antall "+o.qty+" → "+l.qty);
       if((o.scope||"")!==(l.scope||"")) ch.push("scope “"+o.scope+"” → “"+l.scope+"”");
       if((o.frequency||"")!==(l.frequency||"")) ch.push("freq “"+o.frequency+"” → “"+l.frequency+"”");
-      if(ch.length) out.push({type:"ch", text:LAYERS[l.layer].emoji+" "+l.scope+": "+ch.join(", ")});
+      if(ch.length) out.push({type:"ch", text:lineDef(l).emoji+" "+nm+": "+ch.join(", ")});
     });
-    oldLines.forEach(function(o){ if(!newById[o.id]) out.push({type:"rm", text:"Removed — "+LAYERS[o.layer].emoji+" "+o.scope+" ("+kr(o.price)+"/yr)"}); });
+    oldLines.forEach(function(o){ if(!newById[o.id]) out.push({type:"rm", text:"Fjernet — "+lineDef(o).emoji+" "+(o.subtype||o.scope)+" ("+kr(o.price)+")"}); });
     return out;
   }
   function issueV2(c){
@@ -429,7 +616,7 @@
     c.offerHistory.push({version:c.offer.version, at:nowStr(), lines:clone(c.offer.lines), total:offerTotal(c.offer), diff:diff});
     (c.changeRequests||[]).forEach(function(r){ if(r.status==="open") r.status="resolved"; });
     setStage(c,"Offer sent");
-    logEvent(c,"Offer v"+c.offer.version+" issued + re-sent ("+diff.length+" change(s), now "+kr(offerTotal(c.offer))+"/yr)");
+    logEvent(c,"Tilbud v"+c.offer.version+" sendt på nytt ("+diff.length+" endring(er), nå "+kr(offerTotal(c.offer))+"/"+perL(c.offer)+")");
     save();
     toast("Offer v"+c.offer.version+" issued and re-sent to the board");
     ui.step=3; OnSite.go("board");
@@ -461,10 +648,12 @@
     st.items.push({id:uid(), kind:"task", bld:b.id, title:"🔑 Day 1 — key handover & site walkthrough", detail:"Onboarding from agreed offer for "+c.name+". Meet "+(c.contacts[0]?c.contacts[0].name:"the board")+".", status:"todo", billable:false, hours:1, time:"08:00", who:"Martin", proof:null});
     nTask++;
     // 3. each recurring zone → service plan (+ compliance routine / day-1 task)
+    var per = c.offer.period==="mnd" ? "mnd" : "år";
     active.forEach(function(l){
-      var d=LAYERS[l.layer], cl=l.category||catLabel(l.layer), sub=l.subtype||d.label;
+      var d=lineDef(l), cl=l.category||catLabel(l.layer), sub=l.subtype||d.emoji;
+      var deliv = l.deliveredBy==="partner" ? (" · levert av "+(l.partnerName||"partner")) : (l.inScope?"":" · lagt til som upsell");
       st.items.push({ id:uid(), kind:"plan", bld:b.id,
-        title:d.emoji+" "+cl+" → "+sub, detail:l.frequency+" · "+kr(l.price)+"/yr"+(l.inScope?"":" · added as upsell")+" — from agreed offer",
+        title:d.emoji+" "+cl+" → "+sub, detail:(l.frequency||"")+" · "+kr(l.price)+"/"+per+deliv+" — fra avtalt tilbud",
         status:"approved", billable:true, cost:l.price, hours:0, time:"—", who:"System", proof:null });
       nPlan++;
       if(d.compliance){
@@ -474,15 +663,22 @@
         nComp++;
       } else if(opCount<2){
         st.items.push({ id:uid(), kind:"task", bld:b.id,
-          title:"▶ Day-1: "+sub, detail:"Day-1 occurrence from the service plan ("+l.frequency+").",
+          title:"▶ Day-1: "+sub, detail:"Day-1 occurrence from the service plan ("+(l.frequency||"løpende")+").",
           status:"todo", billable:true, hours:1, time:"09:00", who:"Martin", proof:null });
         nTask++; opCount++;
       }
     });
+    // statutory compliance routines auto-loaded in Step 0 (lift 2-yr, sprinkler annual, fire round)
+    (c.compliance||[]).forEach(function(r){
+      st.items.push({ id:uid(), kind:"task", bld:b.id, title:"📋 "+r.label,
+        detail:"Lovpålagt rutine (auto-lastet i Step 0) — planlegg første kontroll.",
+        status:"todo", billable:true, hours:0.5, time:"—", who:"System", proof:null });
+      nComp++;
+    });
     // 4. handover pack
     c.handover={ createdAt:nowStr(), building:b.name, addr:c.addr, access:c.accessNote||"",
       contacts:c.contacts.slice(), planValue:offerTotal(c.offer),
-      zones:active.length, systems:active.filter(function(l){return LAYERS[l.layer].compliance;}).length,
+      zones:active.length, systems:active.filter(function(l){return lineDef(l).compliance;}).length,
       plans:nPlan, tasks:nTask, compliance:nComp };
     setStage(c,"Live"); c.enrichment=true;
     logEvent(c,"🚀 Went live — "+nPlan+" service plans, "+(nTask+nComp)+" day-1 tasks, building record created");
@@ -521,7 +717,7 @@
         +'<div class="meta"><span class="'+badgeClass(c.stage)+'">'+c.stage+'</span>'
           +'<span class="chip grey">'+(c.markers?c.markers.length:0)+' zones</span>'
           +(up?'<span class="chip amber">'+up+' upsell</span>':'')
-          +(c.offer?'<span class="chip blue">'+kr(offerTotal(c.offer))+'/yr</span>':'')
+          +(c.offer?'<span class="chip blue">'+kr(offerTotal(c.offer))+'/'+perL(c.offer)+'</span>':'')
         +'</div></div>';
     }).join("") : '<div class="empty">No customers yet. Start one with “＋ New customer”.</div>';
     return '<div class="ob-head"><div class="dot">🧭</div><div><h2>Sales → Onboarding</h2>'
@@ -569,6 +765,19 @@
   }
 
   /* ---- Step 0: office prep ---- */
+  function managerCardHTML(c){
+    var board=(c.contacts||[]).map(function(p){ return '<div class="ob-tot"><span class="muted">'+esc(p.role||"Kontakt")+'</span><span class="v" style="font-size:13px">'+esc(p.name)+'</span></div>'; }).join("");
+    return '<div class="card"><div class="ct">Forvaltning & styre <span class="muted" style="font-weight:600">· offentlig register</span></div>'
+      +(c.manager?'<div class="ob-tot"><span class="muted">Forvalter</span><span class="v" style="font-size:13px">'+esc(c.manager)+'</span></div>':'')
+      +(c.revisor?'<div class="ob-tot"><span class="muted">Revisor</span><span class="v" style="font-size:13px">'+esc(c.revisor)+'</span></div>':'')
+      +board+'</div>';
+  }
+  function systemsCardHTML(c){
+    return '<div class="card"><div class="ct">Foreslåtte systemer <span class="muted" style="font-weight:600">· uavklart (bekreftes på befaring)</span></div>'
+      +'<div class="ob-syschips">'+(c.systems||[]).map(function(s){return '<span class="ob-sys">'+esc(s)+'</span>';}).join("")+'</div>'
+      +(c.compliance&&c.compliance.length?('<div style="margin-top:10px;font-weight:700;font-size:11.5px;color:var(--muted)">Lovpålagt (auto-lastet)</div><div class="ob-syschips">'+c.compliance.map(function(r){return '<span class="ob-sys comp">📋 '+esc(r.label)+'</span>';}).join("")+'</div>'):'')
+      +'</div>';
+  }
   function stepPrep(c){
     var isNew=ui.draftNew;
     var scope=c.requestedScope||[];
@@ -591,6 +800,8 @@
         +'<div class="ob-bar"><button class="ob-btn primary" data-ob="savePrep">'+(isNew?"Create prospect →":"Save shell")+'</button></div>'
       +'</div>'
       +'<div>'
+        + (c.manager||(c.contacts&&c.contacts.length>1) ? managerCardHTML(c) : '')
+        + (c.systems&&c.systems.length ? systemsCardHTML(c) : '')
         +'<div class="card"><div class="ct">Requested-scope checklist</div>'
           +'<p class="muted" style="font-size:12.5px;margin:0 0 10px">What the board asked us to quote — tick so we arrive prepared.</p>'
           +'<div style="display:flex;flex-direction:column;gap:9px">'+scopeBoxes+'</div></div>'
@@ -631,7 +842,8 @@
     }).join("");
   }
   function stepWalk(c){
-    var hasZones=(c.markers||[]).some(function(m){return !LAYERS[m.layer].recordOnly;});
+    var hasZones=(c.markers||[]).some(function(m){return !LAYERS[m.layer].recordOnly;}) || (c.checklist||[]).some(function(it){return it.scope==="in";});
+    var perWord = c.period==="mnd" ? "måned" : "år";
     return '<div class="ob-grid split">'
       +'<div>'
         +'<div class="ob-hint">Pick a layer, then <b>tap the map</b> to drop a marker. Counts tally per layer. Anything outside the requested scope auto-flags as an <b>upsell</b>. Categories follow PHM Norge\'s service map — <b>modul</b> lines are phase-2.</div>'
@@ -642,14 +854,19 @@
         +'<div id="ob-map"></div>'
       +'</div>'
       +'<div>'
+        + (c.checklist&&c.checklist.length ? '<div id="ob-checkwrap">'+checklistPanelHTML(c)+'</div>' : '')
         +'<div class="card"><div class="ct">Zones captured</div><div id="ob-zones">'+zonesHTML(c)+'</div></div>'
         +'<div id="ob-upsell">'+upsellHTML(c)+'</div>'
-        +'<div class="card"><div class="ct">Recurring value so far</div><div class="ob-tot grand"><span>Per year</span><span class="v" id="ob-walktotal">'+kr(walkTotal(c))+'</span></div></div>'
+        +'<div class="card"><div class="ct">Recurring value so far</div><div class="ob-tot grand"><span>Per '+perWord+'</span><span class="v" id="ob-walktotal">'+kr(walkTotal(c))+'</span></div></div>'
         +'<div class="ob-bar"><button class="ob-btn primary" data-ob="genOffer" '+(hasZones?'':'disabled')+'>Generate offer →</button></div>'
       +'</div></div>';
   }
   function activeNote(){ return ui.activeLayer ? ('Active layer: '+LAYERS[ui.activeLayer].emoji+' '+LAYERS[ui.activeLayer].label+' — tap the map') : 'No layer selected — pick one above'; }
-  function walkTotal(c){ return (c.markers||[]).reduce(function(s,m){return s+(m.price||0);},0); }
+  function walkTotal(c){
+    var t=(c.markers||[]).reduce(function(s,m){return s+(m.price||0);},0);
+    t += (c.checklist||[]).filter(function(it){return it.scope==="in";}).reduce(function(s,it){return s+(it.price||0);},0);
+    return t;
+  }
   function zonesHTML(c){
     if(!(c.markers||[]).length) return '<div class="empty">No zones yet — tap the map to mark what you see.</div>';
     return CATS.map(function(cat){
@@ -675,13 +892,61 @@
     return '<div class="ob-callout"><b>⚠️ '+ups.length+' upsell opportunit'+(ups.length>1?'ies':'y')+'</b> — present but outside requested scope: '
       +ups.map(function(m){return LAYERS[m.layer].emoji+" "+LAYERS[m.layer].label;}).join(", ")+'. Nothing seen is lost.</div>';
   }
+  /* ---- walkaround checklist panel (doc 38) ---- */
+  function checklistPanelHTML(c){
+    if(!(c.checklist&&c.checklist.length)) return "";
+    return '<div class="card"><div class="ct">Walkaround-sjekkliste <span class="muted" style="font-weight:600">· '+esc(c.profile)+'</span></div>'
+      +'<div class="ob-clhint">✅ i scope · ⬆ upsell · ✖ ikke til stede · ⬜ avklares · ticking ✅ med pris → tilbudslinje</div>'
+      +'<div id="ob-checklist">'+checklistRowsHTML(c)+'</div></div>';
+  }
+  function checklistRowsHTML(c){
+    var byZone={}; c.checklist.forEach(function(it){ (byZone[it.zone]=byZone[it.zone]||[]).push(it); });
+    return ZONES.map(function(z){
+      var items=byZone[z.n]; if(!items||!items.length) return "";
+      var open=!!ui.zonesOpen[z.n];
+      return '<div class="ob-zoneblock"><button class="ob-zonehead" data-ob="cliZone" data-id="'+z.n+'">'
+        +'<span class="ob-zn">'+z.n+'</span><span class="ob-zt">'+esc(z.title)+'</span>'+scopeSummary(items)+'<span class="ob-zchev">'+(open?'▾':'▸')+'</span></button>'
+        +(open?'<div class="ob-zoneitems">'+items.map(checklistRow).join("")+'</div>':'')+'</div>';
+    }).join("");
+  }
+  function scopeSummary(items){
+    var n={"in":0,upsell:0,out:0,unknown:0}; items.forEach(function(it){ n[it.scope]=(n[it.scope]||0)+1; });
+    var s='';
+    if(n["in"]) s+='<span class="chip green">✅ '+n["in"]+'</span>';
+    if(n.upsell) s+='<span class="chip amber">⬆ '+n.upsell+'</span>';
+    if(n.unknown) s+='<span class="chip grey">⬜ '+n.unknown+'</span>';
+    return '<span class="ob-zsum">'+s+'</span>';
+  }
+  function checklistRow(it){
+    var sc=it.scope;
+    function sb(val){ return '<button class="ob-scope s-'+val+(sc===val?' on':'')+'" data-ob="cliScope" data-id="'+it.id+'" data-arg="'+val+'" title="'+val+'">'+scopeIcon(val)+'</button>'; }
+    var partner=(it.deliveredBy==="partner")?' <span class="chip blue">'+esc(it.partnerName||"partner")+' · partner</span>':'';
+    var price=(it.price>0)?' <span class="ob-clprice">'+kr(it.price)+'</span>':'';
+    return '<div class="ob-clitem'+(sc==="upsell"?' up':sc==="out"?' out':'')+'">'
+      +'<div class="ob-cltop"><div class="ob-cllabel">'+it.emoji+' '+esc(it.subtype||it.label)+price+partner+'</div>'
+      +'<div class="ob-scopes">'+sb("in")+sb("upsell")+sb("out")+sb("unknown")+'</div></div>'
+      +'<div class="ob-clcap">'+captureField(it)+(it.freq?'<span class="ob-clfreq">'+esc(it.freq)+'</span>':'')+'</div></div>';
+  }
+  function captureField(it){
+    var v=(it.value==null?"":it.value);
+    if(it.captureType==="count") return '<input type="number" min="0" data-obf="clival" data-id="'+it.id+'" value="'+esc(""+v)+'" placeholder="antall">';
+    if(it.captureType==="area")  return '<input type="number" min="0" data-obf="clival" data-id="'+it.id+'" value="'+esc(""+v)+'" placeholder="m²">';
+    if(it.captureType==="boolean") return '<label class="ob-clbool"><input type="checkbox" data-obf="clibool" data-id="'+it.id+'" '+(v===true?'checked':'')+'> ja</label>';
+    return '<input data-obf="clival" data-id="'+it.id+'" value="'+esc(""+v)+'" placeholder="'+(it.captureType==="condition"?'tilstand / notat':'notat')+'">';
+  }
+  function refreshChecklist(c){
+    setHTML("ob-checklist", checklistRowsHTML(c));
+    setText("ob-walktotal", kr(walkTotal(c)));
+    var gen=document.querySelector('[data-ob="genOffer"]'); if(gen && ((c.checklist||[]).some(function(it){return it.scope==="in";})||walkTotal(c)>0)) gen.removeAttribute("disabled");
+  }
   function refreshWalk(c){
     setHTML("ob-layers", layerPickerHTML(c, c.stage==="Live"?"enrich":"sales"));
     setHTML("ob-zones", zonesHTML(c));
     setHTML("ob-upsell", upsellHTML(c));
     setText("ob-walktotal", kr(walkTotal(c)));
     setText("ob-active", activeNote());
-    var gen=document.querySelector('[data-ob="genOffer"]'); if(gen){ if((c.markers||[]).some(function(m){return !LAYERS[m.layer].recordOnly;})) gen.removeAttribute("disabled"); }
+    if(c.checklist&&c.checklist.length) setHTML("ob-checklist", checklistRowsHTML(c));
+    var gen=document.querySelector('[data-ob="genOffer"]'); if(gen){ if((c.markers||[]).some(function(m){return !LAYERS[m.layer].recordOnly;})||(c.checklist||[]).some(function(it){return it.scope==="in";})) gen.removeAttribute("disabled"); }
   }
 
   /* ---- Step 2: offer ---- */
@@ -695,11 +960,12 @@
     return '<div class="ob-grid split">'
       +'<div class="card"><div class="ct">Live offer — '+esc(c.name)+' <span class="ob-ver">v'+c.offer.version+'</span></div>'
         +offerLinesHTML(c,false)
-        +'<div class="ob-tot"><span>Travel / callout</span><span class="v">'+kr(c.offer.travel||0)+'</span></div>'
-        +'<div class="ob-tot grand"><span>Total recurring / year</span><span class="v">'+kr(offerTotal(c.offer))+'</span></div>'
+        +'<div class="ob-tot grand"><span>Total / '+(perL(c.offer)==="mnd"?"mnd + mva":"år")+'</span><span class="v">'+kr(offerTotal(c.offer))+'</span></div>'
         +(upsellTotal(c.offer)?'<div class="ob-tot"><span class="muted">…of which upsell (newly surfaced)</span><span class="v" style="color:var(--amber)">'+kr(upsellTotal(c.offer))+'</span></div>':'')
       +'</div>'
       +'<div>'
+        +offerUpsellsHTML(c)
+        +offerTermsHTML(c)
         +'<div class="card"><div class="ct">Cover note</div><textarea data-obf="cover" rows="4">'+esc(c.offer.coverNote||"")+'</textarea></div>'
         +'<div class="card"><div class="ct">Two surfaces, one offer</div>'
           +'<p class="muted" style="font-size:12.5px;margin:0 0 10px">The board gets a formal PDF <i>and</i> the live in-app offer they act on.</p>'
@@ -712,14 +978,34 @@
       +'</div></div>';
   }
   function offerLinesHTML(c, editable){
+    var per=perL(c.offer);
     return c.offer.lines.map(function(l){
-      var d=LAYERS[l.layer], cl=l.category||catLabel(l.layer), sub=l.subtype||d.label;
+      var d=lineDef(l), cl=l.category||catLabel(l.layer), sub=l.subtype||d.emoji;
       var removed=l.review.decision==="remove";
+      var partner = l.deliveredBy==="partner" ? ' <span class="chip blue">'+esc(l.partnerName||"partner")+' · partner</span>' : '';
+      var qtyStr = (l.qty===""||l.qty==null) ? "" : (d.measure==="area"?(l.qty+" m²"):(l.qty+(d.unit?(" "+d.unit):"")));
       return '<div class="ob-row'+(!l.inScope?' up':'')+'" style="'+(removed?'opacity:.5':'')+'"><div class="ob-line-top">'
-        +'<div class="rt">'+d.emoji+' '+esc(sub)+' <span class="ob-catmini">'+esc(cl)+'</span>'+(!l.inScope?' <span class="chip amber">upsell</span>':'')+'</div>'
-        +'<div class="rp">'+kr(l.price)+'/yr</div></div>'
-        +'<div class="rd">'+esc(l.scope)+' · '+esc(l.frequency)+' · '+(d.measure==="area"?(l.qty+" m²"):(l.qty+" "+d.unit))+'</div></div>';
+        +'<div class="rt">'+d.emoji+' '+esc(sub)+' <span class="ob-catmini">'+esc(cl)+'</span>'+partner+(!l.inScope?' <span class="chip amber">upsell</span>':'')+'</div>'
+        +'<div class="rp">'+kr(l.price)+'/'+per+'</div></div>'
+        +'<div class="rd">'+esc(l.frequency||l.scope||"")+(qtyStr?' · '+esc(qtyStr):'')+'</div></div>';
     }).join("");
+  }
+  function offerUpsellsHTML(c){
+    if(!c.offer.upsells || !c.offer.upsells.length) return "";
+    var per=perL(c.offer);
+    var rows=c.offer.upsells.map(function(l){
+      var d=lineDef(l);
+      return '<div class="ob-row up"><div class="ob-line-top"><div class="rt">⬆ '+d.emoji+' '+esc(l.subtype)+' <span class="ob-catmini">'+esc(l.category)+'</span></div>'
+        +'<div class="rp">'+kr(l.price)+(l.oneOff?' eng.':'/'+per)+'</div></div></div>';
+    }).join("");
+    return '<div class="card"><div class="ct">Upsell / tillegg <span class="muted" style="font-weight:600">· utenfor grunnbeløpet</span></div>'+rows+'</div>';
+  }
+  function offerTermsHTML(c){
+    var t=c.offer.terms; if(!t) return "";
+    function row(k,v){ return v?'<div class="ob-tot"><span class="muted">'+k+'</span><span class="v" style="font-size:13px">'+esc(v)+'</span></div>':''; }
+    return '<div class="card"><div class="ct">Vilkår</div>'
+      +row("Grøntområde",t.green)+row("Utenfor avtale",t.hourly)+row("Forbruk",t.consumables)
+      +row("Oppsigelse",t.notice)+row("Regulering",t.kpi)+row("Oppstart",t.start)+'</div>';
   }
   function boardEmailCard(c){
     var em=c.contacts[0]?c.contacts[0].email:"board@example.no";
@@ -739,18 +1025,19 @@
   }
   function boardReviewHTML(c){
     var lines=c.offer.lines.map(function(l){
-      var d=LAYERS[l.layer], cl=l.category||catLabel(l.layer), sub=l.subtype||d.label; var dec=l.review.decision;
+      var d=lineDef(l), cl=l.category||catLabel(l.layer), sub=l.subtype||d.emoji; var dec=l.review.decision;
+      var partner = l.deliveredBy==="partner" ? ' <span class="chip blue">'+esc(l.partnerName||"partner")+' · partner</span>' : '';
       function b(act,label,cls){ return '<button class="ob-mini '+cls+(dec===act?' on':'')+'" data-ob="dec" data-id="'+l.id+'" data-arg="'+act+'">'+label+'</button>'; }
       return '<div class="ob-row'+(!l.inScope?' up':'')+'">'
-        +'<div class="ob-line-top"><div class="rt">'+d.emoji+' '+esc(sub)+' <span class="ob-catmini">'+esc(cl)+'</span>'+(!l.inScope?' <span class="chip amber">new / upsell</span>':'')+'</div><div class="rp">'+kr(l.price)+'/yr</div></div>'
-        +'<div class="rd">'+esc(l.scope)+' · '+esc(l.frequency)+'</div>'
+        +'<div class="ob-line-top"><div class="rt">'+d.emoji+' '+esc(sub)+' <span class="ob-catmini">'+esc(cl)+'</span>'+partner+(!l.inScope?' <span class="chip amber">new / upsell</span>':'')+'</div><div class="rp">'+kr(l.price)+'/'+perL(c.offer)+'</div></div>'
+        +'<div class="rd">'+esc(l.frequency||l.scope||"")+'</div>'
         +'<div class="ob-acts">'+b("approve","✓ Approve","ok")+b("question","? Question","")+b("change","✎ Change","warn")+b("remove","✕ Remove","no")+'</div>'
         +'<textarea class="ob-cmt'+(dec&&dec!=="approve"?' show':'')+'" data-obf="bcomment" data-id="'+l.id+'" placeholder="Add a comment for the office…">'+esc(l.review.comment||"")+'</textarea>'
       +'</div>';
     }).join("");
     return '<div class="ob-grid split"><div class="card"><div class="ct">Your offer — line by line <span class="ob-ver">v'+c.offer.version+'</span></div>'
       +lines
-      +'<div class="ob-tot grand"><span>Total / year</span><span class="v">'+kr(offerTotal(c.offer))+'</span></div>'
+      +'<div class="ob-tot grand"><span>Total / '+(perL(c.offer)==="mnd"?"mnd + mva":"år")+'</span><span class="v">'+kr(offerTotal(c.offer))+'</span></div>'
       +'<div class="ob-bar"><button class="ob-btn ghost" data-ob="approveAll">✓ Approve all</button><button class="ob-btn green" data-ob="submitBoard">Send response to office →</button></div></div>'
       +'<div><div class="card"><div class="ct">Channel 2 — just reply by email</div>'
         +'<p class="muted" style="font-size:12.5px;margin:0 0 8px">Prefer email? Paste the board\'s reply and OnSite turns it into change requests on the right lines.</p>'
@@ -771,12 +1058,11 @@
     var open=(c.changeRequests||[]).filter(function(r){return r.status==="open";});
     var reqHTML = (c.changeRequests&&c.changeRequests.length) ? c.changeRequests.map(function(r){
       var l=r.lineId?findLine(c,r.lineId):null;
-      var d=l?LAYERS[l.layer]:null;
-      var head=(d?d.emoji+" "+esc(l.scope):"General")+' <span class="chip '+(r.type==="remove"?"red":r.type==="question"?"blue":"amber")+'">'+r.type+'</span>'
+      var head=(l?lineDef(l).emoji+" "+esc(l.subtype||l.scope):"General")+' <span class="chip '+(r.type==="remove"?"red":r.type==="question"?"blue":"amber")+'">'+r.type+'</span>'
         +' <span class="chip grey">'+r.source+'</span>'+(r.status!=="open"?' <span class="chip '+(r.status==="declined"?"red":"green")+'">'+r.status+'</span>':'');
       var edit = (l && r.status==="open") ? '<div class="row2" style="display:flex;gap:8px;margin-top:8px">'
           +'<div style="flex:2"><label>Scope</label><input data-obf="linescope" data-id="'+l.id+'" value="'+esc(l.scope)+'"></div>'
-          +'<div style="flex:1"><label>Price/yr</label><input type="number" data-obf="lineprice" data-id="'+l.id+'" value="'+l.price+'"></div></div>'
+          +'<div style="flex:1"><label>Pris</label><input type="number" data-obf="lineprice" data-id="'+l.id+'" value="'+l.price+'"></div></div>'
           +'<div class="ob-acts"><button class="ob-mini ok on" data-ob="resolveReq" data-id="'+r.id+'">✓ Resolve</button>'
           +'<button class="ob-mini no on" data-ob="removeLine" data-id="'+l.id+'">✕ Remove line</button>'
           +'<button class="ob-mini" data-ob="declineReq" data-id="'+r.id+'">Decline w/ reason</button></div>'
@@ -795,7 +1081,7 @@
     }
     return '<div class="card"><div class="ct">Version history &amp; diff</div>'+c.offerHistory.map(function(h){
       var diff = (h.diff&&h.diff.length) ? '<div class="ob-diff">'+h.diff.map(function(x){return '<div class="'+(x.type==="add"?"add":x.type==="rm"?"rm":"ch")+'">'+(x.type==="add"?"＋ ":x.type==="rm"?"－ ":"~ ")+esc(x.text)+'</div>';}).join("")+'</div>' : '<div class="muted" style="font-size:12.5px">Baseline as sent.</div>';
-      return '<div class="ob-row"><div class="ob-line-top"><div class="rt"><span class="ob-ver">v'+h.version+'</span> '+h.at+'</div><div class="rp">'+kr(h.total)+'/yr</div></div>'+diff+'</div>';
+      return '<div class="ob-row"><div class="ob-line-top"><div class="rt"><span class="ob-ver">v'+h.version+'</span> '+h.at+'</div><div class="rp">'+kr(h.total)+'/'+perL(c.offer)+'</div></div>'+diff+'</div>';
     }).join("")+'</div>';
   }
 
@@ -803,14 +1089,14 @@
   function stepGoLive(c){
     if(c.stage==="Agreed"){
       var active=c.offer.lines.filter(function(l){return l.review.decision!=="remove";});
-      var comp=active.filter(function(l){return LAYERS[l.layer].compliance;}).length;
+      var comp=active.filter(function(l){return lineDef(l).compliance;}).length + ((c.compliance||[]).length);
       return '<div class="ob-grid split">'
         +'<div class="card"><div class="ct">Ready to go live</div>'
           +'<p class="muted" style="font-size:13.5px">On go-live, everything derives from the agreed offer — zero re-entry:</p>'
           +'<div class="ob-row"><div class="rt">🔁 '+active.length+' recurring zones → service plans + tasks</div></div>'
           +'<div class="ob-row"><div class="rt">📋 '+comp+' systems → statutory compliance routines</div></div>'
           +'<div class="ob-row"><div class="rt">🏢 Building record created · 🔑 day-1 tasks scheduled · 📦 handover pack</div></div>'
-          +'<div class="ob-tot grand"><span>Plan value locked</span><span class="v">'+kr(offerTotal(c.offer))+'/yr</span></div>'
+          +'<div class="ob-tot grand"><span>Plan value locked</span><span class="v">'+kr(offerTotal(c.offer))+'/'+perL(c.offer)+'</span></div>'
           +'<div class="ob-bar"><button class="ob-btn green" data-ob="goLive">🚀 Go live — convert &amp; populate the day app</button></div></div>'
         +'<div>'+historyHTML(c)+logCard(c)+'</div></div>';
     }
@@ -831,7 +1117,7 @@
           +'<div class="ob-tot"><span>Access</span><span class="v" style="font-size:13px">'+esc(h.access||"—")+'</span></div>'
           +'<div class="ob-tot"><span>Service plans</span><span class="v">'+(h.plans||0)+'</span></div>'
           +'<div class="ob-tot"><span>Day-1 tasks</span><span class="v">'+((h.tasks||0)+(h.compliance||0))+'</span></div>'
-          +'<div class="ob-tot grand"><span>Plan value</span><span class="v">'+kr(h.planValue||offerTotal(c.offer))+'/yr</span></div>'
+          +'<div class="ob-tot grand"><span>Plan value</span><span class="v">'+kr(h.planValue||offerTotal(c.offer))+'/'+perL(c.offer)+'</span></div>'
           +'<div class="ob-bar"><button class="ob-btn ghost" data-ob="printOffer">🖨 Print handover / offer</button></div></div>'
         +'<div class="card"><div class="ct">Zones &amp; interior (live record)</div><div id="ob-zones">'+zonesHTML(c)+'</div></div>'
         +logCard(c)
@@ -866,7 +1152,7 @@
       var up=(c.markers||[]).filter(function(m){return isUpsell(c,m);}).length;
       return '<div class="ob-row" data-ob="open" data-id="'+c.id+'" style="cursor:pointer"><div class="ob-line-top">'
         +'<div class="rt">'+esc(c.name)+' <span class="'+badgeClass(c.stage)+'">'+c.stage+'</span></div>'
-        +'<div class="rp">'+(c.offer?kr(offerTotal(c.offer))+'/yr':'—')+'</div></div>'
+        +'<div class="rp">'+(c.offer?kr(offerTotal(c.offer))+'/'+perL(c.offer):'—')+'</div></div>'
         +'<div class="rd">'+(c.markers?c.markers.length:0)+' zones'+(up?' · '+up+' upsell':'')+(c.buildingId?' · live building':'')+'</div></div>';
     }).join(""):'<div class="empty">No customers in the pipeline yet.</div>';
     host.innerHTML='<div class="card"><div class="ct">Sales pipeline — new customers</div>'+rows
@@ -879,22 +1165,31 @@
      =========================================================================== */
   function printOffer(c){
     if(!c.offer){ toast("Generate the offer first"); return; }
+    var per=perL(c.offer);
     var lines=c.offer.lines.filter(function(l){return l.review.decision!=="remove";}).map(function(l){
-      var d=LAYERS[l.layer];
-      var cl=l.category||catLabel(l.layer), sub=l.subtype||d.label;
-      return '<div class="docrow"><div><div class="sc">'+d.emoji+' '+esc(cl)+' › '+esc(sub)+(!l.inScope?' <span class="upsell-tag">NY</span>':'')+'</div>'
-        +'<div class="fr">'+esc(l.scope)+' · '+esc(l.frequency)+' · '+(d.measure==="area"?(l.qty+" m²"):(l.qty+" "+d.unit))+'</div></div>'
-        +'<div class="pr">'+kr(l.price)+'/yr</div></div>';
+      var d=lineDef(l), cl=l.category||catLabel(l.layer), sub=l.subtype||d.emoji;
+      var partner = l.deliveredBy==="partner" ? ' — '+esc(l.partnerName||"partner")+' (partner)' : '';
+      var qtyStr = (l.qty===""||l.qty==null)?"":(d.measure==="area"?(l.qty+" m²"):(l.qty+(d.unit?(" "+d.unit):"")));
+      return '<div class="docrow"><div><div class="sc">'+d.emoji+' '+esc(cl)+' › '+esc(sub)+partner+(!l.inScope?' <span class="upsell-tag">NY</span>':'')+'</div>'
+        +'<div class="fr">'+esc(l.frequency||l.scope||"")+(qtyStr?' · '+esc(qtyStr):'')+'</div></div>'
+        +'<div class="pr">'+kr(l.price)+'/'+per+'</div></div>';
     }).join("");
+    var ups=(c.offer.upsells||[]).map(function(l){
+      return '<div class="docrow"><div><div class="sc">⬆ '+esc(l.category)+' › '+esc(l.subtype)+'</div></div><div class="pr">'+kr(l.price)+(l.oneOff?' eng.':'/'+per)+'</div></div>';
+    }).join("");
+    var t=c.offer.terms;
+    var terms = t ? '<div class="note"><b>Vilkår.</b> '
+        +[t.green&&("Grøntområde: "+t.green), t.hourly&&("Utenfor avtale: "+t.hourly), t.consumables, t.notice, t.kpi, t.start].filter(Boolean).map(esc).join(" · ")+'</div>' : '';
     var ct=c.contacts[0]||{};
     var html='<div class="ob-doc">'
-      +'<h1>Service offer — '+esc(c.name)+'</h1>'
-      +'<div class="docsub">'+esc(c.addr||"")+' · Offer v'+c.offer.version+' · '+c.offer.createdAt+' · OnSite</div>'
-      +'<div class="docsub">To: '+esc(ct.name||"The board")+(ct.email?' &lt;'+esc(ct.email)+'&gt;':'')+'</div>'
+      +'<h1>Serviceavtale — '+esc(c.name)+'</h1>'
+      +'<div class="docsub">'+esc(c.addr||"")+(c.gnr?(' · gnr '+esc(c.gnr)+'/bnr '+esc(c.bnr)):'')+' · Tilbud v'+c.offer.version+' · '+c.offer.createdAt+' · OnSite</div>'
+      +'<div class="docsub">Til: '+esc(ct.name||"Styret")+(ct.email?' &lt;'+esc(ct.email)+'&gt;':'')+(c.manager?(' · Forvalter: '+esc(c.manager)):'')+'</div>'
       +lines
-      +'<div class="docrow"><div class="sc">Travel / callout</div><div class="pr">'+kr(c.offer.travel||0)+'</div></div>'
-      +'<div class="doctot"><span>Total recurring / year</span><span>'+kr(offerTotal(c.offer))+'</span></div>'
+      +'<div class="doctot"><span>Total / '+(per==="mnd"?"mnd + mva":"år")+'</span><span>'+kr(offerTotal(c.offer))+'</span></div>'
+      +(ups?'<div class="docsub" style="margin-top:14px;font-weight:700">Upsell / tillegg (utenfor grunnbeløp)</div>'+ups:'')
       +'<div class="note">'+esc(c.offer.coverNote||"")+'</div>'
+      +terms
       +'<div class="sig"><div>_______________________<br>For '+esc(c.name)+'</div><div>_______________________<br>OnSite</div></div>'
       +'</div>';
     var pa=document.getElementById("ob-print"); if(!pa) return;
@@ -916,7 +1211,9 @@
     var act=t.getAttribute("data-ob"), id=t.getAttribute("data-id"), arg=t.getAttribute("data-arg");
     var c=cur();
     switch(act){
-      case "open": ui.openId=id; var co=cust(id); ui.step=co?defaultStep(co):0; ui.draftNew=false; ui.activeLayer=null; OnSite.go("sales"); break;
+      case "open": ui.openId=id; var co=cust(id); ui.step=co?defaultStep(co):0; ui.draftNew=false; ui.activeLayer=null; ui.zonesOpen={1:true,3:true}; OnSite.go("sales"); break;
+      case "cliScope": { if(c){ var cit=(c.checklist||[]).filter(function(x){return x.id===id;})[0]; if(cit){ cit.scope=arg; save(); refreshChecklist(c); } } break; }
+      case "cliZone": { ui.zonesOpen[id]=!ui.zonesOpen[id]; if(c) setHTML("ob-checklist", checklistRowsHTML(c)); break; }
       case "back": ui.openId=null; ui.draftNew=false; repaintSales(); break;
       case "step": { var n=parseInt(id,10); if(c && n<=maxStep(c)){ ui.step=n; ui.activeLayer=null; repaintSales(); } break; }
       case "new": startNew(); break;
@@ -943,7 +1240,7 @@
       case "photo": togglePhoto(id); break;
       case "delMarker": deleteMarker(id); break;
       case "clearCustomers": if(window.confirm("Clear all sales customers? (the day app is unaffected)")){ S().customers=[]; S().obSeeded=true; save(); ui.openId=null; repaintSales(); toast("Customers cleared — add a real one with ＋ New customer"); } break;
-      case "reseed": { if(!cust("solbakken-cust")) S().customers.push(seedSolbakken()); else { S().customers=S().customers.filter(function(x){return x.id!=="solbakken-cust";}); S().customers.push(seedSolbakken()); } S().obSeeded=true; save(); ui.openId=null; repaintSales(); toast("Demo client reset"); break; }
+      case "reseed": { var rst=S(); rst.customers=(rst.customers||[]).filter(function(x){return x.id!=="holtet-cust"&&x.id!=="solbakken-cust";}); rst.customers.unshift(seedSolbakken()); rst.customers.unshift(seedHoltet()); rst.obSeeded=true; save(); ui.openId=null; repaintSales(); toast("Seed-klienter tilbakestilt (Holtet + Solbakken)"); break; }
     }
   });
 
@@ -964,6 +1261,8 @@
       save(); return; }
     if(!c) return;
     if(name==="cover"){ if(c.offer){ c.offer.coverNote=val; save(); } return; }
+    if(name==="clival"){ var ci=(c.checklist||[]).filter(function(x){return x.id===id;})[0]; if(ci){ ci.value=val; save(); } return; }
+    if(name==="clibool"){ var cb=(c.checklist||[]).filter(function(x){return x.id===id;})[0]; if(cb){ cb.value=f.checked; save(); } return; }
     if(name==="bcomment"){ var l=findLine(c,id); if(l){ l.review.comment=val; save(); } return; }
     if(name.indexOf("mk")===0){ var m=findMarker(c,id); if(!m) return;
       if(name==="mkservice") m.service=val;
