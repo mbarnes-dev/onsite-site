@@ -884,13 +884,19 @@
   function handlePhotoCapture(input){
     var kind=input.getAttribute("data-photocap"), id=input.getAttribute("data-id");
     var files=input.files; if(!files||!files.length) return;
-    var c=cur(); var t=c&&photoTarget(c,kind,id); if(!t){ input.value=""; return; }
+    var c=cur();
+    var t = (kind==="proof") ? pendingProof : (c&&photoTarget(c,kind,id));
+    if(!t){ input.value=""; return; }
     var n=files.length, done=0, totalKb=0;
     toast("Komprimerer "+n+" bilde"+(n>1?"r":"")+"…");
     [].forEach.call(files, function(file){
       compressImage(file, function(res){
         if(res){ var pid="ph"+uid(); t.photoIds=t.photoIds||[]; t.photoIds.push(pid); totalKb+=res.kb; photoPut({id:pid, dataUrl:res.dataUrl, caption:"", ts:Date.now(), kb:res.kb}); }
-        done++; if(done===n){ save(); afterPhotoChange(c); toast("📷 "+n+" bilde"+(n>1?"r":"")+" lagret (~"+totalKb+" KB)"); }
+        done++; if(done===n){
+          if(kind==="proof"){ syncProofFromDOM(); reRenderProofSheet(); }   // photo blob already in IndexedDB; draft holds the id until confirm
+          else { save(); afterPhotoChange(c); }
+          toast("📷 "+n+" bilde"+(n>1?"r":"")+" lagret (~"+totalKb+" KB)");
+        }
       });
     });
     input.value="";
@@ -1367,11 +1373,14 @@
   function instKey(i){ return i.lineId+"|"+i.date; }
   function isDone(i){ var st=S(); return !!(st.completedInstances&&st.completedInstances[instKey(i)]); }
   function clientOf(lineId){ return cust(lineId.split(":")[0]); }
-  function completeInstance(inst){
+  function completeInstance(inst, opts){
+    opts=opts||{};
     var st=S(); st.completedInstances=st.completedInstances||{}; st.completedInstances[instKey(inst)]=true;
     var c=clientOf(inst.lineId); var bldId=(c&&c.buildingId)?c.buildingId:(st.buildings[0]&&st.buildings[0].id);
-    st.items.push({ id:uid(), kind:"task", bld:bldId, title:inst.title, detail:"Fra skjøtselsplan ("+inst.freq+") · "+inst.building, status:"done", billable:true, hours:0.5, time:new Date().toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}), who:"Martin", proof:{photo:true, note:"Utført på plan"} });
-    save(); render(); toast("✓ Utført — dokumentert (Board) og fakturerbart (Office)");
+    st.items.push({ id:uid(), kind:"task", bld:bldId, title:inst.title, detail:"Fra skjøtselsplan ("+inst.freq+") · "+inst.building, status:"done", billable:true, hours:0.5, time:new Date().toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}), who:opts.by||currentUser(), proof:{photo:!!opts.hasPhoto, note:opts.note||"Utført på plan", proofId:opts.proofId||null} });
+    save();
+    if(opts.silent) return;   // proof flow renders + toasts itself
+    render(); toast("✓ Utført — dokumentert (Board) og fakturerbart (Office)");
   }
   function spawnEvent(name){
     var st=S(); var c=liveClients()[0]; var bldId=(c&&c.buildingId)?c.buildingId:(st.buildings[0]&&st.buildings[0].id);
@@ -1379,6 +1388,156 @@
     save(); render(); toast("❄️ "+name+" lagt i dagens oppgaver");
   }
   function groupByBuilding(list){ var m={}, order=[]; list.forEach(function(i){ if(!m[i.building]){m[i.building]=[];order.push(i.building);} m[i.building].push(i); }); return order.map(function(b){return {building:b, items:m[b]};}); }
+
+  /* ---- completion proof (doc 52, Phase 6a): ts + who + geo + photo → completionLog ---- */
+  var SERVICE_ICON={ snow:"❄️", grass:"🌿", cleaning:"🧹", technical:"🔧", compliance:"📋", other:"✅" };
+  var WD_NO=["søndag","mandag","tirsdag","onsdag","torsdag","fredag","lørdag"];
+  function currentUser(){ var st=S(); return st.currentUser||"Martin"; } // 6c: replace with team/individual cockpit context
+  function setCurrentUser(v){ var st=S(); st.currentUser=(v||"").trim()||"Martin"; save(); }
+  function serviceOfTask(c, lineId){
+    var key=(lineId||"").split(":").slice(1).join(":");
+    if(/^comp/.test(key)) return "compliance";
+    if(key==="snow"||key==="gritting") return "snow";   // explicit winter items
+    // accurate path: use the checklist item's own PHM category key
+    var it=(c&&c.checklist)?c.checklist.filter(function(x){return x.id===key;})[0]:null;
+    var byCat={ vinter:"snow", hage:"grass", renhold:"cleaning", drift:"technical", anlegg:"technical" };
+    if(it && byCat[it.category]) return byCat[it.category];
+    // marker/compliance fallback by id
+    var idMap={ lawn:"grass", grass:"grass", hedges:"grass", beds:"grass", greenery:"grass", trees:"grass",
+                stairwell:"cleaning", laundry:"cleaning", facade:"cleaning", mats:"cleaning",
+                tech:"technical", fire:"compliance", lift:"compliance", playground:"compliance" };
+    return idMap[key]||"other";
+  }
+  function proofZoneChoices(c, service){
+    var zs=c.zones||[];
+    var match=zs.filter(function(z){
+      if(service==="snow") return z.service==="snow";
+      if(service==="grass") return z.service==="grass"||z.service==="greenery"||z.service==="beds";
+      if(service==="cleaning") return z.service==="cleaning-ext";
+      return false;
+    });
+    return match.length?match:zs;
+  }
+  var pendingProof=null;
+  function openProofSheet(inst){
+    var c=clientOf(inst.lineId); if(!c){ completeInstance(inst); return; }
+    pendingProof={ id:"cl"+uid(), ts:null, by:currentUser(), service:serviceOfTask(c, inst.lineId),
+      title:inst.title, building:inst.building, taskInstanceId:instKey(inst), zoneId:"", geo:null, photoIds:[], note:"", _inst:inst };
+    obSheet(proofSheetHTML(c));
+    setTimeout(function(){ hydratePhotos(document.getElementById("sheet")); }, 20);
+  }
+  function proofSheetHTML(c){
+    var p=pendingProof; if(!p) return "";
+    var zs=proofZoneChoices(c, p.service);
+    var zonePick = zs.length ? '<label>Sone (valgfritt)</label><select id="pf_zone" data-obf="proofZone"><option value="">(ingen spesifikk sone)</option>'
+      + zs.map(function(z){ return '<option value="'+z.id+'"'+(p.zoneId===z.id?' selected':'')+'>'+esc(z.label||z.service)+'</option>'; }).join("") + '</select>' : '';
+    var geoBlock = p.geo
+      ? '<div class="ob-proofgeook">📍 Posisjon lagt ved · '+p.geo.lat.toFixed(5)+', '+p.geo.lon.toFixed(5)+' (±'+p.geo.acc+' m) <button class="ob-mini" data-ob="proofGeoClear">fjern</button></div>'
+      : '<button class="ob-mini" data-ob="proofGeo">📍 Legg ved posisjon</button>';
+    return '<h3>Marker utført · '+esc(p.title)+'</h3>'
+      +'<div class="muted" style="font-size:12.5px;margin:-4px 0 12px">'+esc(p.building)+' · '+(SERVICE_ICON[p.service]||"✅")+' '+esc(p.service)+'</div>'
+      +'<label>Utført av</label><input id="pf_by" data-obf="proofBy" value="'+esc(p.by)+'" placeholder="navn / initialer">'
+      +'<label>Posisjon (valgfritt)</label>'+geoBlock
+      +'<label style="margin-top:10px">Bilde (valgfritt)</label>'+photoStripHTML("proof", p.id, p.photoIds)
+      +'<label>Notat (valgfritt)</label><textarea id="pf_note" data-obf="proofNote" rows="2" placeholder="kort beskrivelse">'+esc(p.note)+'</textarea>'
+      + zonePick
+      +'<button class="save" data-ob="proofConfirm">✓ Bekreft utført</button>'
+      +'<button class="cancel" data-ob="proofCancel">Avbryt</button>';
+  }
+  function syncProofFromDOM(){
+    if(!pendingProof) return;
+    var by=document.getElementById("pf_by"); if(by) pendingProof.by=by.value.trim()||currentUser();
+    var note=document.getElementById("pf_note"); if(note) pendingProof.note=note.value;
+    var z=document.getElementById("pf_zone"); if(z) pendingProof.zoneId=z.value;
+  }
+  function reRenderProofSheet(){
+    if(!pendingProof) return;
+    obSheet(proofSheetHTML(clientOf(pendingProof._inst.lineId)));
+    setTimeout(function(){ hydratePhotos(document.getElementById("sheet")); }, 20);
+  }
+  function proofAddGeo(){
+    if(!pendingProof) return;
+    if(!navigator.geolocation){ toast("Geolokasjon støttes ikke — lagrer uten"); return; }
+    syncProofFromDOM();
+    toast("Henter posisjon…");
+    navigator.geolocation.getCurrentPosition(function(pos){
+      pendingProof.geo={ lat:pos.coords.latitude, lon:pos.coords.longitude, acc:Math.round(pos.coords.accuracy||0) };
+      reRenderProofSheet();
+      toast("📍 Posisjon lagt ved (±"+pendingProof.geo.acc+" m)");
+    }, function(err){
+      toast("Posisjon utilgjengelig ("+((err&&err.message)||"avslått")+") — lagrer uten");
+    }, {enableHighAccuracy:true, timeout:8000, maximumAge:0});
+  }
+  function proofClearGeo(){ if(pendingProof){ pendingProof.geo=null; reRenderProofSheet(); } }
+  function proofCleanup(){ if(pendingProof){ (pendingProof.photoIds||[]).forEach(function(pid){ photoDel(pid); }); pendingProof=null; } }
+  function proofCancel(){ proofCleanup(); obCloseSheet(); }
+  function proofConfirm(){
+    var p=pendingProof; if(!p) return;
+    syncProofFromDOM();
+    var inst=p._inst, c=clientOf(inst.lineId); if(!c){ proofCleanup(); obCloseSheet(); return; }
+    p.ts=new Date().toISOString();
+    var entry={ id:p.id, ts:p.ts, by:p.by||currentUser(), service:p.service, title:p.title, building:p.building,
+      taskInstanceId:p.taskInstanceId, zoneId:p.zoneId||null, geo:p.geo||null, photoIds:p.photoIds||[], note:p.note||"" };
+    setCurrentUser(entry.by);
+    c.completionLog=c.completionLog||[]; c.completionLog.push(entry);
+    if(entry.zoneId){ var z=findZone(c,entry.zoneId); if(z){ z.completionLog=z.completionLog||[]; z.completionLog.push(entry); } } // Phase-1 zone hook
+    pendingProof=null; obCloseSheet();
+    completeInstance(inst, { by:entry.by, note:entry.note, hasPhoto:entry.photoIds.length>0, proofId:entry.id, silent:true });
+    save(); render();
+    var what = entry.photoIds.length ? ("bilde"+(entry.geo?" + 📍":"")) : (entry.geo?"📍 posisjon":"bekreftelse");
+    toast("✓ Utført — dokumentert ("+what+")");
+  }
+  var geoMini=null;
+  function proofGeoView(arg){
+    var pp=(arg||"").split(","), lat=parseFloat(pp[0]), lon=parseFloat(pp[1]), acc=parseFloat(pp[2])||0;
+    if(geoMini){ try{ geoMini.remove(); }catch(e){} geoMini=null; }
+    obSheet('<h3>📍 Posisjon ved utførelse</h3><div class="ob-opmap" id="ob-geomap" style="height:300px"></div>'
+      +'<div class="muted" style="margin-top:8px;font-size:12.5px">'+lat.toFixed(5)+', '+lon.toFixed(5)+' · nøyaktighet ±'+acc+' m</div>'
+      +'<button class="cancel" data-ob="closeObSheet">Lukk</button>');
+    setTimeout(function(){
+      if(!hasLeaflet) return; var el=document.getElementById("ob-geomap"); if(!el) return;
+      geoMini=L.map(el,{zoomControl:true, attributionControl:true});
+      L.tileLayer(KARTVERKET,{attribution:"© Kartverket", maxZoom:20}).addTo(geoMini);
+      L.circleMarker([lat,lon],{radius:7, color:"#2f6fed", weight:2, fillColor:"#2f6fed", fillOpacity:.9}).addTo(geoMini);
+      if(acc>0) L.circle([lat,lon],{radius:acc, color:"#2f6fed", weight:1, fillOpacity:.10}).addTo(geoMini);
+      geoMini.setView([lat,lon], 18);
+      setTimeout(function(){ if(geoMini) geoMini.invalidateSize(); }, 60);
+    }, 40);
+  }
+  /* ---- board proof surfacing ---- */
+  function completionEntries(){
+    var all=[];
+    customers().forEach(function(c){ (c.completionLog||[]).forEach(function(e){ all.push(e); }); });
+    all.sort(function(a,b){ return a.ts<b.ts?1:(a.ts>b.ts?-1:0); });
+    return all;
+  }
+  function proofThumbsHTML(photoIds){
+    if(!photoIds||!photoIds.length) return "";
+    return '<div class="ob-photos board">'+photoIds.map(function(pid){
+      return '<span class="ob-thumb" data-ob="photoView" data-arg="'+pid+'"><img alt="bilde" '+(photoCache[pid]?'src="'+photoCache[pid]+'"':'data-photo-id="'+pid+'"')+'></span>';
+    }).join("")+'</div>';
+  }
+  function proofEntryHTML(e){
+    var d=new Date(e.ts), time=d.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"});
+    var geo = e.geo ? '<button class="ob-proofgeo" data-ob="proofGeoView" data-arg="'+e.geo.lat+','+e.geo.lon+','+(e.geo.acc||0)+'" title="vis posisjon">📍</button>' : '';
+    return '<div class="ob-proofrow"><div class="ob-proofic">'+(SERVICE_ICON[e.service]||"✅")+'</div>'
+      +'<div class="ob-proofmain"><div class="ob-prooftop">'+esc(e.title||"Utført")+' <span class="muted">· '+time+'</span> '+geo+'</div>'
+      +'<div class="ob-proofsub">'+esc(e.by||"")+(e.building?' · '+esc(e.building):'')+(e.note?' · '+esc(e.note):'')+'</div>'
+      + proofThumbsHTML(e.photoIds)
+      +'</div></div>';
+  }
+  function boardProofHTML(){
+    var entries=completionEntries(); if(!entries.length) return "";
+    var groups=[], idx={};
+    entries.forEach(function(e){ var k=(e.ts||"").slice(0,10); if(!idx[k]){ idx[k]={key:k, items:[]}; groups.push(idx[k]); } idx[k].items.push(e); });
+    var body=groups.map(function(g){
+      var d=new Date(g.key+"T00:00:00"), lbl=WD_NO[d.getDay()]+" "+d.getDate()+". "+MON_NO[d.getMonth()];
+      return '<div class="ob-proofday">'+lbl.charAt(0).toUpperCase()+lbl.slice(1)+'</div>'+g.items.map(proofEntryHTML).join("");
+    }).join("");
+    return '<div class="card ob-proofcard"><div class="ct">Utført arbeid · dokumentasjon <span class="chip grey">'+entries.length+'</span></div>'
+      +'<p class="muted" style="font-size:12px;margin:-2px 0 10px">Hver jobb logget med tidspunkt, hvem og bevis (bilde/posisjon) — styret ser at det ble gjort, uten å spørre.</p>'
+      + body +'</div>';
+  }
 
   /* ---- Field: scheduled work ---- */
   function weekStepperHTML(today){
@@ -1419,7 +1578,8 @@
     var seen={}, uniq=[]; bered.forEach(function(b){ if(!seen[b.ev.name]){seen[b.ev.name]=1; uniq.push(b);} });
     var body=uniq.length? uniq.map(function(b){
       return '<div class="ob-row"><div class="ob-line-top"><div class="rt">⚡ '+esc(b.ev.name)+'</div>'
-        +'<button class="ob-mini warn on" data-ob="spawnEvt" data-arg="'+encodeURIComponent(b.ev.name)+'">'+esc(b.ev.trigger)+'</button></div>'
+        +'<div style="display:flex;gap:6px"><button class="ob-mini warn on" data-ob="spawnEvt" data-arg="'+encodeURIComponent(b.ev.name)+'">'+esc(b.ev.trigger)+'</button>'
+        +'<button class="ob-mini ok on" data-ob="eventDone" data-arg="'+b.line.lineId+'|'+encodeURIComponent(b.ev.name)+'|'+encodeURIComponent(b.line.building)+'">✓ Utført</button></div></div>'
         +'<div class="rd">utløses ved forhold · ikke kalenderstyrt</div></div>';
     }).join("") : '<div class="empty">Ingen beredskapstjenester i denne sesongen.</div>';
     return '<div class="card"><div class="ct">Beredskap · utløses ved forhold '+(winter?'<span class="chip blue">vintersesong</span>':'')+'</div>'+body+'</div>';
@@ -2115,14 +2275,20 @@
   /* ---- Board view augmentation (reuse the Board role for review) ---- */
   function renderBoardExtras(cols){
     var awaiting=customers().filter(function(c){ return c.offer && (c.stage==="Offer sent"||c.stage==="Changes requested"); });
-    if(!awaiting.length) return;
+    var proof=boardProofHTML();
+    if(!awaiting.length && !proof) return;
     var host=document.createElement("div"); host.className="lane"; host.style.gridColumn="1 / -1";
-    var c=awaiting[0];
-    host.innerHTML='<div class="ob-board-banner"><h3>📋 New service offer to review — '+esc(c.name)+'</h3>'
-      +'<p>OnSite granted you access to your building. Review the offer line by line, or just reply by email.</p>'
-      +'<button class="open" data-ob="reviewNow" data-id="'+c.id+'">Review the offer ▾</button></div>'
-      + (ui.boardOpen===c.id ? boardReviewHTML(c) : "");
+    var html="";
+    if(awaiting.length){ var c=awaiting[0];
+      html+='<div class="ob-board-banner"><h3>📋 New service offer to review — '+esc(c.name)+'</h3>'
+        +'<p>OnSite granted you access to your building. Review the offer line by line, or just reply by email.</p>'
+        +'<button class="open" data-ob="reviewNow" data-id="'+c.id+'">Review the offer ▾</button></div>'
+        + (ui.boardOpen===c.id ? boardReviewHTML(c) : "");
+    }
+    html += proof;
+    host.innerHTML=html;
     cols.insertBefore(host, cols.firstChild);
+    hydratePhotos(host);
   }
 
   /* ---- Office view augmentation (pipeline summary + new) ---- */
@@ -2292,7 +2458,13 @@
       case "weekStep": { var base=(ui.refMs!=null?ui.refMs:Date.now()); ui.refMs=base+parseInt(arg,10)*7*86400000; render(); break; }
       case "jumpTo": { var rd=refDate(), yy=rd.getFullYear(); ui.refMs = arg==="winter"?new Date(yy,0,15).getTime() : arg==="spring"?new Date(yy,4,6).getTime() : null; render(); break; }
       case "yearStep": { var rd2=refDate(); ui.refMs=new Date(rd2.getFullYear()+parseInt(arg,10), rd2.getMonth(), rd2.getDate()).getTime(); render(); break; }
-      case "planDone": { var p=(arg||"").split("|"); completeInstance({lineId:p[0], date:p[1], title:decodeURIComponent(p[2]||""), freq:decodeURIComponent(p[3]||""), building:decodeURIComponent(p[4]||"")}); break; }
+      case "planDone": { var p=(arg||"").split("|"); openProofSheet({lineId:p[0], date:p[1], title:decodeURIComponent(p[2]||""), freq:decodeURIComponent(p[3]||""), building:decodeURIComponent(p[4]||"")}); break; }
+      case "proofGeo": proofAddGeo(); break;
+      case "proofGeoClear": proofClearGeo(); break;
+      case "proofConfirm": proofConfirm(); break;
+      case "proofCancel": proofCancel(); break;
+      case "proofGeoView": proofGeoView(arg); break;
+      case "eventDone": { var ep=(arg||"").split("|"); openProofSheet({lineId:ep[0], date:iso(refDate()), title:decodeURIComponent(ep[1]||""), freq:"beredskap", building:decodeURIComponent(ep[2]||"")}); break; }
       case "spawnEvt": spawnEvent(decodeURIComponent(arg||"")); break;
       case "back": ui.openId=null; ui.draftNew=false; repaintSales(); break;
       case "step": { var n=parseInt(id,10); if(c && n<=maxStep(c)){ ui.step=n; ui.activeLayer=null; repaintSales(); } break; }
@@ -2324,7 +2496,7 @@
       case "saveZone": saveZoneFromSheet(); break;
       case "editZone": editZone(id); break;
       case "delZone": delZone(id); break;
-      case "closeObSheet": obCloseSheet(); pendingZone=null; break;
+      case "closeObSheet": obCloseSheet(); pendingZone=null; if(pendingProof) proofCleanup(); if(geoMini){ try{geoMini.remove();}catch(e){} geoMini=null; } break;
       case "printMap": printMapCard(arg); break;
       case "genOffer": if(c){ if(!c.offer) generateOffer(c); if(c.stage==="Prospect"||c.stage==="Surveyed") setStage(c,"Surveyed"); ui.step=2; repaintSales(); } break;
       case "sendOffer": if(c) sendOffer(c); break;
@@ -2369,6 +2541,9 @@
       (cc.markers||[]).forEach(function(m){ m.inScope=(cc.requestedScope.indexOf(m.layer)>=0); });
       save(); return; }
     if(name==="zoneService"){ if(pendingZone){ pendingZone.service=val; pendingZone.method=defaultMethod(val); obSheet(zoneSheetHTML(pendingZone)); } return; }
+    if(name==="proofBy"){ if(pendingProof){ pendingProof.by=val.trim()||currentUser(); setCurrentUser(pendingProof.by); } return; }
+    if(name==="proofNote"){ if(pendingProof) pendingProof.note=val; return; }
+    if(name==="proofZone"){ if(pendingProof) pendingProof.zoneId=val; return; }
     if(!c) return;
     if(name==="cover"){ if(c.offer){ c.offer.coverNote=val; save(); } return; }
     if(name==="modIncl"){ if(c.offer){ var mm=c.offer.modules.filter(function(x){return x.service===id;})[0]; if(mm){ mm.included=f.checked; rebuildOfferFlat(c); save(); refreshTiered(c); toast(mm.included?(mm.title+" inkludert"):(mm.title+" valgt bort — kan sies opp separat")); } } return; }
