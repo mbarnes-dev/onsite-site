@@ -189,7 +189,7 @@
   }
 
   /* ---------- ui (ephemeral, not persisted) ---------- */
-  var ui = { openId:null, step:0, activeLayer:null, draftNew:false, zonesOpen:{}, refMs:null };
+  var ui = { openId:null, step:0, activeLayer:null, draftNew:false, zonesOpen:{}, refMs:null, modOpen:{} };
 
   /* ---------- record helpers ---------- */
   function customers(){ var st=S(); if(!st.customers) st.customers=[]; return st.customers; }
@@ -585,6 +585,8 @@
     return '<h3>'+(pz.id?"Rediger sone":"Ny sone")+' <span class="muted" style="font-size:13px;font-weight:600">· '+gtype+' · '+zoneMeasureStr(pz)+'</span></h3>'
       +'<label>Tjeneste</label><select id="z_service" data-obf="zoneService">'+SERVICE_LIST.map(function(s){return '<option value="'+s.key+'"'+(pz.service===s.key?' selected':'')+'>'+s.swatch+' '+s.label+'</option>';}).join("")+'</select>'
       + methodSel + prio
+      + (pz.geometry.type==="Polygon" ? '<label>Areal (m²) — målt, kan justeres (driver til pris)</label><input id="z_area" type="number" min="0" value="'+(pz.area_m2||0)+'">'
+         : pz.geometry.type==="LineString" ? '<label>Lengde (m) — målt, kan justeres (driver til pris)</label><input id="z_len" type="number" min="0" value="'+(pz.length_m||0)+'">' : '')
       +'<label>Begrensning</label><select id="z_constraint">'+CONSTRAINTS.map(function(k){return '<option value="'+k.key+'"'+(pz.constraint===k.key?' selected':'')+'>'+k.label+'</option>';}).join("")+'</select>'
       +'<label>Etikett</label><input id="z_label" value="'+esc(pz.label||"")+'" placeholder="f.eks. Hovedplen vest / Deponi">'
       +'<label>Notat</label><textarea id="z_notes" rows="2" placeholder="metode, art/skjøtsel, adkomst…">'+esc(pz.notes||"")+'</textarea>'
@@ -599,12 +601,19 @@
     pendingZone.constraint = val("z_constraint") || "none";
     pendingZone.label = val("z_label"); pendingZone.notes = val("z_notes");
     zoneRecompute(pendingZone);
+    // measured quantity is editable (pricing driver) — apply override after geometry recompute
+    var av=val("z_area"); if(av!=="" && pendingZone.geometry.type==="Polygon") pendingZone.area_m2=Math.round(parseFloat(av)||0);
+    var lv=val("z_len"); if(lv!=="" && pendingZone.geometry.type==="LineString") pendingZone.length_m=Math.round(parseFloat(lv)||0);
     c.zones = c.zones || [];
+    var isNew=!pendingZone.id, label=pendingZone.label||svcDef(pendingZone.service).label, meas=zoneMeasureStr(pendingZone);
     if(pendingZone.id){ c.zones = c.zones.map(function(z){ return z.id===pendingZone.id ? pendingZone : z; }); }
     else { pendingZone.id = "z"+uid(); pendingZone.buildingId = c.buildingId || c.id; if(!pendingZone.completionLog) pendingZone.completionLog=[]; c.zones.push(pendingZone); }
-    save(); obCloseSheet(); refreshZones(c);
-    toast("Sone lagret: "+(pendingZone.label||svcDef(pendingZone.service).label)+" · "+zoneMeasureStr(pendingZone));
     pendingZone=null;
+    save(); obCloseSheet(); refreshZones(c);
+    // Phase 2: a priced offer recomputes live; a new zone is the one-tap fair upsell
+    if(c.offer && c.offer.modules){ recomputeOffer(c); if(ui.step===2) refreshTiered(c);
+      toast((isNew?"➕ Lagt til i tilbud: ":"Tilbud oppdatert: ")+label+" · "+meas+" → "+kr(c.offer.totalMonthly)+"/mnd");
+    } else { toast("Sone lagret: "+label+" · "+meas); }
   }
 
   /* ---- zones panel (beside the map) ---- */
@@ -734,28 +743,132 @@
       compliance:!!it.compliance, deliveredBy:it.deliveredBy||"in-house", partnerName:it.partnerName||null,
       review:{decision:null, comment:""} };
   }
-  function generateOffer(c){
-    var lines=[];
-    // (a) map markers (non-record-only) — the existing path
-    (c.markers||[]).filter(function(m){ return !LAYERS[m.layer].recordOnly; }).forEach(function(m){
-      var d=LAYERS[m.layer];
-      lines.push({ id:"L"+uid(), src:"marker", markerId:m.id, layer:m.layer, emoji:d.emoji,
-        category:catLabel(m.layer), subtype:d.label, scope:m.service||d.service, frequency:m.frequency||d.freq,
-        qty:m.qty, unit:m.unit||d.unit, measure:d.measure, price:m.price, recurring:true, inScope:m.inScope,
-        compliance:d.compliance, deliveredBy:"in-house", partnerName:null, oneOff:false, review:{decision:null,comment:""} });
-    });
-    // (b) in-scope checklist items with a price share → base offer lines
-    (c.checklist||[]).filter(function(it){ return it.scope==="in" && (it.price||0)>0; }).forEach(function(it){ lines.push(checklistLine(it,false)); });
-    // (c) upsell checklist items with a price → optional add-on lines (excluded from base total)
-    var upsells=(c.checklist||[]).filter(function(it){ return it.scope==="upsell" && (it.price||0)>0; }).map(function(it){ return checklistLine(it,true); });
-    var per=perL({period:c.period});
-    c.offer={ version:1, createdAt:nowStr(), period:c.period||"år", lines:lines, upsells:upsells, travel:0,
-      terms: c.terms||null,
-      coverNote: c.period==="mnd"
-        ? "Månedlig serviceavtale for "+c.name+", satt opp fra befaring + kontrakt. Lovpålagte kontroller inkludert der de finnes. Upsell-linjer holdes utenfor grunnbeløpet til de aksepteres."
-        : "Annual service plan for "+c.name+", priced per zone from our on-site survey. Statutory inspections included where present." };
+  /* ===========================================================================
+     PRICING ENGINE (Phase 2, docs 46/47) — drive price from measured zones + counts
+     RATES = the editable "blue input cells"; reverse-engineered so Holtet's drivers
+     compute ≈ kr 16 558/mnd (doc 37 signed price = the QA anchor).
+     =========================================================================== */
+  var RATES = {
+    snow:     { machine_m2_mnd: 0.48, hand_per_entry_mnd: 86 },   // source: Holtet vinter ≈ kr 1 800/mnd over 2 486 m² maskin + 7 innganger hånd
+    grass:    { mow_m2_mnd: 0.42, edge_m_mnd: 6 },                // source: Holtet klipp ≈ kr 1 400/mnd over 3 357 m²; kant nominell
+    greenery: { hedge_m_year: 200, gartner_bed_m2_year: 90 },     // source: hekk 45 m × 200 ≈ kr 9 000/år (2×/sesong); bed nominell
+    cleaning: { per_oppgang_floor_week: 60, per_heis_week: 35 },  // source: Holtet renhold ≈ kr 4 800/mnd — 4 oppg × 4 etg ukentlig + 4 heis
+    base:     { vaktmester_round_mnd: 4200 }                      // source: Holtet ukentlig vaktmesterrunde + tilsyn (doc 37)
+  };
+  var WPM = 52/12;  // weeks per month
+  var MOD_TITLES = { base:"Drift / vaktmester", cleaning:"Renhold", snow:"Vintertjeneste", grass:"Grønt – klipp", greenery:"Grønt – skjøtsel", other:"Annet" };
+  var MOD_ORDER = ["base","cleaning","snow","grass","greenery","other"];
+  function layerToService(layer){ return ({grass:"grass", snow:"snow", gritting:"snow", laundry:"cleaning", stairwell:"cleaning", facade:"cleaning",
+    greenery:"greenery", beds:"greenery", tech:"base", fire:"base", lift:"base", entrance:"base", playground:"base", panel:"base", valve:"base"})[layer] || "other"; }
+  function ckVal(c,id){ var it=(c.checklist||[]).filter(function(x){return x.id===id;})[0]; return it?it.value:null; }
+  function keptVal(c,id,fb){ var it=(c.checklist||[]).filter(function(x){return x.id===id;})[0]; return (it&&it.price)?it.price:fb; }
+  function driverCounts(c){
+    var entry=(c.markers||[]).filter(function(m){return m.layer==="entrance";}).length;
+    return { oppganger: parseInt(ckVal(c,"oppganger"),10) || entry || 4,
+             heiser: parseInt(ckVal(c,"heiser"),10) || 0,
+             entryways: entry || parseInt(ckVal(c,"oppganger"),10) || 4,
+             floors: c.floors || 4 };
+  }
+  function zoneAgg(c){
+    var z=c.zones||[];
+    function sa(f){ return z.filter(f).reduce(function(s,x){return s+(x.area_m2||0);},0); }
+    function sl(f){ return z.filter(f).reduce(function(s,x){return s+(x.length_m||0);},0); }
+    return { snowMachine:sa(function(x){return x.service==="snow"&&x.method==="machine";}),
+      mow:sa(function(x){return x.service==="grass"&&(x.method==="mow"||!x.method);}),
+      edge:sl(function(x){return x.service==="grass"&&x.method==="edge";}),
+      hedgeZones:z.filter(function(x){return x.service==="greenery"&&x.geometry.type==="LineString";}),
+      bedZones:z.filter(function(x){return x.service==="greenery"&&x.geometry.type==="Polygon";}),
+      firstId:function(svc,meth){ var m=z.filter(function(x){return x.service===svc&&(!meth||x.method===meth);})[0]; return m?m.id:null; } };
+  }
+  // line factory. price === final (kept in sync; getters don't survive JSON round-trips).
+  function oLine(o){
+    return { id:o.id, src:o.src||"computed", service:o.service, role:o.role||"", label:o.label, subtype:o.label,
+      category:o.category||MOD_TITLES[o.service]||"", emoji:o.emoji||"•", layer:o.layer||null, zoneId:o.zoneId||null,
+      qty:(o.qty==null?null:o.qty), unit:o.unit||"", rate:(o.rate==null?null:o.rate), cadence:o.cadence||"",
+      computed:Math.round(o.computed||0), final:Math.round((o.final!=null?o.final:o.computed)||0), overridden:!!o.overridden,
+      price:Math.round((o.final!=null?o.final:o.computed)||0),
+      frequency:o.frequency||o.cadence||"", inScope:(o.inScope!==false), deliveredBy:o.deliveredBy||"in-house", partnerName:o.partnerName||null,
+      compliance:!!o.compliance, oneOff:!!o.oneOff, measure:o.measure||"count", review:{decision:null, comment:""} };
+  }
+  function computeOffer(c){
+    var prev=c.offer, per=c.period||"år";
+    var prevLine={}, prevMod={};
+    if(prev&&prev.modules){ prev.modules.forEach(function(m){ prevMod[m.service]={included:m.included, startDate:m.startDate, indexationPct:m.indexationPct, cap:m.cap};
+      m.lines.forEach(function(l){ prevLine[l.id]={final:l.final, overridden:l.overridden}; }); }); }
+    function withPrev(l){ var p=prevLine[l.id]; if(p&&p.overridden){ l.final=p.final; l.price=p.final; l.overridden=true; } return l; }
+    var lines=[], optionLines=[];
+
+    if(c.checklist && c.checklist.length){
+      // ---- driver model (zones + counts + kept non-spatial checklist lines) ----
+      var n=driverCounts(c), z=zoneAgg(c), id=c.id+":";
+      // base
+      lines.push(withPrev(oLine({id:id+"base:round", service:"base", role:"round", label:"Ukentlig vaktmesterrunde + tilsyn", emoji:"🧰", qty:1, unit:"runde", rate:RATES.base.vaktmester_round_mnd, cadence:"Ukentlig", computed:RATES.base.vaktmester_round_mnd})));
+      lines.push(withPrev(oLine({id:id+"base:teknisk", service:"base", role:"teknisk", label:"Teknisk rom – tilsyn", emoji:"🔧", cadence:"Månedlig", computed:keptVal(c,"water",491)})));
+      // cleaning (computed from counts) + mats (kept, partner)
+      var cl=Math.round(n.oppganger*n.floors*RATES.cleaning.per_oppgang_floor_week*WPM);
+      lines.push(withPrev(oLine({id:id+"cleaning:opp", service:"cleaning", role:"opp", label:"Trappevask "+n.oppganger+" oppg × "+n.floors+" etg", emoji:"🧹", qty:n.oppganger*n.floors, unit:"etg/uke", rate:RATES.cleaning.per_oppgang_floor_week, cadence:"Ukentlig", computed:cl})));
+      if(n.heiser>0){ var he=Math.round(n.heiser*RATES.cleaning.per_heis_week*WPM);
+        lines.push(withPrev(oLine({id:id+"cleaning:heis", service:"cleaning", role:"heis", label:"Heisrenhold "+n.heiser+" heis", emoji:"🛗", qty:n.heiser, unit:"heis/uke", rate:RATES.cleaning.per_heis_week, cadence:"Ukentlig", computed:he}))); }
+      lines.push(withPrev(oLine({id:id+"cleaning:mats", service:"cleaning", role:"mats", label:"Inngangsmatter (8 stk)", emoji:"🧺", cadence:"Månedlig", computed:keptVal(c,"mats",1200), deliveredBy:"partner", partnerName:"Dørmatte Gutta AS"})));
+      // snow (machine zone + hand by entryways)
+      if(z.snowMachine>0){ lines.push(withPrev(oLine({id:id+"snow:machine", service:"snow", role:"machine", label:"Maskinell brøyting", emoji:"❄️", qty:z.snowMachine, unit:"m²", rate:RATES.snow.machine_m2_mnd, cadence:"Per snøfall >5 cm", computed:z.snowMachine*RATES.snow.machine_m2_mnd, zoneId:z.firstId("snow","machine")}))); }
+      lines.push(withPrev(oLine({id:id+"snow:hand", service:"snow", role:"hand", label:"Manuell rydding + strøing ("+n.entryways+" innganger)", emoji:"🧂", qty:n.entryways, unit:"inngang", rate:RATES.snow.hand_per_entry_mnd, cadence:"Per snøfall / is", computed:n.entryways*RATES.snow.hand_per_entry_mnd, zoneId:z.firstId("snow","hand")})));
+      // grass (mow zones + edge)
+      if(z.mow>0){ lines.push(withPrev(oLine({id:id+"grass:mow", service:"grass", role:"mow", label:"Gressklipping", emoji:"🌿", qty:z.mow, unit:"m²", rate:RATES.grass.mow_m2_mnd, cadence:"Ukentlig i vekstsesong", computed:z.mow*RATES.grass.mow_m2_mnd, zoneId:z.firstId("grass","mow")}))); }
+      if(z.edge>0){ lines.push(withPrev(oLine({id:id+"grass:edge", service:"grass", role:"edge", label:"Kantklipp", emoji:"✂️", qty:z.edge, unit:"m", rate:RATES.grass.edge_m_mnd, cadence:"Sesong", computed:z.edge*RATES.grass.edge_m_mnd, zoneId:z.firstId("grass","edge")}))); }
+      // greenery (kept spraying portion recurring; hedge/beds → option lines)
+      lines.push(withPrev(oLine({id:id+"greenery:ovrig", service:"greenery", role:"ovrig", label:"Grøntområde – sprøyting, bed, trær", emoji:"🌳", cadence:"Sesong", computed:keptVal(c,"weeds",2667)})));
+      z.hedgeZones.forEach(function(zz,i){ var yr=Math.round((zz.length_m||0)*RATES.greenery.hedge_m_year);
+        optionLines.push(oLine({id:id+"opt:hedge"+i, service:"greenery", role:"hedge", label:"Beskjæring hekk ("+zz.label+")", emoji:"🌳", qty:zz.length_m, unit:"m", rate:RATES.greenery.hedge_m_year, cadence:"2×/år", computed:yr, oneOff:false, zoneId:zz.id})); zz.priceLineId=id+"opt:hedge"+i; });
+      z.bedZones.forEach(function(zz,i){ var yr=Math.round((zz.area_m2||0)*RATES.greenery.gartner_bed_m2_year);
+        optionLines.push(oLine({id:id+"opt:bed"+i, service:"greenery", role:"bed", label:"Gartner bed ("+zz.label+")", emoji:"🌷", qty:zz.area_m2, unit:"m²", rate:RATES.greenery.gartner_bed_m2_year, cadence:"Sesong", computed:yr, zoneId:zz.id})); zz.priceLineId=id+"opt:bed"+i; });
+      // checklist upsells → option/per-gang lines (separate from recurring total)
+      (c.checklist||[]).filter(function(it){return it.scope==="upsell" && (it.price||0)>0;}).forEach(function(it,i){
+        optionLines.push(oLine({id:id+"opt:up"+i, service:layerToService(it.id)||"other", role:"upsell", label:it.subtype||it.label, emoji:it.emoji||"⬆", qty:null, computed:it.price, oneOff:!!it.oneOff, cadence:it.oneOff?"engangs":"løpende"})); });
+      // link zone priceLineId for the recurring zone-driven lines
+      lines.forEach(function(l){ if(l.zoneId){ var zz=findZone(c,l.zoneId); if(zz) zz.priceLineId=l.id; } });
+
+    } else {
+      // ---- marker model (Solbakken etc.) — keep existing prices, grouped into modules ----
+      (c.markers||[]).filter(function(m){ return !LAYERS[m.layer].recordOnly; }).forEach(function(m){
+        var d=LAYERS[m.layer];
+        lines.push(withPrev(oLine({id:c.id+":mk:"+m.id, service:layerToService(m.layer), role:"marker", label:d.label, category:catLabel(m.layer), emoji:d.emoji,
+          qty:m.qty, unit:(m.unit||d.unit), rate:d.rate, cadence:m.frequency||d.freq, computed:m.price, frequency:m.frequency||d.freq, inScope:m.inScope, measure:d.measure, compliance:d.compliance })));
+      });
+    }
+
+    // group into modules
+    var modules=MOD_ORDER.map(function(svc){
+      var ml=lines.filter(function(l){return l.service===svc;}); if(!ml.length) return null;
+      var pm=prevMod[svc]||{};
+      return { service:svc, title:MOD_TITLES[svc], lines:ml,
+        included:(pm.included!=null?pm.included:true),
+        startDate:pm.startDate||(svc==="snow"?"15.11.2026":"01.01.2026"),
+        indexationPct:(pm.indexationPct!=null?pm.indexationPct:2.5), cap:(pm.cap!=null?pm.cap:3), subtotal:0 };
+    }).filter(Boolean);
+
+    c.offer = { version:(prev?prev.version:1), createdAt:nowStr(), period:per, modules:modules, optionLines:optionLines,
+      lines:[], upsells:optionLines, totalMonthly:0, totalYearly:0, travel:0, terms:c.terms||null,
+      coverNote:(prev&&prev.coverNote) ? prev.coverNote : (per==="mnd"
+        ? "Månedlig serviceavtale for "+c.name+" — priset fra bygningens målte arealer og talte enheter (ikke rundsum). Hver tjeneste er en egen modul som kan velges bort separat. Opsjoner holdes utenfor grunnbeløpet."
+        : "Service plan for "+c.name+" — computed from measured zones + counts; each service is a severable module.") };
     if(!c.offerHistory) c.offerHistory=[];
-    logEvent(c,"Tilbud v1 generert — "+lines.length+" linjer ("+kr(offerTotal(c.offer))+"/"+per+")"+(upsells.length?" + "+upsells.length+" upsell":""));
+    rebuildOfferFlat(c);
+    return c.offer;
+  }
+  function rebuildOfferFlat(c){
+    var o=c.offer; if(!o||!o.modules) return;
+    o.modules.forEach(function(m){ m.lines.forEach(function(l){ l.price=l.final; }); m.subtotal=m.lines.reduce(function(s,l){return s+(l.final||0);},0); });
+    var incl=o.modules.filter(function(m){return m.included;});
+    o.lines=[]; incl.forEach(function(m){ m.lines.forEach(function(l){ if(l.review.decision!=="remove") o.lines.push(l); }); });
+    var sum=incl.reduce(function(s,m){return s+m.subtotal;},0);
+    if(o.period==="mnd"){ o.totalMonthly=Math.round(sum); o.totalYearly=Math.round(sum*12); }
+    else { o.totalYearly=Math.round(sum); o.totalMonthly=Math.round(sum/12); }
+  }
+  function recomputeOffer(c){ if(c&&c.offer&&c.offer.modules){ computeOffer(c); save(); } }
+  function generateOffer(c){
+    computeOffer(c);
+    logEvent(c,"Tilbud v"+c.offer.version+" beregnet — "+c.offer.modules.length+" moduler, "+kr(c.offer.totalMonthly)+"/mnd ("+kr(c.offer.totalYearly)+"/år)");
     save();
   }
   function offerTotal(offer){
@@ -1424,31 +1537,81 @@
   function stepOffer(c){
     if(!c.offer){
       return '<div class="card"><div class="ct">Step 2 — offer</div>'
-        +'<p class="muted" style="font-size:13.5px">The offer is derived 1:1 from the zones you marked. Generate it to review the line items.</p>'
-        +'<div class="ob-bar"><button class="ob-btn primary" data-ob="genOffer">Generate offer from walkaround →</button></div></div>';
+        +'<p class="muted" style="font-size:13.5px">Prisen <b>beregnes</b> fra bygningens målte soner + talte enheter (ikke rundsum). Generer for å se modulene og driver-mattematikken.</p>'
+        +'<div class="ob-bar"><button class="ob-btn primary" data-ob="genOffer">Beregn tilbud fra målte soner →</button></div></div>';
     }
     var sent = STAGES.indexOf(c.stage) >= STAGES.indexOf("Offer sent");
-    return opMapsRow(c,"off")
-      +'<div class="ob-grid split">'
-      +'<div class="card"><div class="ct">Live offer — '+esc(c.name)+' <span class="ob-ver">v'+c.offer.version+'</span></div>'
-        +offerLinesHTML(c,false)
-        +'<div class="ob-tot grand"><span>Total / '+(perL(c.offer)==="mnd"?"mnd + mva":"år")+'</span><span class="v">'+kr(offerTotal(c.offer))+'</span></div>'
-        +(upsellTotal(c.offer)?'<div class="ob-tot"><span class="muted">…of which upsell (newly surfaced)</span><span class="v" style="color:var(--amber)">'+kr(upsellTotal(c.offer))+'</span></div>':'')
-      +'</div>'
-      +'<div>'
-        +offerUpsellsHTML(c)
-        +offerTermsHTML(c)
-        +'<div class="card"><div class="ct">Cover note</div><textarea data-obf="cover" rows="4">'+esc(c.offer.coverNote||"")+'</textarea></div>'
-        +'<div class="card"><div class="ct">Two surfaces, one offer</div>'
-          +'<p class="muted" style="font-size:12.5px;margin:0 0 10px">The board gets a formal PDF <i>and</i> the live in-app offer they act on.</p>'
-          +'<div class="ob-bar"><button class="ob-btn ghost" data-ob="printOffer">🖨 Print / Save as PDF</button></div></div>'
-        +(sent
-          ? '<div class="ob-ok">✅ Offer sent — board access granted. They review it in the <b>Board</b> view.</div>'
-            +boardEmailCard(c)
-            +'<div class="ob-bar"><button class="ob-btn amber" data-ob="openBoard">Open the board\'s view →</button></div>'
-          : '<div class="ob-bar"><button class="ob-btn primary" data-ob="sendOffer">Send offer &amp; grant board access →</button></div>')
-      +'</div></div>';
+    return offerHeadlineHTML(c)
+      + opMapsRow(c,"off")
+      + '<div class="ob-grid split">'
+      +   '<div id="ob-tiered">'+modulesHTML(c)+optionLinesHTML(c)+'</div>'
+      +   '<div>'
+      +     offerTermsHTML(c)
+      +     '<div class="card"><div class="ct">Cover note</div><textarea data-obf="cover" rows="4">'+esc(c.offer.coverNote||"")+'</textarea></div>'
+      +     '<div class="card"><div class="ct">Én relasjon, valgbare moduler</div>'
+      +       '<p class="muted" style="font-size:12.5px;margin:0 0 10px">Hver tjeneste prises og kan sies opp <b>separat</b> — misnøye med snø feller ikke hele avtalen. Board får PDF + live tilbud.</p>'
+      +       '<div class="ob-bar"><button class="ob-btn ghost" data-ob="printOffer">🖨 Print / Save as PDF</button></div></div>'
+      +     (sent
+            ? '<div class="ob-ok">✅ Sendt — board reviewer i <b>Board</b>-visningen.</div>'+boardEmailCard(c)
+              +'<div class="ob-bar"><button class="ob-btn amber" data-ob="openBoard">Åpne board-visningen →</button></div>'
+            : '<div class="ob-bar"><button class="ob-btn primary" data-ob="sendOffer">Send tilbud &amp; gi board tilgang →</button></div>')
+      +   '</div>'
+      + '</div>';
   }
+  /* ---- tiered offer (headline → modules → per-line driver math) ---- */
+  function fmtNum(n){ return (Math.round(n)||0).toLocaleString("no"); }
+  function findOfferLine(c,id){ var o=c.offer; if(!o) return null; for(var i=0;i<o.modules.length;i++){ var l=o.modules[i].lines.filter(function(x){return x.id===id;})[0]; if(l) return l; } return null; }
+  function headlineAmtHTML(c){
+    var o=c.offer, mnd=c.period!=="år";
+    return mnd
+      ? '<div class="ob-hl-big">'+kr(o.totalMonthly)+' <span class="ob-hl-unit">/mnd</span> <span class="ob-hl-yr">· '+kr(o.totalYearly)+' /år</span></div>'
+      : '<div class="ob-hl-big">'+kr(o.totalYearly)+' <span class="ob-hl-unit">/år</span> <span class="ob-hl-yr">· '+kr(o.totalMonthly)+' /mnd</span></div>';
+  }
+  function offerHeadlineHTML(c){
+    return '<div class="card ob-headline"><div class="ob-hl-top"><span id="ob-headline-amt">'+headlineAmtHTML(c)+'</span><span class="ob-ver">v'+c.offer.version+'</span></div>'
+      +'<div class="ob-hl-sub">Alt du betaler for — synlig. Utvid en tjeneste for driver-mattematikken; hver modul kan velges bort separat.</div></div>';
+  }
+  function modulesHTML(c){ return '<div class="ob-mods">'+c.offer.modules.map(function(m){return moduleCardHTML(c,m);}).join("")+'</div>'; }
+  function moduleCadence(m){ var seen={},out=[]; m.lines.forEach(function(l){ if(l.cadence && !seen[l.cadence]){ seen[l.cadence]=1; out.push(l.cadence);} }); return out.slice(0,2).join(" · ")||"løpende"; }
+  function moduleCardHTML(c,m){
+    var open=!!(ui.modOpen&&ui.modOpen[m.service]), per=perL(c.offer);
+    var lines = open ? '<div class="ob-modlines">'+m.lines.map(function(l){return moduleLineHTML(c,l);}).join("")+'</div>' : '';
+    return '<div class="ob-modcard'+(m.included?'':' excluded')+'">'
+      +'<div class="ob-modhead">'
+        +'<button class="ob-modtoggle" data-ob="modExpand" data-id="'+m.service+'"><span class="ob-modchev">'+(open?'▾':'▸')+'</span> <b>'+esc(m.title)+'</b></button>'
+        +'<div class="ob-modright">'
+          +(m.included?'<span class="ob-modsub">'+kr(m.subtotal)+'/'+per+'</span>':'<span class="chip grey">ikke valgt · kan sies opp separat</span>')
+          +'<label class="ob-modincl" title="Inkluder modulen"><input type="checkbox" data-obf="modIncl" data-id="'+m.service+'" '+(m.included?'checked':'')+'> med</label>'
+        +'</div>'
+      +'</div>'
+      +'<div class="ob-modmeta">'+esc(moduleCadence(m))+' · oppstart <input class="ob-modstart" data-obf="modStart" data-id="'+m.service+'" value="'+esc(m.startDate)+'"> · KPI '+m.indexationPct+'% (maks '+m.cap+'%)</div>'
+      + lines
+      +'</div>';
+  }
+  function moduleLineHTML(c,l){
+    var per=perL(c.offer);
+    var driver = (l.qty!=null && l.rate!=null)
+      ? esc(fmtNum(l.qty))+' '+esc(l.unit||"")+' × '+kr(l.rate)+'/'+esc(l.unit||"e")+'/'+per+' = '+kr(l.computed)
+      : 'fastpris (fra kontrakt/befaring) = '+kr(l.computed);
+    var partner = l.deliveredBy==="partner" ? ' <span class="chip blue">'+esc(l.partnerName)+' · partner</span>' : '';
+    var over = l.overridden ? '<span class="ob-overnote">endret fra '+kr(l.computed)+'</span>' : '';
+    return '<div class="ob-modline'+(l.zoneId?' has-zone':'')+'"'+(l.zoneId?' data-zone="'+l.zoneId+'"':'')+'>'
+      +'<div class="ob-mlmain"><div class="ob-mllab">'+l.emoji+' '+esc(l.label)+partner+(l.zoneId?' <span class="ob-zlink" title="fra tegnet sone">🗺️</span>':'')+'</div>'
+        +'<div class="ob-mldriver">'+driver+'</div></div>'
+      +'<div class="ob-mlprice"><input type="number" step="50" class="ob-finput" data-obf="lineFinal" data-id="'+l.id+'" value="'+l.final+'"><span class="ob-mlper">/'+per+'</span>'+over+'</div>'
+    +'</div>';
+  }
+  function optionLinesHTML(c){
+    var ol=(c.offer&&c.offer.optionLines)||[]; if(!ol.length) return "";
+    var per=perL(c.offer);
+    return '<div class="card"><div class="ct">Opsjoner / per gang <span class="muted" style="font-weight:600">· utenfor grunnbeløpet</span></div>'
+      +ol.map(function(l){
+        var amt = (l.role==="hedge"||l.role==="bed") ? kr(l.final)+'/år' : (l.oneOff?kr(l.final)+' eng.':kr(l.final)+'/'+per);
+        var driver = (l.qty!=null&&l.rate!=null) ? ' <span class="muted" style="font-size:11.5px">· '+fmtNum(l.qty)+' '+esc(l.unit||"")+' × '+kr(l.rate)+'</span>' : '';
+        return '<div class="ob-row"><div class="ob-line-top"><div class="rt">⬆ '+(l.emoji||"")+' '+esc(l.label)+driver+(l.zoneId?' <span class="ob-zlink">🗺️</span>':'')+'</div><div class="rp">'+amt+'</div></div></div>';
+      }).join("")+'</div>';
+  }
+  function refreshTiered(c){ setHTML("ob-tiered", modulesHTML(c)+optionLinesHTML(c)); setHTML("ob-headline-amt", headlineAmtHTML(c)); }
   function offerLinesHTML(c, editable){
     var per=perL(c.offer);
     return c.offer.lines.map(function(l){
@@ -1690,7 +1853,8 @@
     var act=t.getAttribute("data-ob"), id=t.getAttribute("data-id"), arg=t.getAttribute("data-arg");
     var c=cur();
     switch(act){
-      case "open": ui.openId=id; var co=cust(id); ui.step=co?defaultStep(co):0; ui.draftNew=false; ui.activeLayer=null; ui.zonesOpen={1:true,3:true}; OnSite.go("sales"); break;
+      case "open": ui.openId=id; var co=cust(id); ui.step=co?defaultStep(co):0; ui.draftNew=false; ui.activeLayer=null; ui.zonesOpen={1:true,3:true}; ui.modOpen={}; OnSite.go("sales"); break;
+      case "modExpand": { if(c&&c.offer){ ui.modOpen=ui.modOpen||{}; ui.modOpen[id]=!ui.modOpen[id]; refreshTiered(c); } break; }
       case "cliScope": { if(c){ var cit=(c.checklist||[]).filter(function(x){return x.id===id;})[0]; if(cit){ cit.scope=arg; save(); refreshChecklist(c); if(arg==="in" && ({lawn:1,hedges:1,beds:1,snow:1,paths:1,garage:1,facade:1})[cit.id]) toast("Tips: tegn denne sonen på kartet med «Tegn sone»"); } } break; }
       case "cliZone": { ui.zonesOpen[id]=!ui.zonesOpen[id]; if(c) setHTML("ob-checklist", checklistRowsHTML(c)); break; }
       case "weekStep": { var base=(ui.refMs!=null?ui.refMs:Date.now()); ui.refMs=base+parseInt(arg,10)*7*86400000; render(); break; }
@@ -1754,6 +1918,9 @@
     if(name==="zoneService"){ if(pendingZone){ pendingZone.service=val; pendingZone.method=defaultMethod(val); obSheet(zoneSheetHTML(pendingZone)); } return; }
     if(!c) return;
     if(name==="cover"){ if(c.offer){ c.offer.coverNote=val; save(); } return; }
+    if(name==="modIncl"){ if(c.offer){ var mm=c.offer.modules.filter(function(x){return x.service===id;})[0]; if(mm){ mm.included=f.checked; rebuildOfferFlat(c); save(); refreshTiered(c); toast(mm.included?(mm.title+" inkludert"):(mm.title+" valgt bort — kan sies opp separat")); } } return; }
+    if(name==="modStart"){ if(c.offer){ var msd=c.offer.modules.filter(function(x){return x.service===id;})[0]; if(msd){ msd.startDate=val; save(); } } return; }
+    if(name==="lineFinal"){ if(c.offer){ var lf=findOfferLine(c,id); if(lf){ var v=Math.round(parseFloat(val)||0); lf.final=v; lf.overridden=(v!==lf.computed); lf.price=v; rebuildOfferFlat(c); save(); refreshTiered(c); } } return; }
     if(name==="clival"){ var ci=(c.checklist||[]).filter(function(x){return x.id===id;})[0]; if(ci){ ci.value=val; save(); } return; }
     if(name==="clibool"){ var cb=(c.checklist||[]).filter(function(x){return x.id===id;})[0]; if(cb){ cb.value=f.checked; save(); } return; }
     if(name==="bcomment"){ var l=findLine(c,id); if(l){ l.review.comment=val; save(); } return; }
