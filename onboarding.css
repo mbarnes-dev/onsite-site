@@ -292,3 +292,12 @@
 .ob-mlper{font-size:11px;color:var(--muted)}
 .ob-overnote{font-size:10.5px;font-weight:700;color:var(--amber);background:var(--amber-l);padding:1px 6px;border-radius:999px;width:100%;text-align:right}
 .ob-zlink{font-size:11px;cursor:help}
+
+/* ===== Phase 3: "Sett opp nytt bygg" registry intake ===== */
+.ob-nbres{display:flex;flex-direction:column;gap:6px;margin-top:10px;max-height:340px;overflow:auto}
+.ob-nbrow{text-align:left;border:1px solid var(--line);background:#fff;border-radius:11px;padding:9px 11px;cursor:pointer;transition:background .12s,border-color .12s}
+.ob-nbrow:hover{background:var(--teal-l);border-color:var(--teal)}
+.ob-nbrow.faint{opacity:.6}
+.ob-nbrow .nm{font-weight:700;font-size:13.5px;color:var(--ink)}
+.ob-nbrow .ad{font-size:11.5px;color:var(--muted);margin-top:1px}
+.ob-nbboard{font-size:12px;color:var(--muted);margin:6px 0 2px}

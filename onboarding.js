@@ -189,7 +189,7 @@
   }
 
   /* ---------- ui (ephemeral, not persisted) ---------- */
-  var ui = { openId:null, step:0, activeLayer:null, draftNew:false, zonesOpen:{}, refMs:null, modOpen:{} };
+  var ui = { openId:null, step:0, activeLayer:null, draftNew:false, zonesOpen:{}, refMs:null, modOpen:{}, newBuilding:null };
 
   /* ---------- record helpers ---------- */
   function customers(){ var st=S(); if(!st.customers) st.customers=[]; return st.customers; }
@@ -726,6 +726,67 @@
   }
 
   /* ===========================================================================
+     PUBLIC REGISTRY (Phase 3) — geonorge + Brønnøysund, no key, CORS-open.
+     Probed shapes 2026-06; all parsers tolerate missing fields, cb(null) on error.
+     =========================================================================== */
+  var BRREG="https://data.brreg.no/enhetsregisteret/api/enheter";
+  function titleCase(s){ return (s||"").toLowerCase()
+    .replace(/\b([a-zæøå])/g,function(m,c){return c.toUpperCase();})
+    .replace(/\bAs\b/g,"AS").replace(/\bUsbl\b/g,"USBL").replace(/\bObos\b/g,"OBOS").replace(/\bKpmg\b/g,"KPMG").replace(/\bBbl\b/g,"BBL").replace(/\bSa\b/g,"SA").replace(/\bDa\b/g,"DA"); }
+  function personName(p){ var n=(p&&p.navn)||{}; return [n.fornavn,n.mellomnavn,n.etternavn].filter(Boolean).join(" "); }
+  function brregSearch(name, cb){
+    fetch(BRREG+"?navn="+encodeURIComponent(name)+"&size=10").then(function(r){return r.json();})
+      .then(function(j){ cb(((j._embedded||{}).enheter)||[]); }).catch(function(){ cb(null); });
+  }
+  function brregRoles(orgnr, cb){
+    fetch(BRREG+"/"+encodeURIComponent(orgnr)+"/roller").then(function(r){return r.json();})
+      .then(function(j){ cb(parseRoles(j)); }).catch(function(){ cb(null); });
+  }
+  // names only — never retain fodselsdato (privacy / data minimization)
+  function parseRoles(j){
+    var out={forvalter:null, styreleder:null, styremedlemmer:[], revisor:null};
+    (((j||{}).rollegrupper)||[]).forEach(function(g){
+      var gk=((g.type||{}).kode)||"";
+      (g.roller||[]).forEach(function(r){
+        var rk=((r.type||{}).kode)||"";
+        var nm = r.enhet ? titleCase((r.enhet.navn||[]).join(" ")) : r.person ? personName(r.person) : null;
+        if(!nm) return;
+        if(gk==="FFØR" && !out.forvalter) out.forvalter=nm;
+        else if(gk==="STYR" && rk==="LEDE" && !out.styreleder) out.styreleder=nm;
+        else if(gk==="STYR" && rk==="MEDL") out.styremedlemmer.push(nm);
+        else if(gk==="REVI" && !out.revisor) out.revisor=nm;
+      });
+    });
+    return out;
+  }
+  function geoSearch(q, cb){
+    fetch("https://ws.geonorge.no/adresser/v1/sok?sok="+encodeURIComponent(q)+"&treffPerSide=10&fuzzy=true")
+      .then(function(r){return r.json();}).then(function(j){ cb((j.adresser)||[]); }).catch(function(){ cb(null); });
+  }
+  function parseAddr(a){
+    return { adressetekst:a.adressetekst||"", postnummer:a.postnummer||"", poststed:a.poststed||"",
+      kommunenavn:a.kommunenavn||"", kommunenummer:a.kommunenummer||"",
+      gnr:(a.gardsnummer!=null?String(a.gardsnummer):""), bnr:(a.bruksnummer!=null?String(a.bruksnummer):""),
+      lat:(a.representasjonspunkt||{}).lat, lon:(a.representasjonspunkt||{}).lon,
+      units:((a.bruksenhetsnummer)||[]).length };
+  }
+  function geoLookup(q, cb){ geoSearch(q, function(list){ cb(list===null?null:(list[0]?parseAddr(list[0]):false)); }); }
+  // brreg forretningsadresse is often the c/o-forvalter address — strip c/o lines for a cleaner geocode
+  function brregStreet(fa){ if(!fa) return ""; var lines=(fa.adresse||[]).filter(function(s){return !/^c\/o/i.test(s||"");}); return (lines[lines.length-1]||"")+(fa.postnummer?(", "+fa.postnummer+" "+(fa.poststed||"")):""); }
+
+  // Norway · residential CompliancePack (doc 23) — derived on create, not fetched
+  var COMPLIANCE_PACK_NO_RESIDENTIAL = [
+    {label:"Brannvern – HMS-runde",            interval:"Kvartalsvis"},
+    {label:"El-kontroll (NEK 405)",            interval:"~5 år"},
+    {label:"Lekeplasskontroll (NS-EN 1176)",   interval:"Årlig"},
+    {label:"Heiskontroll",                     interval:"2-årlig"},
+    {label:"Legionella – risikovurdering",     interval:"Årlig (ved fellesdusj)"},
+    {label:"Radonmåling",                      interval:"Hvert 5. år"},
+    {label:"Oljetank – kontroll/sanering",     interval:"Ved behov"}
+  ];
+  function complianceClone(){ return COMPLIANCE_PACK_NO_RESIDENTIAL.map(function(r){ return {label:r.label, interval:r.interval}; }); }
+
+  /* ===========================================================================
      OFFER
      =========================================================================== */
   function perL(offer){ return (offer && offer.period==="mnd") ? "mnd" : "år"; }
@@ -801,23 +862,27 @@
     if(c.checklist && c.checklist.length){
       // ---- driver model (zones + counts + kept non-spatial checklist lines) ----
       var n=driverCounts(c), z=zoneAgg(c), id=c.id+":";
-      // base
+      // base — the standard vaktmester round is always offered; teknisk only when captured/priced
       lines.push(withPrev(oLine({id:id+"base:round", service:"base", role:"round", label:"Ukentlig vaktmesterrunde + tilsyn", emoji:"🧰", qty:1, unit:"runde", rate:RATES.base.vaktmester_round_mnd, cadence:"Ukentlig", computed:RATES.base.vaktmester_round_mnd})));
-      lines.push(withPrev(oLine({id:id+"base:teknisk", service:"base", role:"teknisk", label:"Teknisk rom – tilsyn", emoji:"🔧", cadence:"Månedlig", computed:keptVal(c,"water",491)})));
-      // cleaning (computed from counts) + mats (kept, partner)
-      var cl=Math.round(n.oppganger*n.floors*RATES.cleaning.per_oppgang_floor_week*WPM);
-      lines.push(withPrev(oLine({id:id+"cleaning:opp", service:"cleaning", role:"opp", label:"Trappevask "+n.oppganger+" oppg × "+n.floors+" etg", emoji:"🧹", qty:n.oppganger*n.floors, unit:"etg/uke", rate:RATES.cleaning.per_oppgang_floor_week, cadence:"Ukentlig", computed:cl})));
-      if(n.heiser>0){ var he=Math.round(n.heiser*RATES.cleaning.per_heis_week*WPM);
-        lines.push(withPrev(oLine({id:id+"cleaning:heis", service:"cleaning", role:"heis", label:"Heisrenhold "+n.heiser+" heis", emoji:"🛗", qty:n.heiser, unit:"heis/uke", rate:RATES.cleaning.per_heis_week, cadence:"Ukentlig", computed:he}))); }
-      lines.push(withPrev(oLine({id:id+"cleaning:mats", service:"cleaning", role:"mats", label:"Inngangsmatter (8 stk)", emoji:"🧺", cadence:"Månedlig", computed:keptVal(c,"mats",1200), deliveredBy:"partner", partnerName:"Dørmatte Gutta AS"})));
-      // snow (machine zone + hand by entryways)
+      var tek=keptVal(c,"water",0); if(tek>0) lines.push(withPrev(oLine({id:id+"base:teknisk", service:"base", role:"teknisk", label:"Teknisk rom – tilsyn", emoji:"🔧", cadence:"Månedlig", computed:tek})));
+      // counts only when actually captured (a fresh building stays low/empty until the rep enters them — no fabricated fallbacks)
+      var oppCaptured = ckVal(c,"oppganger")!=null && ckVal(c,"oppganger")!=="";
+      var entryCaptured = (c.markers||[]).some(function(m){return m.layer==="entrance";}) || oppCaptured;
+      if(oppCaptured){
+        var cl=Math.round(n.oppganger*n.floors*RATES.cleaning.per_oppgang_floor_week*WPM);
+        lines.push(withPrev(oLine({id:id+"cleaning:opp", service:"cleaning", role:"opp", label:"Trappevask "+n.oppganger+" oppg × "+n.floors+" etg", emoji:"🧹", qty:n.oppganger*n.floors, unit:"etg/uke", rate:RATES.cleaning.per_oppgang_floor_week, cadence:"Ukentlig", computed:cl})));
+        if(n.heiser>0){ var he=Math.round(n.heiser*RATES.cleaning.per_heis_week*WPM);
+          lines.push(withPrev(oLine({id:id+"cleaning:heis", service:"cleaning", role:"heis", label:"Heisrenhold "+n.heiser+" heis", emoji:"🛗", qty:n.heiser, unit:"heis/uke", rate:RATES.cleaning.per_heis_week, cadence:"Ukentlig", computed:he}))); }
+      }
+      var mats=keptVal(c,"mats",0); if(mats>0) lines.push(withPrev(oLine({id:id+"cleaning:mats", service:"cleaning", role:"mats", label:"Inngangsmatter (8 stk)", emoji:"🧺", cadence:"Månedlig", computed:mats, deliveredBy:"partner", partnerName:"Dørmatte Gutta AS"})));
+      // snow: machine always priced from zone area; hand only when entryways captured
       if(z.snowMachine>0){ lines.push(withPrev(oLine({id:id+"snow:machine", service:"snow", role:"machine", label:"Maskinell brøyting", emoji:"❄️", qty:z.snowMachine, unit:"m²", rate:RATES.snow.machine_m2_mnd, cadence:"Per snøfall >5 cm", computed:z.snowMachine*RATES.snow.machine_m2_mnd, zoneId:z.firstId("snow","machine")}))); }
-      lines.push(withPrev(oLine({id:id+"snow:hand", service:"snow", role:"hand", label:"Manuell rydding + strøing ("+n.entryways+" innganger)", emoji:"🧂", qty:n.entryways, unit:"inngang", rate:RATES.snow.hand_per_entry_mnd, cadence:"Per snøfall / is", computed:n.entryways*RATES.snow.hand_per_entry_mnd, zoneId:z.firstId("snow","hand")})));
-      // grass (mow zones + edge)
+      if(entryCaptured) lines.push(withPrev(oLine({id:id+"snow:hand", service:"snow", role:"hand", label:"Manuell rydding + strøing ("+n.entryways+" innganger)", emoji:"🧂", qty:n.entryways, unit:"inngang", rate:RATES.snow.hand_per_entry_mnd, cadence:"Per snøfall / is", computed:n.entryways*RATES.snow.hand_per_entry_mnd, zoneId:z.firstId("snow","hand")})));
+      // grass (mow + edge zones)
       if(z.mow>0){ lines.push(withPrev(oLine({id:id+"grass:mow", service:"grass", role:"mow", label:"Gressklipping", emoji:"🌿", qty:z.mow, unit:"m²", rate:RATES.grass.mow_m2_mnd, cadence:"Ukentlig i vekstsesong", computed:z.mow*RATES.grass.mow_m2_mnd, zoneId:z.firstId("grass","mow")}))); }
       if(z.edge>0){ lines.push(withPrev(oLine({id:id+"grass:edge", service:"grass", role:"edge", label:"Kantklipp", emoji:"✂️", qty:z.edge, unit:"m", rate:RATES.grass.edge_m_mnd, cadence:"Sesong", computed:z.edge*RATES.grass.edge_m_mnd, zoneId:z.firstId("grass","edge")}))); }
-      // greenery (kept spraying portion recurring; hedge/beds → option lines)
-      lines.push(withPrev(oLine({id:id+"greenery:ovrig", service:"greenery", role:"ovrig", label:"Grøntområde – sprøyting, bed, trær", emoji:"🌳", cadence:"Sesong", computed:keptVal(c,"weeds",2667)})));
+      // greenery kept spraying only when captured/priced; hedge/beds → option lines
+      var grnt=keptVal(c,"weeds",0); if(grnt>0) lines.push(withPrev(oLine({id:id+"greenery:ovrig", service:"greenery", role:"ovrig", label:"Grøntområde – sprøyting, bed, trær", emoji:"🌳", cadence:"Sesong", computed:grnt})));
       z.hedgeZones.forEach(function(zz,i){ var yr=Math.round((zz.length_m||0)*RATES.greenery.hedge_m_year);
         optionLines.push(oLine({id:id+"opt:hedge"+i, service:"greenery", role:"hedge", label:"Beskjæring hekk ("+zz.label+")", emoji:"🌳", qty:zz.length_m, unit:"m", rate:RATES.greenery.hedge_m_year, cadence:"2×/år", computed:yr, oneOff:false, zoneId:zz.id})); zz.priceLineId=id+"opt:hedge"+i; });
       z.bedZones.forEach(function(zz,i){ var yr=Math.round((zz.area_m2||0)*RATES.greenery.gartner_bed_m2_year);
@@ -1280,6 +1345,7 @@
 
   function renderSales(cols){
     cols.className="cols";
+    if(ui.newBuilding){ cols.innerHTML=renderNewBuilding(); return; }
     var c=cur();
     if(!c){ cols.innerHTML=pipelineHTML(); return; }
     cols.innerHTML=wizardHTML(c);
@@ -1304,11 +1370,143 @@
     return '<div class="ob-head"><div class="dot">🧭</div><div><h2>Sales → Onboarding</h2>'
       +'<div class="sub">One growing record + one growing map per client. Prospect → Live.</div></div>'
       +'<div class="spacer"></div>'
-      +'<button class="ob-btn primary" data-ob="new">＋ New customer</button>'
-      +'<button class="ob-btn ghost" data-ob="reseed">↺ Demo client</button>'
+      +'<button class="ob-btn primary" data-ob="newBuilding">➕ Sett opp nytt bygg</button>'
+      +'<button class="ob-btn ghost" data-ob="new">＋ Tomt (manuelt)</button>'
+      +'<button class="ob-btn ghost" data-ob="reseed">↺ Demo</button>'
       +(list.length?'<button class="ob-btn ghost" data-ob="clearCustomers">🗑 Clear</button>':'')
       +'</div>'
       +'<div class="ob-pipe">'+cards+'</div>';
+  }
+
+  /* ===== Phase 3: "Sett opp nytt bygg" — live registry intake ===== */
+  function startNewBuilding(){ ui.newBuilding={mode:"name", query:"", results:null, loading:false, error:null, prefill:null}; ui.openId=null; OnSite.go("sales"); }
+  function renderNewBuilding(){
+    var nb=ui.newBuilding;
+    var tab=function(m,label){ return '<button class="ob-mini'+(nb.mode===m?' on':'')+'" data-ob="nbMode" data-arg="'+m+'">'+label+'</button>'; };
+    var ph = nb.mode==="name" ? "f.eks. Holtet Horisont, Solbakken borettslag…" : "f.eks. Kongsveien 82A, Oslo";
+    var resultsBlock="";
+    if(nb.loading) resultsBlock='<div class="empty">Henter fra offentlig register…</div>';
+    else if(nb.error) resultsBlock='<div class="ob-callout">⚠️ '+esc(nb.error)+' <button class="ob-mini" data-ob="nbManual">Fyll inn manuelt</button></div>';
+    else if(nb.results) resultsBlock=nbResultsHTML(nb);
+    return '<div class="ob-wiz">'
+      +'<button class="ob-back" data-ob="nbCancel">← Tilbake til kunder</button>'
+      +'<div class="ob-title"><h2>Sett opp nytt bygg</h2><span class="ob-step">offentlig register</span></div>'
+      +'<div class="ob-grid split">'
+      +  '<div class="card"><div class="ct">Søk opp bygget</div>'
+      +    '<p class="muted" style="font-size:12.5px;margin:0 0 9px">Fra navn eller adresse henter vi org, forvalter, styre, gnr/bnr og koordinater (geonorge + Brønnøysund) — alt redigerbart, du bekrefter på befaring.</p>'
+      +    '<div class="ob-cat-chips" style="margin-bottom:8px">'+tab("name","🏢 Søk på navn")+tab("address","📍 Søk på adresse")+'</div>'
+      +    '<div style="display:flex;gap:8px"><input id="nb_q" value="'+esc(nb.query||"")+'" placeholder="'+ph+'" style="flex:1"><button class="ob-btn primary" data-ob="nbSearch">Søk</button></div>'
+      +    '<div class="ob-bar" style="margin-top:8px"><button class="ob-btn ghost" data-ob="nbManual">Fyll inn manuelt →</button></div>'
+      +    resultsBlock
+      +  '</div>'
+      +  '<div>'+ (nb.prefill ? nbConfirmHTML(nb.prefill) : '<div class="card"><div class="empty">Velg et treff til venstre — eller «Fyll inn manuelt».</div></div>') +'</div>'
+      +'</div></div>';
+  }
+  function nbResultsHTML(nb){
+    var items=nb.results.items||[];
+    if(!items.length) return '<div class="empty" style="margin-top:8px">Ingen treff. Prøv et annet søk eller «Fyll inn manuelt».</div>';
+    if(nb.results.type==="brreg"){
+      return '<div class="ob-nbres">'+items.map(function(e,i){
+        var of=(e.organisasjonsform||{}); var nk=(e.naeringskode1||{}).kode||"";
+        var resident = nk==="97.001";
+        return '<button class="ob-nbrow'+(resident?'':' faint')+'" data-ob="nbPick" data-arg="'+i+'">'
+          +'<div class="nm">'+esc(titleCase(e.navn))+'</div>'
+          +'<div class="ad">org '+esc(e.organisasjonsnummer)+' · '+esc(of.beskrivelse||of.kode||"")+(nk?' · '+esc(nk):'')+'</div></button>';
+      }).join("")+'</div>';
+    }
+    return '<div class="ob-nbres">'+items.map(function(a,i){
+      return '<button class="ob-nbrow" data-ob="nbPick" data-arg="'+i+'">'
+        +'<div class="nm">'+esc(a.adressetekst)+'</div>'
+        +'<div class="ad">'+esc((a.postnummer||"")+" "+(a.poststed||""))+' · '+esc(a.kommunenavn||"")+' · gnr '+esc(String(a.gardsnummer||"?"))+'/bnr '+esc(String(a.bruksnummer||"?"))+' · '+(((a.bruksenhetsnummer)||[]).length)+' enh.</div></button>';
+    }).join("")+'</div>';
+  }
+  function nbConfirmHTML(p){
+    function f(id,label,val,ph){ return '<label>'+label+'</label><input id="'+id+'" value="'+esc(val==null?"":String(val))+'"'+(ph?' placeholder="'+ph+'"':'')+'>'; }
+    var board = (p.styremedlemmer&&p.styremedlemmer.length) ? '<div class="ob-nbboard">Styremedlemmer: '+p.styremedlemmer.map(esc).join(", ")+'</div>' : '';
+    return '<div class="card"><div class="ct">Bekreft & rediger <span class="muted" style="font-weight:600">· '+esc(p.source||"register")+'</span></div>'
+      + f("nb_name","Navn",p.name)
+      + '<div class="row2" style="display:flex;gap:8px"><div style="flex:1">'+f("nb_orgnr","Org.nr",p.orgnr)+'</div><div style="flex:1.4">'+f("nb_orgform","Org.form",p.orgform)+'</div></div>'
+      + '<div class="row2" style="display:flex;gap:8px"><div style="flex:2">'+f("nb_addr","Adresse",p.addr,"gate + husnr")+'</div><button class="ob-btn ghost" data-ob="nbGeocode" style="align-self:flex-end">📍 Geokod</button></div>'
+      + '<div class="row2" style="display:flex;gap:8px"><div style="flex:1">'+f("nb_postnr","Postnr",p.postnummer)+'</div><div style="flex:1.6">'+f("nb_poststed","Poststed",p.poststed)+'</div></div>'
+      + '<div class="row2" style="display:flex;gap:8px"><div style="flex:1.6">'+f("nb_kommune","Kommune",p.kommunenavn)+'</div><div style="flex:1">'+f("nb_gnr","gnr",p.gnr)+'</div><div style="flex:1">'+f("nb_bnr","bnr",p.bnr)+'</div></div>'
+      + '<div class="row2" style="display:flex;gap:8px"><div style="flex:1">'+f("nb_lat","Lat",p.lat!=null?(+p.lat).toFixed(5):"")+'</div><div style="flex:1">'+f("nb_lon","Lon",p.lon!=null?(+p.lon).toFixed(5):"")+'</div><div style="flex:1">'+f("nb_units","Enheter (ca.)",p.units||"")+'</div></div>'
+      + f("nb_forvalter","Forvalter (FFØR)",p.forvalter,"OBOS / USBL / annen")
+      + '<div class="row2" style="display:flex;gap:8px"><div style="flex:1.4">'+f("nb_styreleder","Styreleder",p.styreleder)+'</div><div style="flex:1">'+f("nb_revisor","Revisor",p.revisor)+'</div></div>'
+      + board
+      + f("nb_year","Byggeår (manuelt — ikke i API)",p.buildYear,"f.eks. 2018")
+      + '<div class="ob-callout" style="font-size:11.5px">📋 Compliance-pakke (Norge · bolig) seedes automatisk: brann, el-kontroll ~5 år, lekeplass årlig, heis 2-årlig, legionella, radon, oljetank.</div>'
+      + '<div class="ob-bar"><button class="ob-btn green" data-ob="nbCreate">Opprett bygg → befaring</button></div></div>';
+  }
+  function nbRender(){ var cols=document.getElementById("cols"); if(cols && ui.newBuilding) cols.innerHTML=renderNewBuilding(); }
+  function nbSearch(){
+    var nb=ui.newBuilding; if(!nb) return;
+    var q=val("nb_q"); if(!q){ toast("Skriv et navn eller en adresse"); return; }
+    nb.query=q; nb.results=null; nb.error=null; nb.prefill=null; nb.loading=true; nbRender();
+    if(nb.mode==="name"){
+      brregSearch(q, function(list){ nb.loading=false; if(list===null) nb.error="Brønnøysund utilgjengelig (CORS/nett) — søk på adresse eller fyll inn manuelt"; else nb.results={type:"brreg", items:list}; nbRender(); });
+    } else {
+      geoSearch(q, function(list){ nb.loading=false; if(list===null) nb.error="geonorge utilgjengelig — fyll inn manuelt"; else nb.results={type:"geo", items:list}; nbRender(); });
+    }
+  }
+  function prefillFromGeo(a){ var p=parseAddr(a); return { source:"geonorge", name:"", orgnr:"", orgform:"Eierseksjonssameie",
+    addr:p.adressetekst, postnummer:p.postnummer, poststed:p.poststed, kommunenavn:p.kommunenavn, kommunenummer:p.kommunenummer,
+    gnr:p.gnr, bnr:p.bnr, lat:p.lat, lon:p.lon, units:p.units, forvalter:"", styreleder:"", styremedlemmer:[], revisor:"", naering:"", buildYear:"" }; }
+  function prefillFromBrreg(e){ var of=(e.organisasjonsform||{}), fa=e.forretningsadresse||{};
+    return { source:"Brønnøysund", name:titleCase(e.navn), orgnr:e.organisasjonsnummer, orgform:(of.beskrivelse||of.kode||""),
+      naering:(e.naeringskode1||{}).kode||"", addr:"", postnummer:fa.postnummer||"", poststed:fa.poststed||"",
+      kommunenavn:fa.kommune||"", kommunenummer:fa.kommunenummer||"", gnr:"", bnr:"", lat:null, lon:null, units:0,
+      forvalter:"", styreleder:"", styremedlemmer:[], revisor:"", buildYear:"", _street:brregStreet(fa) }; }
+  function applyAddr(p,res){ p.addr=res.adressetekst; p.postnummer=res.postnummer; p.poststed=res.poststed; p.kommunenavn=res.kommunenavn||p.kommunenavn; p.kommunenummer=res.kommunenummer||p.kommunenummer; p.gnr=res.gnr; p.bnr=res.bnr; p.lat=res.lat; p.lon=res.lon; p.units=res.units; }
+  function nbPick(idx){
+    var nb=ui.newBuilding; if(!nb||!nb.results) return; var it=(nb.results.items||[])[idx]; if(!it) return;
+    if(nb.results.type==="geo"){ nb.prefill=prefillFromGeo(it); nbRender(); return; }
+    var p=prefillFromBrreg(it); nb.prefill=p; nb.loading=false; nbRender();
+    brregRoles(it.organisasjonsnummer, function(roles){
+      if(roles){ p.forvalter=roles.forvalter||""; p.styreleder=roles.styreleder||""; p.styremedlemmer=roles.styremedlemmer||[]; p.revisor=roles.revisor||""; }
+      if(p._street){ geoLookup(p._street, function(res){ if(res) applyAddr(p,res); nbRender(); }); } else nbRender();
+    });
+  }
+  function syncPrefillFromForm(){
+    var nb=ui.newBuilding; if(!nb||!nb.prefill) return; var p=nb.prefill;
+    p.name=val("nb_name")||p.name; p.orgnr=val("nb_orgnr"); p.orgform=val("nb_orgform"); p.addr=val("nb_addr");
+    p.postnummer=val("nb_postnr"); p.poststed=val("nb_poststed"); p.kommunenavn=val("nb_kommune"); p.gnr=val("nb_gnr"); p.bnr=val("nb_bnr");
+    var la=parseFloat(val("nb_lat")), lo=parseFloat(val("nb_lon")); if(!isNaN(la)) p.lat=la; if(!isNaN(lo)) p.lon=lo;
+    p.units=parseInt(val("nb_units"),10)||p.units; p.forvalter=val("nb_forvalter"); p.styreleder=val("nb_styreleder"); p.revisor=val("nb_revisor"); p.buildYear=val("nb_year");
+  }
+  function nbGeocode(){
+    var nb=ui.newBuilding; if(!nb||!nb.prefill) return; syncPrefillFromForm();
+    var q=val("nb_addr"); if(!q){ toast("Skriv en adresse å geokode"); return; }
+    toast("Geokoder…");
+    geoLookup(q, function(res){
+      if(res===null){ toast("geonorge utilgjengelig"); return; }
+      if(!res){ toast("Fant ikke adressen — prøv med husnummer/bokstav"); return; }
+      applyAddr(nb.prefill,res); nbRender(); toast("📍 "+res.adressetekst+" · gnr "+res.gnr+"/"+res.bnr+" · "+res.units+" enh.");
+    });
+  }
+  function nbManual(){ var nb=ui.newBuilding; if(!nb) return; nb.error=null; nb.results=null; nb.loading=false;
+    nb.prefill={source:"manuelt", name:"", orgnr:"", orgform:"Borettslag", addr:"", postnummer:"", poststed:"", kommunenavn:"", kommunenummer:"", gnr:"", bnr:"", lat:59.9139, lon:10.7522, units:"", forvalter:"", styreleder:"", styremedlemmer:[], revisor:"", naering:"", buildYear:""}; nbRender(); }
+  function nbCreate(){
+    var nb=ui.newBuilding; if(!nb) return; syncPrefillFromForm(); var p=nb.prefill||{};
+    if(!p.name){ toast("Navn må fylles ut"); var e=document.getElementById("nb_name"); if(e) e.focus(); return; }
+    var lat=(p.lat!=null&&!isNaN(p.lat))?p.lat:59.9139, lon=(p.lon!=null&&!isNaN(p.lon))?p.lon:10.7522;
+    var contacts=[]; if(p.styreleder) contacts.push({name:p.styreleder, role:"Styreleder", email:""});
+    (p.styremedlemmer||[]).forEach(function(nm){ contacts.push({name:nm, role:"Styremedlem", email:""}); });
+    if(!contacts.length) contacts.push({name:"", role:"Styreleder", email:""});
+    var addr=p.addr+(p.postnummer?(", "+p.postnummer+" "+(p.poststed||"")):"");
+    var c={ id:"cust"+uid(), name:p.name, addr:addr, gnr:p.gnr||"", bnr:p.bnr||"",
+      profile:"Residential — association", buildYear:parseInt(p.buildYear,10)||"", size:0,
+      orgnr:p.orgnr||"", orgform:p.orgform||"", naering:p.naering||"", kommune:p.kommunenavn||"", kommunenummer:p.kommunenummer||"", units:parseInt(p.units,10)||0,
+      manager:p.forvalter||"", revisor:p.revisor||"",
+      contacts:contacts, meetingTime:"", stage:"Surveyed", period:"mnd",
+      requestedScope:[], layers:["entrance","stairwell","grass","greenery","snow","gritting","tech","fire"],
+      systems:[], compliance:complianceClone(), terms:null,
+      center:{lat:lat, lon:lon, zoom:18}, baseLayer:"topo", accessNote:"",
+      markers:[], zones:[], checklist:instantiateChecklist("Residential — association"),
+      offer:null, offerHistory:[], changeRequests:[], buildingId:null, handover:null, enrichment:false,
+      log:[{ts:nowStr(), text:"Opprettet fra offentlig register ("+(p.source||"register")+") — verifiseres på befaring"}] };
+    customers().push(c); save();
+    ui.newBuilding=null; ui.openId=c.id; ui.step=1; ui.draftNew=false; ui.activeLayer=null; ui.zonesOpen={1:true,3:true}; ui.modOpen={};
+    toast("✅ Bygg opprettet: "+p.name+" — klar for befaring"); OnSite.go("sales");
   }
 
   function stagesRailHTML(c){
@@ -1423,7 +1621,7 @@
     }).join("");
   }
   function stepWalk(c){
-    var hasZones=(c.markers||[]).some(function(m){return !LAYERS[m.layer].recordOnly;}) || (c.checklist||[]).some(function(it){return it.scope==="in";});
+    var hasZones=(c.markers||[]).some(function(m){return !LAYERS[m.layer].recordOnly;}) || (c.checklist&&c.checklist.length) || (c.zones&&c.zones.length);
     var perWord = c.period==="mnd" ? "måned" : "år";
     return '<div class="ob-grid split">'
       +'<div>'
@@ -1865,6 +2063,14 @@
       case "back": ui.openId=null; ui.draftNew=false; repaintSales(); break;
       case "step": { var n=parseInt(id,10); if(c && n<=maxStep(c)){ ui.step=n; ui.activeLayer=null; repaintSales(); } break; }
       case "new": startNew(); break;
+      case "newBuilding": startNewBuilding(); break;
+      case "nbMode": { if(ui.newBuilding){ ui.newBuilding.mode=arg; ui.newBuilding.results=null; ui.newBuilding.error=null; nbRender(); } break; }
+      case "nbSearch": nbSearch(); break;
+      case "nbPick": nbPick(parseInt(arg,10)); break;
+      case "nbGeocode": nbGeocode(); break;
+      case "nbManual": nbManual(); break;
+      case "nbCreate": nbCreate(); break;
+      case "nbCancel": ui.newBuilding=null; repaintSales(); break;
       case "prefill": prefillForm(); break;
       case "savePrep": savePrep(); break;
       case "locatePrep": { var a=val("p_addr"); var cc=cur(); if(cc){ cc.addr=a; locate(cc,a);} break; }
