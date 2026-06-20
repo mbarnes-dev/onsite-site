@@ -20,6 +20,7 @@
   function kr(n){ return "kr " + (Math.round(n)||0).toLocaleString("no"); }
   function nowStr(){ try{ return new Date().toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"}); }catch(e){ return "today"; } }
   function clone(o){ return JSON.parse(JSON.stringify(o)); }
+  var FM_SELSKAP = "Bygårdsservice AS"; // placeholder FM company on board leave-behind (doc 50)
 
   /* ---------- service-type catalog — PHM Norge's 8 categories (doc 36) ----------
      Markable sub-types (map layers) grouped under PHM's published service map.
@@ -279,7 +280,7 @@
     return {
       id:"holtet-cust",
       name:"Sameiet Holtet Horisont I", addr:"Kongsveien 82 A–G, 1177 Oslo", gnr:"154", bnr:"53",
-      profile:"Residential — association", buildYear:2018, size:0,
+      profile:"Residential — association", buildYear:2018, size:0, units:35,
       manager:"Boligbyggelaget USBL", revisor:"KPMG AS",
       contacts:[
         {name:"Egil Svoren", role:"Styreleder", email:"styret@holtet-horisont-1.no"},
@@ -1890,7 +1891,7 @@
       +     '<div class="card"><div class="ct">Cover note</div><textarea data-obf="cover" rows="4">'+esc(c.offer.coverNote||"")+'</textarea></div>'
       +     '<div class="card"><div class="ct">Én relasjon, valgbare moduler</div>'
       +       '<p class="muted" style="font-size:12.5px;margin:0 0 10px">Hver tjeneste prises og kan sies opp <b>separat</b> — misnøye med snø feller ikke hele avtalen. Board får PDF + live tilbud.</p>'
-      +       '<div class="ob-bar"><button class="ob-btn ghost" data-ob="printOffer">🖨 Print / Save as PDF</button></div></div>'
+      +       '<div class="ob-bar"><button class="ob-btn primary" data-ob="boardDoc">📄 Tilbud til styret</button><button class="ob-btn ghost" data-ob="printOffer">🖨 Print / Save as PDF</button></div></div>'
       +     (sent
             ? '<div class="ob-ok">✅ Sendt — board reviewer i <b>Board</b>-visningen.</div>'+boardEmailCard(c)
               +'<div class="ob-bar"><button class="ob-btn amber" data-ob="openBoard">Åpne board-visningen →</button></div>'
@@ -2181,6 +2182,94 @@
     setTimeout(function(){ window.print(); }, 60);
   }
 
+  /* ---- board leave-behind (doc 50): one-pager generated from offer + record ---- */
+  function moduleCovers(m){
+    var seen={}, out=[];
+    (m.lines||[]).forEach(function(l){ var lab=l.label||""; if(lab && !seen[lab]){ seen[lab]=1; out.push(lab); } });
+    return out.slice(0,4).join(", ") || "etter avtalt plan";
+  }
+  function boardOpCard(c, kind){
+    var elId="bs-opmap-"+kind, title=kind==="snow"?"Operasjonskart – Vinter":"Operasjonskart – Grønt";
+    return '<div class="ob-bopcard"><div class="ob-optitle">'+esc(title)+'</div>'
+      +'<div class="ob-opmap" id="'+elId+'"></div>'
+      +(kind==="snow"?'<div class="ob-opcap">'+esc(snowCaption(c))+'</div>':'')
+      + opLegend(kind)+'</div>';
+  }
+  function boardDocHTML(c){
+    var o=c.offer;
+    var meta=[];
+    if(c.addr) meta.push('<b>'+esc(c.addr)+'</b>');
+    if(c.gnr) meta.push('gnr '+esc(c.gnr)+'/bnr '+esc(c.bnr));
+    if(c.units) meta.push('~'+esc(String(c.units))+' boenheter');
+    if(c.manager) meta.push('forvalter: '+esc(c.manager));
+    var ct=(c.contacts&&c.contacts[0])||null;
+    var deliv='Levert av <b>'+esc(FM_SELSKAP)+'</b> · '+esc(nowStr())+(ct&&ct.name?(' · kontakt '+esc(ct.name)):'');
+
+    var incl=o.modules.filter(function(m){return m.included;});
+    var rows=incl.map(function(m){
+      return '<tr><td><b>'+esc(m.title)+'</b></td><td>'+esc(moduleCovers(m))+'</td><td>'+esc(moduleCadence(m))+'</td><td class="r">'+kr(m.subtotal)+'/mnd</td></tr>';
+    }).join("");
+    var table='<table class="ob-btab"><thead><tr><th>Modul</th><th>Hva det dekker</th><th>Frekvens</th><th class="r">Pris/mnd</th></tr></thead><tbody>'
+      +rows
+      +'<tr class="sum"><td><b>Sum fast</b></td><td></td><td></td><td class="r"><b>'+kr(o.totalMonthly)+'/mnd</b></td></tr>'
+      +'</tbody></table>';
+
+    var ol=(o.optionLines||[]);
+    var opt = ol.length ? '<p class="ob-bopt"><i>Opsjoner (faktureres ved bestilling): '
+      + ol.map(function(l){ var amt=(l.role==="hedge"||l.role==="bed")?(kr(l.final)+'/år'):(l.oneOff?(kr(l.final)+' pr gang'):(kr(l.final)+'/mnd')); return esc(l.label)+' '+amt; }).join(", ")
+      + '.</i></p>' : '';
+
+    var snowZones=(c.zones||[]).filter(function(z){return z.service==="snow";});
+    var grassZones=(c.zones||[]).filter(function(z){return z.service==="grass"||z.service==="greenery";});
+    var cards=(snowZones.length?boardOpCard(c,"snow"):"")+(grassZones.length?boardOpCard(c,"grass"):"");
+    var opSection = cards ? '<h2>Operasjonskart</h2>'
+      +'<p class="ob-bnote">Vedlagt: '+(snowZones.length?'Vinterkart — hvor vi brøyter maskinelt/for hånd og hvor snøen legges.':'')
+      +(grassZones.length?(snowZones.length?' ':'')+'Grøntkart — hva som klippes og hvilke bed gartner steller.':'')
+      +' Dette sikrer at <b>enhver som møter opp gjør jobben riktig første gang.</b></p>'
+      +'<div class="ob-bopmaps">'+cards+'</div>' : '';
+
+    return '<div class="ob-bdoc">'
+      +'<h1>Tilbud om eiendomsservice — '+esc(c.name)+'</h1>'
+      +'<div class="ob-bmeta">'+meta.join(' · ')+'</div>'
+      +'<div class="ob-bmeta sub">'+deliv+'</div>'
+      +'<h2>Hva dere får</h2>'
+      +'<p>En fast leverandør som er på stedet <b>hver uke</b> og kjenner bygget deres — ikke en plan laget på én årlig befaring. Tjenestene under leveres etter avtalt plan, dokumentert med bilde/bekreftelse for hver jobb.</p>'
+      +'<h2>Tjenester og pris <span class="ob-bmva">(alt eks. mva)</span></h2>'
+      + table + opt
+      +'<p class="ob-bsever"><b>Hver modul er en egen avtale</b> — dere kan justere eller si opp én tjeneste uten å røre resten.</p>'
+      + opSection
+      +'<h2>Slik vet dere at jobben er gjort</h2>'
+      +'<p>Hver oppgave logges med tidspunkt og bilde. Etter snøfall får dere en kort oppsummering av brøyteruta — før dere rekker å lure. Alt samlet ett sted, klart til årsmøtet.</p>'
+      +'<h2>Hvorfor oss</h2>'
+      +'<ul class="ob-bwhy">'
+      +'<li><b>På stedet hver uke</b> — vi ser bygget, ikke et øyeblikksbilde.</li>'
+      +'<li><b>Åpent og ærlig</b> — dere ser hver meter, hver pris, og at jobben ble gjort.</li>'
+      +'<li><b>Lovpålagt internkontroll</b> følges opp (brann, el, heis, lekeplass m.m.).</li>'
+      +'</ul></div>';
+  }
+  function showBoardDoc(c){
+    if(!c.offer){ toast("Beregn tilbudet først"); return; }
+    var host=document.getElementById("ob-board"); if(!host) return;
+    host.innerHTML='<div class="ob-board-bar"><button class="ob-btn ghost" data-ob="closeBoard">✕ Lukk</button>'
+      +'<div class="ob-board-title">Tilbud til styret</div>'
+      +'<button class="ob-btn primary" data-ob="printBoard">🖨 Skriv ut / PDF</button></div>'
+      +'<div class="ob-board-scroll">'+boardDocHTML(c)+'</div>';
+    host.classList.add("on"); host.setAttribute("aria-hidden","false");
+    buildOpMap(c,"snow","bs-opmap-snow"); buildOpMap(c,"grass","bs-opmap-grass");
+  }
+  function closeBoard(){
+    var host=document.getElementById("ob-board"); if(!host) return;
+    for(var k in opMaps){ if(k.indexOf("bs-")===0){ try{opMaps[k].remove();}catch(e){} delete opMaps[k]; } }
+    host.classList.remove("on"); host.setAttribute("aria-hidden","true"); host.innerHTML="";
+  }
+  function printBoard(){
+    for(var k in opMaps){ if(k.indexOf("bs-")===0){ try{opMaps[k].invalidateSize();}catch(e){} } }
+    document.body.classList.add("ob-print-board");
+    var cleanup=function(){ document.body.classList.remove("ob-print-board"); window.removeEventListener("afterprint", cleanup); };
+    window.addEventListener("afterprint", cleanup);
+    setTimeout(function(){ window.print(); }, 200);
+  }
+
   /* ===========================================================================
      DOM helpers
      =========================================================================== */
@@ -2191,6 +2280,7 @@
      EVENTS
      =========================================================================== */
   document.addEventListener("click", function(e){
+    if(e.target && e.target.id==="ob-board"){ closeBoard(); return; } // backdrop click closes board doc
     var t=e.target.closest("[data-ob]"); if(!t) return;
     var act=t.getAttribute("data-ob"), id=t.getAttribute("data-id"), arg=t.getAttribute("data-arg");
     var c=cur();
@@ -2241,6 +2331,9 @@
       case "openBoard": ui.boardOpen=(c?c.id:null); OnSite.go("board"); break;
       case "reviewNow": ui.boardOpen=(ui.boardOpen===id?null:id); OnSite.render(); break;
       case "printOffer": if(c) printOffer(c); break;
+      case "boardDoc": if(c) showBoardDoc(c); break;
+      case "printBoard": printBoard(); break;
+      case "closeBoard": closeBoard(); break;
       case "dec": { var bc=boardCustomer(); if(bc) setDecision(bc, id, arg); break; }
       case "approveAll": { var bc2=boardCustomer(); if(bc2) approveAll(bc2); break; }
       case "submitBoard": { var bc3=boardCustomer(); if(bc3) submitBoard(bc3); break; }
