@@ -2275,8 +2275,9 @@
   /* ---- Board view augmentation (reuse the Board role for review) ---- */
   function renderBoardExtras(cols){
     var awaiting=customers().filter(function(c){ return c.offer && (c.stage==="Offer sent"||c.stage==="Changes requested"); });
+    var snowreps=snowReportsListHTML();
     var proof=boardProofHTML();
-    if(!awaiting.length && !proof) return;
+    if(!awaiting.length && !proof && !snowreps) return;
     var host=document.createElement("div"); host.className="lane"; host.style.gridColumn="1 / -1";
     var html="";
     if(awaiting.length){ var c=awaiting[0];
@@ -2285,6 +2286,7 @@
         +'<button class="open" data-ob="reviewNow" data-id="'+c.id+'">Review the offer ▾</button></div>'
         + (ui.boardOpen===c.id ? boardReviewHTML(c) : "");
     }
+    html += snowreps;
     html += proof;
     host.innerHTML=html;
     cols.insertBefore(host, cols.firstChild);
@@ -2436,6 +2438,148 @@
     setTimeout(function(){ window.print(); }, 200);
   }
 
+  /* ---- post-snow Brøyterapport (doc 52/47, Phase 6b): compiled view over completionLog ---- */
+  function repTime(ts){ return new Date(ts).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}); }
+  function cap(s){ return s? s.charAt(0).toUpperCase()+s.slice(1) : s; }
+  function dateLongNo(key){ var d=new Date(key+"T00:00:00"); return cap(WD_NO[d.getDay()])+" "+d.getDate()+". "+MON_NO[d.getMonth()]+" "+d.getFullYear(); }
+  // service-parametrized compiler (snow shipped; a future Grønt-rapport reuses this)
+  function compileServiceReports(service){
+    var reports=[];
+    customers().forEach(function(c){
+      var es=(c.completionLog||[]).filter(function(e){return e.service===service;});
+      if(!es.length) return;
+      var byDate={};
+      es.forEach(function(e){ var k=iso(new Date(e.ts)); (byDate[k]=byDate[k]||[]).push(e); }); // group by local calendar date
+      Object.keys(byDate).forEach(function(k){
+        var items=byDate[k].slice().sort(function(a,b){return a.ts<b.ts?-1:1;}); // chronological within the day
+        reports.push({ id:c.id+"|"+service+"|"+k, customerId:c.id, service:service, date:k, entries:items });
+      });
+    });
+    reports.sort(function(a,b){ return a.date<b.date?1:(a.date>b.date?-1:0); }); // newest day first
+    return reports;
+  }
+  function snowReports(){ return compileServiceReports("snow"); } // TODO: weather-trigger (>5cm) — for now the day's logged snow activity defines the event
+  function findReport(id){ return snowReports().filter(function(r){return r.id===id;})[0]; }
+  function reportAck(id){ var st=S(); return (st.reportsSent||{})[id]||null; }
+  function markReportSent(id){
+    var st=S(); st.reportsSent=st.reportsSent||{}; st.reportsSent[id]=new Date().toISOString(); save(); render(); // PROD: email/push to board
+    var host=document.getElementById("ob-snowrep"); if(host&&host.classList.contains("on")) showSnowReport(id); // refresh open panel bar + rebuild map (render() ran destroyOpMaps)
+    toast("📤 Brøyterapport markert sendt til styret");
+  }
+  function snowSummaryLine(c, entries){
+    var ms=entries.map(function(e){return new Date(e.ts).getTime();});
+    var t0=repTime(Math.min.apply(null,ms)), t1=repTime(Math.max.apply(null,ms));
+    var machine=false, hand=false, grit=false;
+    entries.forEach(function(e){
+      var z=e.zoneId?findZone(c,e.zoneId):null; var method=(z&&z.method)||"";
+      var hay=((e.title||"")+" "+(e.note||"")+" "+method).toLowerCase();
+      if(/maskin|brøyt|plog|machine|traktor/.test(hay)) machine=true;
+      if(/hånd|hand|måk|manuell|skuff|inngang|trapp/.test(hay)) hand=true;
+      if(/strø|grus|salt|sand|\bis\b|glatt|grit/.test(hay)) grit=true;
+    });
+    var verb=[];
+    if(machine) verb.push("brøytet maskinelt");
+    if(hand) verb.push("måkt for hånd ved innganger");
+    if(!verb.length) verb.push("brøytet");
+    var s=cap(verb.join(" og "))+(grit?", strødd":"")+". Utført "+t0+(t1!==t0?("–"+t1):"")+".";
+    if((c.zones||[]).filter(function(z){return z.service==="snow";}).length) s+=" Se kart for soner.";
+    return s;
+  }
+  function buildSnowReportMap(c, elId, coveredIds){
+    if(!hasLeaflet||!c) return; var el=document.getElementById(elId); if(!el) return;
+    if(opMaps[elId]){ try{opMaps[elId].remove();}catch(e){} delete opMaps[elId]; }
+    var m=L.map(el,{zoomControl:true, attributionControl:true}); opMaps[elId]=m;
+    L.tileLayer(KARTVERKET,{attribution:"© Kartverket", maxZoom:20}).addTo(m);
+    if(c.center) L.marker([c.center.lat,c.center.lon],{interactive:false, keyboard:false, icon:bpinIcon()}).addTo(m);
+    var anyAttr=coveredIds.length>0, grp=L.featureGroup().addTo(m);
+    (c.zones||[]).filter(function(z){return z.service==="snow";}).forEach(function(z){
+      var covered=coveredIds.indexOf(z.id)>=0;
+      zoneToLayers(z,{permanentLabel:true}).forEach(function(l){
+        if(anyAttr && l.setStyle){ l.setStyle(covered
+          ? {color:"#15803d", fillColor:"#22c55e", fillOpacity:.40, weight:3}
+          : {color:"#b91c1c", fillColor:"#ef4444", fillOpacity:.12, weight:2, dashArray:"5 4"}); }
+        l.addTo(grp);
+      });
+    });
+    try{ if(grp.getLayers().length) m.fitBounds(grp.getBounds().pad(0.35)); else if(c.center) m.setView([c.center.lat,c.center.lon], c.center.zoom||17); }
+    catch(e){ if(c.center) m.setView([c.center.lat,c.center.lon], 17); }
+    setTimeout(function(){ if(opMaps[elId]) opMaps[elId].invalidateSize(); }, 90);
+  }
+  function snowReportHTML(r){
+    var c=cust(r.customerId); if(!c) return "";
+    var covered=r.entries.map(function(e){return e.zoneId;}).filter(Boolean);
+    var snowZones=(c.zones||[]).filter(function(z){return z.service==="snow";});
+    var anyAttr=covered.length>0;
+    var timeline=r.entries.map(function(e){
+      var geo=e.geo?'<button class="ob-proofgeo" data-ob="proofGeoView" data-arg="'+e.geo.lat+','+e.geo.lon+','+(e.geo.acc||0)+'" title="vis posisjon">📍</button>':'';
+      var z=e.zoneId?findZone(c,e.zoneId):null;
+      return '<div class="ob-srtl"><div class="ob-srtime">'+repTime(e.ts)+'</div>'
+        +'<div class="ob-srbody"><div class="ob-srwhat">'+esc(e.title||"Snørydding")+(z?' <span class="muted">· '+esc(z.label||z.service)+'</span>':'')+' '+geo+'</div>'
+        +'<div class="ob-srwho">'+esc(e.by||"")+(e.note?' · '+esc(e.note):'')+'</div>'
+        + proofThumbsHTML(e.photoIds) +'</div></div>';
+    }).join("");
+    var mapBlock = snowZones.length
+      ? '<div class="ob-sropmap"><div class="ob-optitle">Operasjonskart – Vinter'
+        +(anyAttr?' <span class="ob-srcovkey">· <span class="ob-sw" style="background:#22c55e"></span> dekket <span class="ob-sw" style="background:#ef4444"></span> ikke registrert</span>':'')+'</div>'
+        +'<div class="ob-opmap" id="snowrep-map"></div>'
+        +'<div class="ob-opcap">'+esc(snowCaption(c))+'</div>'+opLegend("snow")+'</div>'
+      : '';
+    var coverageNote = (snowZones.length && anyAttr) ? (function(){
+        var miss=snowZones.filter(function(z){return z.priority!=null && covered.indexOf(z.id)<0;});
+        return miss.length
+          ? '<div class="ob-srmiss">⚠️ Ikke registrert utført: '+miss.map(function(z){return esc(z.label||z.service);}).join(", ")+'.</div>'
+          : '<div class="ob-srok">✓ Alle prioriterte soner registrert utført.</div>';
+      })() : '';
+    return '<div class="ob-srdoc">'
+      +'<div class="ob-srhead"><div><h1>Brøyterapport</h1><div class="ob-srsub">'+esc(c.name)+' · '+esc(c.addr||"")+'</div></div>'
+      +'<div class="ob-srdate">'+dateLongNo(r.date)+'</div></div>'
+      +'<p class="ob-srsummary">'+esc(snowSummaryLine(c, r.entries))+'</p>'
+      +'<h2>Tidslinje</h2><div class="ob-srtimeline">'+timeline+'</div>'
+      + mapBlock + coverageNote
+      +'<p class="ob-srreassure">Brøyting utføres ved snøfall over 5 cm, i prioritert rekkefølge (lavest P-nummer først). Full dekning kan ta tid ved store snøfall.</p>'
+      +'</div>';
+  }
+  function showSnowReport(id){
+    var r=findReport(id); if(!r){ toast("Fant ikke rapporten"); return; }
+    var host=document.getElementById("ob-snowrep"); if(!host) return;
+    var ack=reportAck(r.id);
+    host.innerHTML='<div class="ob-snowrep-bar"><button class="ob-btn ghost" data-ob="closeSnowReport">✕ Lukk</button>'
+      +'<div class="ob-board-title">Brøyterapport · '+dateLongNo(r.date)+'</div>'
+      +'<div class="ob-srbaracts">'
+      +(ack?'<span class="chip green">Sendt '+repTime(ack)+'</span>':'<button class="ob-btn amber" data-ob="markReportSent" data-arg="'+r.id+'">📤 Marker sendt til styret</button>')
+      +'<button class="ob-btn primary" data-ob="printSnowReport">🖨 Skriv ut / PDF</button></div></div>'
+      +'<div class="ob-board-scroll">'+snowReportHTML(r)+'</div>';
+    host.classList.add("on"); host.setAttribute("aria-hidden","false");
+    buildSnowReportMap(cust(r.customerId), "snowrep-map", r.entries.map(function(e){return e.zoneId;}).filter(Boolean));
+    hydratePhotos(host);
+  }
+  function closeSnowReport(){
+    var host=document.getElementById("ob-snowrep"); if(!host) return;
+    if(opMaps["snowrep-map"]){ try{opMaps["snowrep-map"].remove();}catch(e){} delete opMaps["snowrep-map"]; }
+    host.classList.remove("on"); host.setAttribute("aria-hidden","true"); host.innerHTML="";
+  }
+  function printSnowReport(){
+    if(opMaps["snowrep-map"]){ try{opMaps["snowrep-map"].invalidateSize();}catch(e){} }
+    document.body.classList.add("ob-print-snowrep");
+    var cleanup=function(){ document.body.classList.remove("ob-print-snowrep"); window.removeEventListener("afterprint", cleanup); };
+    window.addEventListener("afterprint", cleanup);
+    setTimeout(function(){ window.print(); }, 200);
+  }
+  function snowReportsListHTML(){
+    var reps=snowReports(); if(!reps.length) return "";
+    var rows=reps.map(function(r){
+      var c=cust(r.customerId), ack=reportAck(r.id);
+      var badge= ack ? '<span class="chip green">Sendt</span>' : '<span class="chip amber ob-ny">● Ny</span>';
+      var photos=r.entries.reduce(function(s,e){return s+((e.photoIds&&e.photoIds.length)||0);},0);
+      return '<div class="ob-row" data-ob="openSnowReport" data-arg="'+r.id+'" style="cursor:pointer"><div class="ob-line-top">'
+        +'<div class="rt">❄️ Brøyterapport · '+dateLongNo(r.date)+' '+badge+'</div><div class="rp">'+r.entries.length+' logg</div></div>'
+        +'<div class="rd">'+esc(c?c.name:"")+' · '+r.entries.length+' oppgave'+(r.entries.length!==1?"r":"")+(photos?' · '+photos+' bilde'+(photos!==1?"r":""):"")+' · '+(ack?'sendt til styret':'klar – ikke sendt')+'</div></div>';
+    }).join("");
+    return '<div class="card ob-srcard"><div class="ct">❄️ Brøyterapporter <span class="chip grey">'+reps.length+'</span></div>'
+      +'<p class="muted" style="font-size:12px;margin:-2px 0 10px">Sammenstilt automatisk fra loggen — sendes til styret <b>før klagen kommer</b>.</p>'
+      + rows +'</div>';
+  }
+
   /* ===========================================================================
      DOM helpers
      =========================================================================== */
@@ -2447,6 +2591,7 @@
      =========================================================================== */
   document.addEventListener("click", function(e){
     if(e.target && e.target.id==="ob-board"){ closeBoard(); return; } // backdrop click closes board doc
+    if(e.target && e.target.id==="ob-snowrep"){ closeSnowReport(); return; } // backdrop closes Brøyterapport
     var t=e.target.closest("[data-ob]"); if(!t) return;
     var act=t.getAttribute("data-ob"), id=t.getAttribute("data-id"), arg=t.getAttribute("data-arg");
     var c=cur();
@@ -2465,6 +2610,10 @@
       case "proofCancel": proofCancel(); break;
       case "proofGeoView": proofGeoView(arg); break;
       case "eventDone": { var ep=(arg||"").split("|"); openProofSheet({lineId:ep[0], date:iso(refDate()), title:decodeURIComponent(ep[1]||""), freq:"beredskap", building:decodeURIComponent(ep[2]||"")}); break; }
+      case "openSnowReport": showSnowReport(arg); break;
+      case "closeSnowReport": closeSnowReport(); break;
+      case "printSnowReport": printSnowReport(); break;
+      case "markReportSent": markReportSent(arg); break;
       case "spawnEvt": spawnEvent(decodeURIComponent(arg||"")); break;
       case "back": ui.openId=null; ui.draftNew=false; repaintSales(); break;
       case "step": { var n=parseInt(id,10); if(c && n<=maxStep(c)){ ui.step=n; ui.activeLayer=null; repaintSales(); } break; }
