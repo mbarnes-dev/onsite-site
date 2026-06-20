@@ -521,7 +521,7 @@
     if(zoneLayer){ zoneLayer.clearLayers(); } else { zoneLayer=L.layerGroup().addTo(map); }
     (c.zones||[]).forEach(function(z){ zoneToLayers(z, {interactive:true}).forEach(function(l){ l.addTo(zoneLayer); }); });
   }
-  function refreshZones(c){ renderZones(c); setHTML("ob-zonepanel", zonesPanelHTML(c)); }
+  function refreshZones(c){ renderZones(c); setHTML("ob-zonepanel", zonesPanelHTML(c)); hydratePhotos(document.getElementById("ob-zonepanel")); }
 
   /* ---- draw interaction (inline, no plugin) ---- */
   function drawToolbarHTML(){
@@ -630,6 +630,7 @@
       +(z.priority?' <span class="chip blue">P'+z.priority+'</span>':'')+(z.constraint&&z.constraint!=="none"?' <span class="chip amber">'+esc(z.constraint)+'</span>':'')+'</div>'
       +'<div class="rp">'+zoneMeasureStr(z)+'</div></div>'
       +'<div class="rd">'+(methodLabel(z)?esc(methodLabel(z)):"—")+(z.notes?' · '+esc(z.notes):'')+'</div>'
+      +photoStripHTML("zone", z.id, z.photoIds)
       +'<div class="ob-acts"><button class="ob-mini" data-ob="editZone" data-id="'+z.id+'">✎ Rediger</button><button class="ob-mini no on" data-ob="delZone" data-id="'+z.id+'">🗑 Slett</button></div></div>';
   }
   function editZone(id){ var c=cur(); if(!c) return; var z=findZone(c,id); if(!z) return;
@@ -785,6 +786,142 @@
     {label:"Oljetank – kontroll/sanering",     interval:"Ved behov"}
   ];
   function complianceClone(){ return COMPLIANCE_PACK_NO_RESIDENTIAL.map(function(r){ return {label:r.label, interval:r.interval}; }); }
+
+  /* ===========================================================================
+     PHOTOS (Phase 5) — camera capture pinned to zones + checklist items.
+     Blobs live OUTSIDE the customer record: the record keeps only photoIds[].
+     Store = IndexedDB (big quota) with a capped-localStorage fallback that never
+     throws. Images downscaled+compressed (≤1280px, JPEG ~0.6 → ~100–200 KB).
+     // PROD: offload to object storage; this is the prototype-local approximation.
+     =========================================================================== */
+  var photoCache = {};                 // id → dataUrl (in-memory; renders read this synchronously)
+  var PHOTO_DB="onsite_photos_db", PHOTO_STORE="photos", _idb=null, _idbTried=false;
+  function idbOpen(cb){
+    if(_idb) return cb(_idb);
+    if(_idbTried && !_idb) return cb(null);
+    if(!window.indexedDB){ _idbTried=true; return cb(null); }
+    try{ var rq=indexedDB.open(PHOTO_DB,1);
+      rq.onupgradeneeded=function(){ try{ rq.result.createObjectStore(PHOTO_STORE,{keyPath:"id"}); }catch(e){} };
+      rq.onsuccess=function(){ _idb=rq.result; _idbTried=true; cb(_idb); };
+      rq.onerror=function(){ _idbTried=true; cb(null); };
+    }catch(e){ _idbTried=true; cb(null); }
+  }
+  var PHOTO_LS="onsite_photos", PHOTO_CAP=50;
+  function lsAll(){ try{ return JSON.parse(localStorage.getItem(PHOTO_LS)||"{}"); }catch(e){ return {}; } }
+  function lsPut(rec, cb){
+    var m=lsAll(); m[rec.id]={id:rec.id, dataUrl:rec.dataUrl, caption:rec.caption||"", ts:rec.ts};
+    var ids=Object.keys(m);
+    if(ids.length>PHOTO_CAP){ ids.sort(function(a,b){return (m[a].ts||0)-(m[b].ts||0);}); while(Object.keys(m).length>PHOTO_CAP) delete m[ids.shift()]; }
+    try{ localStorage.setItem(PHOTO_LS, JSON.stringify(m)); cb&&cb(true); }
+    catch(e){
+      try{ ids=Object.keys(m).sort(function(a,b){return (m[a].ts||0)-(m[b].ts||0);}); delete m[ids[0]]; if(ids[1]) delete m[ids[1]]; localStorage.setItem(PHOTO_LS, JSON.stringify(m)); }catch(e2){}
+      toast("⚠️ Lite lagringsplass — eldste bilde fjernet (prototype lagrer lokalt)"); cb&&cb(false);
+    }
+  }
+  function lsGet(id){ var m=lsAll(); return m[id]||null; }
+  function lsDel(id){ var m=lsAll(); delete m[id]; try{ localStorage.setItem(PHOTO_LS, JSON.stringify(m)); }catch(e){} }
+  function photoPut(rec, cb){
+    photoCache[rec.id]=rec.dataUrl;
+    idbOpen(function(db){ if(!db) return lsPut(rec,cb);
+      try{ var tx=db.transaction(PHOTO_STORE,"readwrite"); tx.objectStore(PHOTO_STORE).put({id:rec.id, dataUrl:rec.dataUrl, caption:rec.caption||"", ts:rec.ts, kb:rec.kb});
+        tx.oncomplete=function(){ cb&&cb(true); }; tx.onerror=function(){ lsPut(rec,cb); };
+      }catch(e){ lsPut(rec,cb); }
+    });
+  }
+  function photoGet(id, cb){
+    if(photoCache[id]) return cb({id:id, dataUrl:photoCache[id]});
+    idbOpen(function(db){ if(!db){ var r=lsGet(id); if(r) photoCache[id]=r.dataUrl; return cb(r); }
+      try{ var rq=db.transaction(PHOTO_STORE,"readonly").objectStore(PHOTO_STORE).get(id);
+        rq.onsuccess=function(){ var r=rq.result; if(r){ photoCache[id]=r.dataUrl; cb(r); } else { var l=lsGet(id); if(l) photoCache[id]=l.dataUrl; cb(l); } };
+        rq.onerror=function(){ cb(lsGet(id)); };
+      }catch(e){ cb(lsGet(id)); }
+    });
+  }
+  function photoSetCaption(id, caption){ if(photoCache[id]!=null){} idbOpen(function(db){ if(!db){ var m=lsAll(); if(m[id]){ m[id].caption=caption; try{localStorage.setItem(PHOTO_LS,JSON.stringify(m));}catch(e){} } return; }
+    try{ var st=db.transaction(PHOTO_STORE,"readwrite").objectStore(PHOTO_STORE); var rq=st.get(id); rq.onsuccess=function(){ var r=rq.result; if(r){ r.caption=caption; st.put(r); } }; }catch(e){} }); }
+  function photoGetCaption(id, cb){ idbOpen(function(db){ if(!db){ var l=lsGet(id); return cb(l?l.caption||"":""); }
+    try{ var rq=db.transaction(PHOTO_STORE,"readonly").objectStore(PHOTO_STORE).get(id); rq.onsuccess=function(){ cb(rq.result?(rq.result.caption||""):""); }; rq.onerror=function(){ cb(""); }; }catch(e){ cb(""); } }); }
+  function photoDel(id){ delete photoCache[id]; idbOpen(function(db){ if(!db) return lsDel(id);
+    try{ db.transaction(PHOTO_STORE,"readwrite").objectStore(PHOTO_STORE).delete(id); }catch(e){ lsDel(id); } }); }
+
+  // downscale + compress a File → dataUrl (no deps; canvas)
+  function compressImage(file, cb){
+    var reader=new FileReader();
+    reader.onload=function(e){
+      var img=new Image();
+      img.onload=function(){
+        var max=1280, w=img.width||max, h=img.height||max;
+        if(w>=h && w>max){ h=Math.round(h*max/w); w=max; } else if(h>w && h>max){ w=Math.round(w*max/h); h=max; }
+        try{ var cv=document.createElement("canvas"); cv.width=w; cv.height=h; cv.getContext("2d").drawImage(img,0,0,w,h);
+          var d=cv.toDataURL("image/jpeg",0.6); cb({dataUrl:d, w:w, h:h, kb:Math.round(d.length*0.75/1024)});
+        }catch(err){ cb(null); }
+      };
+      img.onerror=function(){ cb(null); };
+      img.src=e.target.result;
+    };
+    reader.onerror=function(){ cb(null); };
+    reader.readAsDataURL(file);
+  }
+
+  // ---- UI ----
+  function photoStripHTML(kind, id, photoIds){
+    var thumbs=(photoIds||[]).map(function(pid){
+      return '<span class="ob-thumb" data-ob="photoView" data-arg="'+pid+'">'
+        +'<img alt="bilde" '+(photoCache[pid]?'src="'+photoCache[pid]+'"':'data-photo-id="'+pid+'"')+'>'
+        +'<button class="ob-thumbdel" data-ob="photoDel" data-arg="'+kind+'|'+id+'|'+pid+'" title="Slett">✕</button></span>';
+    }).join("");
+    return '<div class="ob-photos">'+thumbs
+      +'<label class="ob-photobtn" title="Ta bilde / velg fra album">📷<input type="file" accept="image/*" capture="environment" data-photocap="'+kind+'" data-id="'+id+'"></label></div>';
+  }
+  function hydratePhotos(root){
+    var imgs=(root||document).querySelectorAll('img[data-photo-id]');
+    [].forEach.call(imgs, function(img){ if(img.getAttribute("src")) return; var pid=img.getAttribute("data-photo-id");
+      if(photoCache[pid]){ img.src=photoCache[pid]; return; }
+      photoGet(pid, function(r){ if(r&&r.dataUrl){ img.src=r.dataUrl; } }); });
+  }
+  function photoTarget(c, kind, id){ return kind==="zone" ? findZone(c,id) : kind==="item" ? (c.checklist||[]).filter(function(x){return x.id===id;})[0] : null; }
+  function handlePhotoCapture(input){
+    var kind=input.getAttribute("data-photocap"), id=input.getAttribute("data-id");
+    var files=input.files; if(!files||!files.length) return;
+    var c=cur(); var t=c&&photoTarget(c,kind,id); if(!t){ input.value=""; return; }
+    var n=files.length, done=0, totalKb=0;
+    toast("Komprimerer "+n+" bilde"+(n>1?"r":"")+"…");
+    [].forEach.call(files, function(file){
+      compressImage(file, function(res){
+        if(res){ var pid="ph"+uid(); t.photoIds=t.photoIds||[]; t.photoIds.push(pid); totalKb+=res.kb; photoPut({id:pid, dataUrl:res.dataUrl, caption:"", ts:Date.now(), kb:res.kb}); }
+        done++; if(done===n){ save(); afterPhotoChange(c); toast("📷 "+n+" bilde"+(n>1?"r":"")+" lagret (~"+totalKb+" KB)"); }
+      });
+    });
+    input.value="";
+  }
+  function afterPhotoChange(c){
+    if(document.getElementById("ob-checklist")) setHTML("ob-checklist", checklistRowsHTML(c));
+    if(document.getElementById("ob-zonepanel")) setHTML("ob-zonepanel", zonesPanelHTML(c));
+    if(document.getElementById("ob-tiered")) refreshTiered(c);
+    hydratePhotos(document);
+  }
+  function photoDelHandler(arg){
+    var p=(arg||"").split("|"); var kind=p[0], id=p[1], pid=p[2]; var c=cur(); var t=c&&photoTarget(c,kind,id); if(!t) return;
+    t.photoIds=(t.photoIds||[]).filter(function(x){return x!==pid;}); photoDel(pid); save(); afterPhotoChange(c); toast("Bilde slettet");
+  }
+  function photoView(pid){
+    photoGet(pid, function(r){
+      photoGetCaption(pid, function(cap){
+        var src=(r&&r.dataUrl)||photoCache[pid]||"";
+        obSheet('<h3>Bilde</h3><img class="ob-lightbox" src="'+src+'" alt="bilde">'
+          +'<label>Bildetekst</label><input id="ph_cap" value="'+esc(cap||"")+'" placeholder="kort beskrivelse (valgfritt)">'
+          +'<button class="save" data-ob="photoCapSave" data-arg="'+pid+'">Lagre bildetekst</button>'
+          +'<button class="cancel" data-ob="closeObSheet">Lukk</button>');
+      });
+    });
+  }
+  function galleryView(zoneId){
+    var c=cur(); if(!c) return; var z=findZone(c,zoneId); if(!z||!z.photoIds||!z.photoIds.length){ toast("Ingen bilder"); return; }
+    var thumbs=z.photoIds.map(function(pid){ return '<span class="ob-thumb lg" data-ob="photoView" data-arg="'+pid+'"><img alt="bilde" '+(photoCache[pid]?'src="'+photoCache[pid]+'"':'data-photo-id="'+pid+'"')+'></span>'; }).join("");
+    obSheet('<h3>Vedlegg · '+esc(z.label||z.service)+' <span class="muted" style="font-size:13px;font-weight:600">· '+z.photoIds.length+' bilde'+(z.photoIds.length>1?'r':'')+'</span></h3>'
+      +'<div class="ob-gallery">'+thumbs+'</div><button class="cancel" data-ob="closeObSheet">Lukk</button>');
+    setTimeout(function(){ hydratePhotos(document.getElementById("sheet")); }, 30);
+  }
 
   /* ===========================================================================
      OFFER
@@ -1351,6 +1488,7 @@
     cols.innerHTML=wizardHTML(c);
     if(ui.step===1 || (ui.step===5 && c.stage==="Live")) buildMap(c);
     if(ui.step===2 && c.offer){ buildOpMap(c,"snow","off-opmap-snow"); buildOpMap(c,"grass","off-opmap-grass"); }
+    hydratePhotos(cols);
   }
   function repaintSales(){ var cols=document.getElementById("cols"); if(cols) renderSales(cols); }
 
@@ -1623,18 +1761,20 @@
   function stepWalk(c){
     var hasZones=(c.markers||[]).some(function(m){return !LAYERS[m.layer].recordOnly;}) || (c.checklist&&c.checklist.length) || (c.zones&&c.zones.length);
     var perWord = c.period==="mnd" ? "måned" : "år";
-    return '<div class="ob-grid split">'
-      +'<div>'
-        +'<div class="ob-hint">Pick a layer, then <b>tap the map</b> to drop a marker. Counts tally per layer. Anything outside the requested scope auto-flags as an <b>upsell</b>. Categories follow PHM Norge\'s service map — <b>modul</b> lines are phase-2.</div>'
+    var mp = ui.mobilePane||"map";
+    return '<div class="ob-mobtoggle"><button class="ob-mini'+(mp==="map"?" on":"")+'" data-ob="mobilePane" data-arg="map">🗺️ Kart</button><button class="ob-mini'+(mp==="list"?" on":"")+'" data-ob="mobilePane" data-arg="list">📋 Sjekkliste / soner</button></div>'
+      +'<div class="ob-grid split ob-walkgrid pane-'+mp+'" id="ob-walkgrid">'
+      +'<div class="ob-walkpane map">'
+        +'<div class="ob-hint">Tablet-befaring: velg en kategori, så <b>tapp på kartet</b> (finger/penn) for å sette markør, eller <b>Tegn sone</b> for å måle. Alt utenfor forespurt scope flagges som <b>upsell</b>. 📷 fester bilder til soner og sjekkpunkter.</div>'
         +'<div class="ob-picker" id="ob-layers">'+layerPickerHTML(c,"sales")+'</div>'
         +'<div class="ob-maptools"><span class="ob-active-note" id="ob-active">'+activeNote()+'</span><span class="spacer" style="flex:1"></span>'
-          +'<button class="ob-btn ghost" data-ob="locateWalk">📍 Locate address</button>'
-          +'<button class="ob-btn ghost" data-ob="geotag">📍 Use my location</button></div>'
+          +'<button class="ob-btn ghost" data-ob="locateWalk">📍 Finn adresse</button>'
+          +'<button class="ob-btn ghost" data-ob="geotag">📍 Min posisjon</button></div>'
         +'<div class="ob-drawbar" id="ob-drawtools">'+drawToolbarHTML()+'</div>'
         +'<div class="ob-drawread" id="ob-draw-readout"></div>'
         +'<div id="ob-map"></div>'
       +'</div>'
-      +'<div>'
+      +'<div class="ob-walkpane list">'
         + (c.checklist&&c.checklist.length ? '<div id="ob-checkwrap">'+checklistPanelHTML(c)+'</div>' : '')
         +'<div id="ob-zonepanel">'+zonesPanelHTML(c)+'</div>'
         +'<div class="card"><div class="ct">Zones captured</div><div id="ob-zones">'+zonesHTML(c)+'</div></div>'
@@ -1707,7 +1847,8 @@
     return '<div class="ob-clitem'+(sc==="upsell"?' up':sc==="out"?' out':'')+'">'
       +'<div class="ob-cltop"><div class="ob-cllabel">'+it.emoji+' '+esc(it.subtype||it.label)+price+partner+'</div>'
       +'<div class="ob-scopes">'+sb("in")+sb("upsell")+sb("out")+sb("unknown")+'</div></div>'
-      +'<div class="ob-clcap">'+captureField(it)+(it.freq?'<span class="ob-clfreq">'+esc(it.freq)+'</span>':'')+'</div></div>';
+      +'<div class="ob-clcap">'+captureField(it)+(it.freq?'<span class="ob-clfreq">'+esc(it.freq)+'</span>':'')+'</div>'
+      +photoStripHTML("item", it.id, it.photoIds)+'</div>';
   }
   function captureField(it){
     var v=(it.value==null?"":it.value);
@@ -1719,6 +1860,7 @@
   function refreshChecklist(c){
     setHTML("ob-checklist", checklistRowsHTML(c));
     setText("ob-walktotal", kr(walkTotal(c)));
+    hydratePhotos(document.getElementById("ob-checklist"));
     var gen=document.querySelector('[data-ob="genOffer"]'); if(gen && ((c.checklist||[]).some(function(it){return it.scope==="in";})||walkTotal(c)>0)) gen.removeAttribute("disabled");
   }
   function refreshWalk(c){
@@ -1793,8 +1935,10 @@
       : 'fastpris (fra kontrakt/befaring) = '+kr(l.computed);
     var partner = l.deliveredBy==="partner" ? ' <span class="chip blue">'+esc(l.partnerName)+' · partner</span>' : '';
     var over = l.overridden ? '<span class="ob-overnote">endret fra '+kr(l.computed)+'</span>' : '';
+    var zph = l.zoneId ? findZone(c,l.zoneId) : null; var nph = (zph&&zph.photoIds)?zph.photoIds.length:0;
+    var photoBadge = nph ? ' <button class="ob-linephoto" data-ob="lineGallery" data-arg="'+l.zoneId+'" title="vedlegg / bilder fra sonen">📷 '+nph+'</button>' : '';
     return '<div class="ob-modline'+(l.zoneId?' has-zone':'')+'"'+(l.zoneId?' data-zone="'+l.zoneId+'"':'')+'>'
-      +'<div class="ob-mlmain"><div class="ob-mllab">'+l.emoji+' '+esc(l.label)+partner+(l.zoneId?' <span class="ob-zlink" title="fra tegnet sone">🗺️</span>':'')+'</div>'
+      +'<div class="ob-mlmain"><div class="ob-mllab">'+l.emoji+' '+esc(l.label)+partner+(l.zoneId?' <span class="ob-zlink" title="fra tegnet sone">🗺️</span>':'')+photoBadge+'</div>'
         +'<div class="ob-mldriver">'+driver+'</div></div>'
       +'<div class="ob-mlprice"><input type="number" step="50" class="ob-finput" data-obf="lineFinal" data-id="'+l.id+'" value="'+l.final+'"><span class="ob-mlper">/'+per+'</span>'+over+'</div>'
     +'</div>';
@@ -2071,6 +2215,13 @@
       case "nbManual": nbManual(); break;
       case "nbCreate": nbCreate(); break;
       case "nbCancel": ui.newBuilding=null; repaintSales(); break;
+      case "photoView": photoView(arg); break;
+      case "photoDel": photoDelHandler(arg); break;
+      case "photoCapSave": { photoSetCaption(arg, val("ph_cap")); obCloseSheet(); toast("Bildetekst lagret"); break; }
+      case "lineGallery": galleryView(arg); break;
+      case "mobilePane": { ui.mobilePane=arg; var g=document.getElementById("ob-walkgrid"); if(g){ g.classList.remove("pane-map","pane-list"); g.classList.add("pane-"+arg);
+        [].forEach.call(document.querySelectorAll('[data-ob="mobilePane"]'),function(b){ b.classList.toggle("on", b.getAttribute("data-arg")===arg); });
+        if(arg==="map"&&map){ setTimeout(function(){ try{map.invalidateSize();}catch(e){} },60); } } break; }
       case "prefill": prefillForm(); break;
       case "savePrep": savePrep(); break;
       case "locatePrep": { var a=val("p_addr"); var cc=cur(); if(cc){ cc.addr=a; locate(cc,a);} break; }
@@ -2109,7 +2260,10 @@
   // which customer is the board review acting on (board view uses ui.boardOpen; sales step3 uses ui.openId)
   function boardCustomer(){ return cur() || (ui.boardOpen?cust(ui.boardOpen):null) || customers().filter(function(c){return c.offer&&(c.stage==="Offer sent"||c.stage==="Changes requested");})[0] || null; }
 
-  document.addEventListener("change", function(e){ handleField(e.target); });
+  document.addEventListener("change", function(e){
+    if(e.target && e.target.getAttribute && e.target.getAttribute("data-photocap")){ handlePhotoCapture(e.target); return; }
+    handleField(e.target);
+  });
   document.addEventListener("input", function(e){ if(e.target.getAttribute && e.target.getAttribute("data-obf")==="bcomment") handleField(e.target); });
   function handleField(f){
     if(!f || !f.getAttribute) return;
