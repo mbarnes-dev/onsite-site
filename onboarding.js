@@ -251,6 +251,22 @@
     cl.forEach(function(it){ var o=O[it.id]; if(o){ for(var k in o){ it[k]=o[k]; } } });
     return cl;
   }
+  function holtetZones(){
+    var cy=59.89305, cx=10.78000;
+    function poly(co){ return {type:"Polygon", coordinates:[co.concat([co[0]])]}; }
+    function line(co){ return {type:"LineString", coordinates:co}; }
+    function pt(co){ return {type:"Point", coordinates:co}; }
+    var defs=[
+      {id:"hz1", service:"grass",    method:"mow",     label:"Hovedplen vest",            notes:"Traktorklipp",              geometry:poly([[cx-0.0010,cy-0.0004],[cx-0.0004,cy-0.0004],[cx-0.0004,cy+0.0001],[cx-0.0010,cy+0.0001]])},
+      {id:"hz2", service:"grass",    method:"mow",     label:"Plen nordøst",              notes:"Manuell + kantklipp",       geometry:poly([[cx+0.0004,cy+0.0003],[cx+0.0010,cy+0.0003],[cx+0.0010,cy+0.0007],[cx+0.0004,cy+0.0007]])},
+      {id:"hz3", service:"greenery", method:"gartner", label:"Hekk sør (maks 180 cm)",    notes:"2×/sesong: mai–medio juli, sep–okt", geometry:line([[cx-0.0010,cy-0.00045],[cx-0.0002,cy-0.00045]])},
+      {id:"hz4", service:"snow",     method:"machine", priority:1, label:"Brøyting – vei + parkering", notes:">5 cm samme døgn", geometry:poly([[cx+0.0002,cy-0.0005],[cx+0.0012,cy-0.0005],[cx+0.0012,cy-0.0001],[cx+0.0002,cy-0.0001]])},
+      {id:"hz5", service:"snow",     method:"hand",    priority:2, label:"Inngangssoner + trapp",      notes:"Hånd + strøing",  geometry:poly([[cx-0.0001,cy+0.0001],[cx+0.0002,cy+0.0001],[cx+0.0002,cy+0.0004],[cx-0.0001,cy+0.0004]])},
+      {id:"hz6", service:"snow",     method:null,      label:"Deponi",                    notes:"Snødeponi sørøst",          geometry:pt([cx+0.0014,cy-0.0006])},
+      {id:"hz7", service:"snow",     method:null,      label:"Strøkasse",                 notes:"Sand/grus ved inngang",     geometry:pt([cx-0.00005,cy+0.00006])}
+    ];
+    return defs.map(function(d){ d.buildingId="holtet-cust"; d.priority=d.priority||null; d.constraint="none"; d.priceLineId=null; d.completionLog=[]; return zoneRecompute(d); });
+  }
   function seedHoltet(){
     var cy=59.89305, cx=10.78000;
     var blocks=["A","B","C","D","E","F","G"];
@@ -283,6 +299,7 @@
       center:{lat:cy, lon:cx, zoom:17}, baseLayer:"topo",
       accessNote:"Nøkler/koder hentes på befaring. Forvalter: USBL.",
       markers:markers,
+      zones:holtetZones(),
       checklist:holtetChecklist(),
       offer:null, offerHistory:[], changeRequests:[], buildingId:null, handover:null, enrichment:false,
       log:[{ts:"16 Jun 2026", text:"Step 0 ferdig fra registre — USBL + styret hentet, 7 oppganger pinnet, sjekkliste forhåndsutfylt"},
@@ -319,6 +336,7 @@
         mk("sm6","lift",     -0.00040, 0.00020,    1, "Blokk A — 1998, 2-årlig kontroll"),
         mk("sm7","fire",      0.00020,-0.00042,    1, "Hovedinngang: slukker + detektorer")
       ],
+      zones:[],
       offer:null, offerHistory:[], changeRequests:[], buildingId:null, handover:null, enrichment:false,
       log:[{ts:"14 Jun 2026", text:"Surveyed on site — 7 zones marked, 3 upsell flags"},
            {ts:"12 Jun 2026", text:"Prospect created from board enquiry (grass + winter + cleaning)"}]
@@ -341,7 +359,8 @@
   var map=null, markerLayer=null, buildingMarker=null, leafMarkers={};
 
   function destroyMap(){
-    if(map){ try{ map.remove(); }catch(e){} map=null; markerLayer=null; buildingMarker=null; leafMarkers={}; }
+    if(map){ try{ map.remove(); }catch(e){} }
+    map=null; markerLayer=null; buildingMarker=null; leafMarkers={}; zoneLayer=null; drawTemp=null; drawVertLayer=null; drawMode=null; drawPts=[];
   }
   function buildMap(c){
     if(!hasLeaflet) return;
@@ -359,7 +378,9 @@
     buildingMarker=L.marker(center,{interactive:false, keyboard:false,
       icon:L.divIcon({className:"", html:'<div class="ob-bpin">🏢</div>', iconSize:[30,30], iconAnchor:[15,15]})}).addTo(map);
     (c.markers||[]).forEach(function(m){ addLeafMarker(c,m); });
+    zoneLayer=null; renderZones(c);
     map.on("click", onMapClick);
+    map.on("dblclick", function(){ if(drawMode && drawMode!=="point") finishDraw(); });
     setTimeout(function(){ if(map) map.invalidateSize(); }, 60);
   }
   function markerIcon(c,m){
@@ -391,6 +412,7 @@
       +'</div></div>';
   }
   function onMapClick(e){
+    if(drawMode){ handleDrawClick(e.latlng); return; }
     var c=cur(); if(!c) return;
     if(!ui.activeLayer){ toast("Pick a layer chip first, then tap the map to drop a marker"); return; }
     dropMarker(c, ui.activeLayer, e.latlng.lat, e.latlng.lng, null);
@@ -410,6 +432,250 @@
     if(isUpsell(c,m)) toast("⚠️ "+d.label+" present but outside requested scope — flagged as upsell");
     else if(live) toast("Added to the building record (interior enrichment)");
     else toast("Marked: "+d.label);
+  }
+
+  /* ===========================================================================
+     ZONES (Phase 1) — draw & measure service zones; render operational maps
+     =========================================================================== */
+  var KARTVERKET="https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/{z}/{y}/{x}.png";
+  var opMaps={}, zoneLayer=null, drawMode=null, drawPts=[], drawTemp=null, drawVertLayer=null, pendingZone=null;
+  var SERVICE_LIST=[
+    {key:"snow",         label:"Snø / vinter",     stroke:"#1d4ed8", swatch:"❄️"},
+    {key:"grass",        label:"Gress / plen",     stroke:"#15803d", swatch:"🌿"},
+    {key:"greenery",     label:"Grønt / bed / hekk",stroke:"#b5790b", swatch:"🌳"},
+    {key:"cleaning-ext", label:"Utvendig renhold", stroke:"#0369a1", swatch:"🧼"},
+    {key:"other",        label:"Annet",            stroke:"#6b7670", swatch:"▫️"}
+  ];
+  var METHODS={ snow:[{key:"machine",label:"Maskin"},{key:"hand",label:"Hånd / manuell"}],
+    grass:[{key:"mow",label:"Klipping"},{key:"edge",label:"Kantklipp"},{key:"gartner",label:"Gartner / bed"}],
+    greenery:[{key:"gartner",label:"Beskjæring / bed"}], "cleaning-ext":[{key:"wash",label:"Vask"}], other:[] };
+  var CONSTRAINTS=[{key:"none",label:"Ingen"},{key:"delicate",label:"Ømtålig"},{key:"no-go",label:"Ikke kjør / no-go"},{key:"access-tight",label:"Trang adkomst"}];
+  function svcDef(k){ return SERVICE_LIST.filter(function(s){return s.key===k;})[0]||SERVICE_LIST[4]; }
+  function methodLabel(z){ var ms=METHODS[z.service]||[]; var m=ms.filter(function(x){return x.key===z.method;})[0]; return m?m.label:""; }
+  function defaultMethod(service){ var ms=METHODS[service]||[]; return ms.length?ms[0].key:null; }
+
+  /* ---- geodesic measurement (no deps): equirectangular shoelace + haversine ---- */
+  function geoArea(pts){ if(pts.length<3) return 0; var R=6378137, lat0=0; pts.forEach(function(p){lat0+=p[0];}); lat0=(lat0/pts.length)*Math.PI/180;
+    var xy=pts.map(function(p){ return [R*(p[1]*Math.PI/180)*Math.cos(lat0), R*(p[0]*Math.PI/180)]; });
+    var a=0; for(var i=0;i<xy.length;i++){ var j=(i+1)%xy.length; a+=xy[i][0]*xy[j][1]-xy[j][0]*xy[i][1]; } return Math.abs(a)/2; }
+  function hav(a,b){ var R=6378137, dLat=(b[0]-a[0])*Math.PI/180, dLon=(b[1]-a[1])*Math.PI/180, la1=a[0]*Math.PI/180, la2=b[0]*Math.PI/180;
+    var h=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(la1)*Math.cos(la2)*Math.sin(dLon/2)*Math.sin(dLon/2); return 2*R*Math.asin(Math.sqrt(h)); }
+  function geoLength(pts){ var d=0; for(var i=1;i<pts.length;i++) d+=hav(pts[i-1],pts[i]); return d; }
+  function ringLL(coords){ return coords.map(function(p){ return [p[1],p[0]]; }); }          // [lng,lat] -> [lat,lng]
+  function toLL(latlngs){ return latlngs.map(function(p){ return [p.lat,p.lng]; }); }
+  function centroidLL(ll){ var la=0,lo=0; ll.forEach(function(p){la+=p[0];lo+=p[1];}); return [la/ll.length, lo/ll.length]; }
+  function fmtArea(n){ return Math.round(n).toLocaleString("no")+" m²"; }
+  function fmtLen(n){ return Math.round(n).toLocaleString("no")+" m"; }
+  function zoneRecompute(z){
+    if(z.geometry.type==="Polygon"){ z.area_m2=Math.round(geoArea(ringLL(z.geometry.coordinates[0]))); z.length_m=null; }
+    else if(z.geometry.type==="LineString"){ z.length_m=Math.round(geoLength(ringLL(z.geometry.coordinates))); z.area_m2=null; }
+    else { z.area_m2=null; z.length_m=null; }
+    return z;
+  }
+  function zoneMeasureStr(z){ return z.area_m2!=null?fmtArea(z.area_m2):z.length_m!=null?fmtLen(z.length_m):"punkt"; }
+  function findZone(c,id){ return (c.zones||[]).filter(function(z){return z.id===id;})[0]; }
+
+  /* ---- colours / styling ---- */
+  function ZONE_COLOR(z){
+    if(z.constraint==="no-go") return {stroke:"#b3261e", fill:"#b3261e"};
+    if(z.service==="snow") return z.method==="hand"?{stroke:"#ca8a04",fill:"#eab308"}:{stroke:"#1d4ed8",fill:"#1d4ed8"};
+    if(z.service==="grass") return z.method==="edge"?{stroke:"#0f766e",fill:"#0f766e"}:z.method==="gartner"?{stroke:"#b5790b",fill:"#f59e0b"}:{stroke:"#15803d",fill:"#22c55e"};
+    if(z.service==="greenery") return {stroke:"#b5790b",fill:"#f59e0b"};
+    if(z.service==="cleaning-ext") return {stroke:"#0369a1",fill:"#38bdf8"};
+    return {stroke:"#6b7670",fill:"#9ca3af"};
+  }
+  function zoneStyle(z){ var c=ZONE_COLOR(z); var poly=z.geometry.type==="Polygon";
+    return {color:c.stroke, weight:2, opacity:1, fillColor:c.fill, fillOpacity:poly?0.32:0, dashArray:(z.constraint==="no-go"||z.constraint==="delicate")?"6 4":null}; }
+  function zoneSwatch(z){ var c=ZONE_COLOR(z); return '<span class="ob-zsw" style="background:'+c.fill+';border-color:'+c.stroke+'"></span>'; }
+  function pointIcon(z){ var grit=/strø|grit|salt|kasse/i.test(z.label||""); var snow=z.service==="snow";
+    var cls=snow?(grit?"grit":"deponi"):"feat", ic=snow?(grit?"🧂":"❄️"):"📍";
+    return L.divIcon({className:"", html:'<div class="ob-zpt '+cls+'">'+ic+'</div>', iconSize:[26,26], iconAnchor:[13,13]}); }
+  function prioIcon(p){ return L.divIcon({className:"", html:'<div class="ob-zprio">'+p+'</div>', iconSize:[22,22], iconAnchor:[11,11]}); }
+  function bpinIcon(){ return L.divIcon({className:"", html:'<div class="ob-bpin">🏢</div>', iconSize:[30,30], iconAnchor:[15,15]}); }
+  function zoneTip(z){ return (esc(z.label||methodLabel(z)||z.service))+' · '+zoneMeasureStr(z)+(z.priority?' · P'+z.priority:'')+(methodLabel(z)?' · '+esc(methodLabel(z)):''); }
+  function zoneShort(z){ return (z.priority?'P'+z.priority+' · ':'')+(methodLabel(z)||z.label||'')+(z.area_m2!=null||z.length_m!=null?' · '+zoneMeasureStr(z):''); }
+  function zonePopupHTML(z){ return '<div style="min-width:170px"><div style="font-weight:750">'+esc(z.label||methodLabel(z)||z.service)+'</div>'
+    +'<div class="muted" style="font-size:12px">'+esc(svcDef(z.service).label)+(methodLabel(z)?' · '+esc(methodLabel(z)):'')+' · '+zoneMeasureStr(z)+'</div>'
+    +'<div style="margin-top:8px;display:flex;gap:6px"><button class="ob-mini" data-ob="editZone" data-id="'+z.id+'">✎ Rediger</button><button class="ob-mini no on" data-ob="delZone" data-id="'+z.id+'">🗑 Slett</button></div></div>'; }
+
+  // build Leaflet layers for one zone; opts.interactive => popups (draw map); opts.permanentLabel => permanent tooltip (op maps)
+  function zoneToLayers(z, opts){
+    opts=opts||{}; var out=[];
+    if(z.geometry.type==="Polygon"){
+      var ll=ringLL(z.geometry.coordinates[0]); var poly=L.polygon(ll, zoneStyle(z)); out.push(poly);
+      if(opts.permanentLabel) poly.bindTooltip(zoneShort(z), {permanent:true, direction:"center", className:"ob-ztip-perm"});
+      else poly.bindTooltip(zoneTip(z), {direction:"center", className:"ob-ztip", sticky:true});
+      if(z.service==="snow" && z.priority) out.push(L.marker(centroidLL(ll), {interactive:false, icon:prioIcon(z.priority)}));
+    } else if(z.geometry.type==="LineString"){
+      var lls=ringLL(z.geometry.coordinates); var pl=L.polyline(lls, zoneStyle(z)); out.push(pl);
+      pl.bindTooltip(opts.permanentLabel?zoneShort(z):zoneTip(z), {permanent:!!opts.permanentLabel, direction:"top", className:opts.permanentLabel?"ob-ztip-perm":"ob-ztip", sticky:!opts.permanentLabel});
+    } else if(z.geometry.type==="Point"){
+      var p=z.geometry.coordinates; var mk=L.marker([p[1],p[0]],{interactive:true, icon:pointIcon(z)});
+      mk.bindTooltip(zoneTip(z), {direction:"top", className:"ob-ztip"}); out.push(mk);
+    }
+    if(opts.interactive){ out.forEach(function(layer){ if(layer.bindPopup) layer.bindPopup(zonePopupHTML(z)); }); }
+    return out;
+  }
+  function renderZones(c){
+    if(!map) return;
+    if(zoneLayer){ zoneLayer.clearLayers(); } else { zoneLayer=L.layerGroup().addTo(map); }
+    (c.zones||[]).forEach(function(z){ zoneToLayers(z, {interactive:true}).forEach(function(l){ l.addTo(zoneLayer); }); });
+  }
+  function refreshZones(c){ renderZones(c); setHTML("ob-zonepanel", zonesPanelHTML(c)); }
+
+  /* ---- draw interaction (inline, no plugin) ---- */
+  function drawToolbarHTML(){
+    function b(mode,label){ return '<button class="ob-mini'+(drawMode===mode?' on':'')+'" data-ob="drawZone" data-arg="'+mode+'">'+label+'</button>'; }
+    return '<span class="ob-drlabel">✏️ Tegn sone:</span>'+b("polygon","▰ Flate")+b("line","／ Linje")+b("point","• Punkt");
+  }
+  function setDrawTools(){ setHTML("ob-drawtools", drawToolbarHTML()); }
+  function startDraw(mode){
+    if(!map){ toast("Åpne kartet først"); return; }
+    cancelDraw(true); drawMode=mode; drawPts=[];
+    try{ map.doubleClickZoom.disable(); }catch(e){} map.getContainer().style.cursor="crosshair"; setDrawTools();
+    if(mode==="point"){ setHTML("ob-draw-readout", '<span class="ob-drmeas">Klikk på kartet for å plassere punktet</span><button class="ob-mini" data-ob="drawCancel">Avbryt</button>'); toast("Tegn punkt — klikk på kartet (deponi / strøkasse / feature)"); }
+    else { setHTML("ob-draw-readout", '<span class="ob-drmeas">Klikk for å sette punkter…</span><button class="ob-mini" data-ob="drawCancel">Avbryt</button>'); toast(mode==="polygon"?"Tegn flate — klikk hjørnene, dobbeltklikk/Fullfør for å avslutte":"Tegn linje — klikk punkter, dobbeltklikk/Fullfør for å avslutte"); }
+  }
+  function endDrawMode(){
+    drawMode=null; drawPts=[];
+    if(drawTemp){ try{map.removeLayer(drawTemp);}catch(e){} drawTemp=null; }
+    if(drawVertLayer){ try{map.removeLayer(drawVertLayer);}catch(e){} drawVertLayer=null; }
+    if(map){ map.getContainer().style.cursor=""; try{map.doubleClickZoom.enable();}catch(e){} }
+    setHTML("ob-draw-readout",""); setDrawTools();
+  }
+  function cancelDraw(silent){ if(drawMode||drawPts.length){ endDrawMode(); if(!silent) toast("Avbrutt"); } }
+  function handleDrawClick(latlng){
+    if(drawMode==="point"){ var c=cur(); var geom={type:"Point", coordinates:[latlng.lng, latlng.lat]}; endDrawMode(); openZoneSheet(c, null, geom); return; }
+    drawPts.push(latlng); updateDrawTemp();
+  }
+  function updateDrawTemp(){
+    if(drawTemp){ try{map.removeLayer(drawTemp);}catch(e){} drawTemp=null; }
+    if(drawVertLayer){ drawVertLayer.clearLayers(); } else { drawVertLayer=L.layerGroup().addTo(map); }
+    if(drawMode==="polygon" && drawPts.length>=3) drawTemp=L.polygon(drawPts,{color:"#0f766e",weight:2,dashArray:"5 4",fillOpacity:.12}).addTo(map);
+    else if(drawPts.length>=1) drawTemp=L.polyline(drawPts,{color:"#0f766e",weight:2,dashArray:"5 4"}).addTo(map);
+    drawPts.forEach(function(p){ L.circleMarker(p,{radius:4,color:"#0f766e",fillColor:"#fff",fillOpacity:1,weight:2}).addTo(drawVertLayer); });
+    var txt; if(drawMode==="polygon") txt = drawPts.length>=3?("Areal: "+fmtArea(geoArea(toLL(drawPts)))):("Sett "+(3-drawPts.length)+" punkt(er) til");
+    else txt = drawPts.length>=2?("Lengde: "+fmtLen(geoLength(toLL(drawPts)))):"Sett minst 2 punkter";
+    setHTML("ob-draw-readout", '<span class="ob-drmeas">'+txt+'</span><button class="ob-mini ok on" data-ob="drawFinish">✓ Fullfør</button><button class="ob-mini" data-ob="drawCancel">Avbryt</button>');
+  }
+  function finishDraw(){
+    if(!drawMode || drawMode==="point") return;
+    if(drawMode==="line" && drawPts.length<2){ toast("Linje trenger minst 2 punkter"); return; }
+    if(drawMode==="polygon" && drawPts.length<3){ toast("Flate trenger minst 3 punkter"); return; }
+    var type=drawMode==="line"?"LineString":"Polygon";
+    var coords=drawPts.map(function(p){return [p.lng,p.lat];});
+    var geom={type:type, coordinates: type==="Polygon"?[coords.concat([coords[0]])]:coords};
+    var c=cur(); endDrawMode(); openZoneSheet(c, null, geom);
+  }
+
+  /* ---- tag sheet (uses the shared scrim/sheet DOM) ---- */
+  function obSheet(html){ var s=document.getElementById("sheet"); if(!s) return; s.innerHTML=html; document.getElementById("scrim").classList.add("on"); }
+  function obCloseSheet(){ var sc=document.getElementById("scrim"); if(sc) sc.classList.remove("on"); }
+  function openZoneSheet(c, zone, geom){
+    if(!c){ return; }
+    pendingZone = zone ? JSON.parse(JSON.stringify(zone)) : { id:null, service:"snow", method:defaultMethod("snow"), priority:null, constraint:"none", label:"", notes:"", geometry:geom, priceLineId:null, completionLog:[] };
+    zoneRecompute(pendingZone);
+    obSheet(zoneSheetHTML(pendingZone));
+  }
+  function zoneSheetHTML(pz){
+    var ms=METHODS[pz.service]||[];
+    var methodSel = ms.length ? '<label>Metode</label><select id="z_method">'+ms.map(function(m){return '<option value="'+m.key+'"'+(pz.method===m.key?' selected':'')+'>'+m.label+'</option>';}).join("")+'</select>' : '';
+    var prio = pz.service==="snow" ? '<label>Prioritet (ryddrekkefølge)</label><input id="z_priority" type="number" min="1" step="1" value="'+(pz.priority||"")+'" placeholder="1">' : '';
+    var gtype = {Polygon:"Flate",LineString:"Linje",Point:"Punkt"}[pz.geometry.type]||pz.geometry.type;
+    return '<h3>'+(pz.id?"Rediger sone":"Ny sone")+' <span class="muted" style="font-size:13px;font-weight:600">· '+gtype+' · '+zoneMeasureStr(pz)+'</span></h3>'
+      +'<label>Tjeneste</label><select id="z_service" data-obf="zoneService">'+SERVICE_LIST.map(function(s){return '<option value="'+s.key+'"'+(pz.service===s.key?' selected':'')+'>'+s.swatch+' '+s.label+'</option>';}).join("")+'</select>'
+      + methodSel + prio
+      +'<label>Begrensning</label><select id="z_constraint">'+CONSTRAINTS.map(function(k){return '<option value="'+k.key+'"'+(pz.constraint===k.key?' selected':'')+'>'+k.label+'</option>';}).join("")+'</select>'
+      +'<label>Etikett</label><input id="z_label" value="'+esc(pz.label||"")+'" placeholder="f.eks. Hovedplen vest / Deponi">'
+      +'<label>Notat</label><textarea id="z_notes" rows="2" placeholder="metode, art/skjøtsel, adkomst…">'+esc(pz.notes||"")+'</textarea>'
+      +'<button class="save" data-ob="saveZone">Lagre sone</button>'
+      +'<button class="cancel" data-ob="closeObSheet">Avbryt</button>';
+  }
+  function saveZoneFromSheet(){
+    var c=cur(); if(!c || !pendingZone){ obCloseSheet(); return; }
+    pendingZone.service = val("z_service") || pendingZone.service;
+    var msel=document.getElementById("z_method"); pendingZone.method = msel ? msel.value : null;
+    var psel=document.getElementById("z_priority"); pendingZone.priority = psel && psel.value ? parseInt(psel.value,10) : null;
+    pendingZone.constraint = val("z_constraint") || "none";
+    pendingZone.label = val("z_label"); pendingZone.notes = val("z_notes");
+    zoneRecompute(pendingZone);
+    c.zones = c.zones || [];
+    if(pendingZone.id){ c.zones = c.zones.map(function(z){ return z.id===pendingZone.id ? pendingZone : z; }); }
+    else { pendingZone.id = "z"+uid(); pendingZone.buildingId = c.buildingId || c.id; if(!pendingZone.completionLog) pendingZone.completionLog=[]; c.zones.push(pendingZone); }
+    save(); obCloseSheet(); refreshZones(c);
+    toast("Sone lagret: "+(pendingZone.label||svcDef(pendingZone.service).label)+" · "+zoneMeasureStr(pendingZone));
+    pendingZone=null;
+  }
+
+  /* ---- zones panel (beside the map) ---- */
+  function zonesPanelHTML(c){
+    var zs=c.zones||[];
+    var body = zs.length ? SERVICE_LIST.filter(function(s){return zs.some(function(z){return z.service===s.key;});}).map(function(s){
+      var rows=zs.filter(function(z){return z.service===s.key;}).map(zoneRow).join("");
+      return '<div class="ob-zcat" style="color:'+s.stroke+'">'+s.swatch+' '+esc(s.label)+'</div>'+rows;
+    }).join("") : '<div class="empty">Ingen tegnede soner ennå — bruk <b>Tegn sone</b> over kartet.</div>';
+    return '<div class="card"><div class="ct">Tegnede soner <span class="muted" style="font-weight:600">· målt</span></div>'+body+'</div>';
+  }
+  function zoneRow(z){
+    return '<div class="ob-row"><div class="ob-line-top"><div class="rt">'+zoneSwatch(z)+' '+esc(z.label||methodLabel(z)||z.service)
+      +(z.priority?' <span class="chip blue">P'+z.priority+'</span>':'')+(z.constraint&&z.constraint!=="none"?' <span class="chip amber">'+esc(z.constraint)+'</span>':'')+'</div>'
+      +'<div class="rp">'+zoneMeasureStr(z)+'</div></div>'
+      +'<div class="rd">'+(methodLabel(z)?esc(methodLabel(z)):"—")+(z.notes?' · '+esc(z.notes):'')+'</div>'
+      +'<div class="ob-acts"><button class="ob-mini" data-ob="editZone" data-id="'+z.id+'">✎ Rediger</button><button class="ob-mini no on" data-ob="delZone" data-id="'+z.id+'">🗑 Slett</button></div></div>';
+  }
+  function editZone(id){ var c=cur(); if(!c) return; var z=findZone(c,id); if(!z) return;
+    if(map){ try{ var b=L.geoJSON(z.geometry).getBounds(); map.panTo(b.getCenter()); }catch(e){} }
+    openZoneSheet(c, z, z.geometry); }
+  function delZone(id){ var c=cur(); if(!c) return; c.zones=(c.zones||[]).filter(function(z){return z.id!==id;}); save(); refreshZones(c); toast("Sone slettet"); }
+
+  /* ---- operational maps (read-only, board-grade) ---- */
+  function destroyOpMaps(){ for(var k in opMaps){ try{ opMaps[k].remove(); }catch(e){} } opMaps={}; }
+  function snowCaption(c){
+    var snowItem=(c.checklist||[]).filter(function(it){return it.id==="snow";})[0];
+    var fr = snowItem && snowItem.value ? snowItem.value : ">5 cm samme døgn";
+    return "Utløser: "+fr+" · brøyting + strøing · prioritert rekkefølge (lavest P-nummer først)";
+  }
+  function opLegend(kind){
+    var items = kind==="snow"
+      ? [["#1d4ed8","Maskin"],["#eab308","Hånd"],["#ec4899","Deponi"],["#f97316","Strøkasse"]]
+      : [["#22c55e","Klipping"],["#0f766e","Kantklipp"],["#f59e0b","Bed / gartner"],["#b3261e","No-go / ømtålig"]];
+    return '<div class="ob-oplegend">'+items.map(function(it){return '<span class="ob-lg"><span class="ob-lgsw" style="background:'+it[0]+'"></span>'+it[1]+'</span>';}).join("")+'</div>';
+  }
+  function opCardHTML(c, kind, prefix){
+    var elId=prefix+"-opmap-"+kind, cardId=prefix+"-opcard-"+kind;
+    var title=kind==="snow"?"Operasjonskart – Vinter":"Operasjonskart – Grønt";
+    return '<div class="card ob-opcard" id="'+cardId+'">'
+      +'<div class="ob-ophead"><div><div class="ob-optitle">'+esc(title)+'</div><div class="ob-opsub">'+esc(c.name)+' · '+esc(c.addr||"")+'</div></div>'
+      +'<button class="ob-mini" data-ob="printMap" data-arg="'+cardId+'">🖨 Skriv ut</button></div>'
+      +'<div class="ob-opmap" id="'+elId+'"></div>'
+      +(kind==="snow"?'<div class="ob-opcap">'+esc(snowCaption(c))+'</div>':'')
+      + opLegend(kind)+'</div>';
+  }
+  function opMapsRow(c, prefix){
+    if(!(c.zones && c.zones.length)) return "";
+    return '<div class="ob-opmaps">'+opCardHTML(c,"snow",prefix)+opCardHTML(c,"grass",prefix)+'</div>';
+  }
+  function buildOpMap(c, kind, elId){
+    if(!hasLeaflet) return; var el=document.getElementById(elId); if(!el) return;
+    if(opMaps[elId]){ try{opMaps[elId].remove();}catch(e){} delete opMaps[elId]; }
+    var m=L.map(el,{zoomControl:true, attributionControl:true});
+    opMaps[elId]=m;
+    L.tileLayer(KARTVERKET,{attribution:"© Kartverket", maxZoom:20}).addTo(m);
+    L.marker([c.center.lat,c.center.lon],{interactive:false, keyboard:false, icon:bpinIcon()}).addTo(m);
+    var zones=(c.zones||[]).filter(kind==="snow" ? function(z){return z.service==="snow";} : function(z){return z.service==="grass"||z.service==="greenery";});
+    var grp=L.featureGroup().addTo(m);
+    zones.forEach(function(z){ zoneToLayers(z, {permanentLabel:true}).forEach(function(l){ l.addTo(grp); }); });
+    try{ if(grp.getLayers().length) m.fitBounds(grp.getBounds().pad(0.35)); else m.setView([c.center.lat,c.center.lon], c.center.zoom||17); }
+    catch(e){ m.setView([c.center.lat,c.center.lon], c.center.zoom||17); }
+    setTimeout(function(){ if(opMaps[elId]) opMaps[elId].invalidateSize(); }, 90);
+  }
+  function printMapCard(cardId){
+    var card=document.getElementById(cardId); if(!card) return;
+    for(var k in opMaps){ try{ if(card.contains(opMaps[k].getContainer())) opMaps[k].invalidateSize(); }catch(e){} }
+    document.body.classList.add("ob-printing"); card.classList.add("ob-print-target");
+    var cleanup=function(){ document.body.classList.remove("ob-printing"); card.classList.remove("ob-print-target"); window.removeEventListener("afterprint", cleanup); };
+    window.addEventListener("afterprint", cleanup);
+    setTimeout(function(){ window.print(); }, 180);
   }
 
   /* ---------- geocode + geotag ---------- */
@@ -849,13 +1115,16 @@
     var todayL=inst.filter(function(i){return i.date===tIso;});
     var weekL=inst.filter(function(i){return i.date>=iso(ws)&&i.date<=iso(we)&&i.date!==tIso;});
     var komL=inst.filter(function(i){return i.date>iso(we);}).sort(function(a,b){return a.date<b.date?-1:1;});
+    var zc=liveClients().filter(function(c){return c.zones&&c.zones.length;})[0];
     var host=document.createElement("div"); host.className="lane"; host.style.gridColumn="1 / -1";
-    host.innerHTML = weekStepperHTML(today)
+    host.innerHTML = (zc?opMapsRow(zc,"fld"):"")
+      + weekStepperHTML(today)
       + planSection("I dag · "+dateLabel(today), todayL, true)
       + planSection("Denne uka", weekL, true)
       + (komL.length? planCondensed("Kommende (4 uker)", komL) : "")
       + beredskapHTML(month);
     cols.insertBefore(host, cols.firstChild);
+    if(zc){ buildOpMap(zc,"snow","fld-opmap-snow"); buildOpMap(zc,"grass","fld-opmap-grass"); }
   }
 
   /* ---- Office: Årsplan (doc 19 year planner, light) ---- */
@@ -889,6 +1158,7 @@
   function renderExtras(view, cols){
     seedIfNeeded();
     destroyMap();
+    destroyOpMaps();
     if(view==="sales"){ renderSales(cols); }
     else if(view==="board"){ renderBoardExtras(cols); }
     else if(view==="office"){ renderOfficeExtras(cols); }
@@ -901,6 +1171,7 @@
     if(!c){ cols.innerHTML=pipelineHTML(); return; }
     cols.innerHTML=wizardHTML(c);
     if(ui.step===1 || (ui.step===5 && c.stage==="Live")) buildMap(c);
+    if(ui.step===2 && c.offer){ buildOpMap(c,"snow","off-opmap-snow"); buildOpMap(c,"grass","off-opmap-grass"); }
   }
   function repaintSales(){ var cols=document.getElementById("cols"); if(cols) renderSales(cols); }
 
@@ -1048,10 +1319,13 @@
         +'<div class="ob-maptools"><span class="ob-active-note" id="ob-active">'+activeNote()+'</span><span class="spacer" style="flex:1"></span>'
           +'<button class="ob-btn ghost" data-ob="locateWalk">📍 Locate address</button>'
           +'<button class="ob-btn ghost" data-ob="geotag">📍 Use my location</button></div>'
+        +'<div class="ob-drawbar" id="ob-drawtools">'+drawToolbarHTML()+'</div>'
+        +'<div class="ob-drawread" id="ob-draw-readout"></div>'
         +'<div id="ob-map"></div>'
       +'</div>'
       +'<div>'
         + (c.checklist&&c.checklist.length ? '<div id="ob-checkwrap">'+checklistPanelHTML(c)+'</div>' : '')
+        +'<div id="ob-zonepanel">'+zonesPanelHTML(c)+'</div>'
         +'<div class="card"><div class="ct">Zones captured</div><div id="ob-zones">'+zonesHTML(c)+'</div></div>'
         +'<div id="ob-upsell">'+upsellHTML(c)+'</div>'
         +'<div class="card"><div class="ct">Recurring value so far</div><div class="ob-tot grand"><span>Per '+perWord+'</span><span class="v" id="ob-walktotal">'+kr(walkTotal(c))+'</span></div></div>'
@@ -1154,7 +1428,8 @@
         +'<div class="ob-bar"><button class="ob-btn primary" data-ob="genOffer">Generate offer from walkaround →</button></div></div>';
     }
     var sent = STAGES.indexOf(c.stage) >= STAGES.indexOf("Offer sent");
-    return '<div class="ob-grid split">'
+    return opMapsRow(c,"off")
+      +'<div class="ob-grid split">'
       +'<div class="card"><div class="ct">Live offer — '+esc(c.name)+' <span class="ob-ver">v'+c.offer.version+'</span></div>'
         +offerLinesHTML(c,false)
         +'<div class="ob-tot grand"><span>Total / '+(perL(c.offer)==="mnd"?"mnd + mva":"år")+'</span><span class="v">'+kr(offerTotal(c.offer))+'</span></div>'
@@ -1306,9 +1581,12 @@
         +'<div class="ob-picker" id="ob-layers">'+layerPickerHTML(c,"enrich")+'</div>'
         +'<div class="ob-maptools"><span class="ob-active-note" id="ob-active">'+activeNote()+'</span><span style="flex:1"></span>'
           +'<button class="ob-btn ghost" data-ob="geotag">📍 Use my location</button></div>'
+        +'<div class="ob-drawbar" id="ob-drawtools">'+drawToolbarHTML()+'</div>'
+        +'<div class="ob-drawread" id="ob-draw-readout"></div>'
         +'<div id="ob-map"></div>'
       +'</div>'
       +'<div>'
+        +'<div id="ob-zonepanel">'+zonesPanelHTML(c)+'</div>'
         +'<div class="card"><div class="ct">Handover pack</div>'
           +'<div class="ob-tot"><span>Building</span><span class="v" style="font-size:14px">'+esc(h.building||c.name)+'</span></div>'
           +'<div class="ob-tot"><span>Access</span><span class="v" style="font-size:13px">'+esc(h.access||"—")+'</span></div>'
@@ -1392,6 +1670,9 @@
       +'</div>';
     var pa=document.getElementById("ob-print"); if(!pa) return;
     pa.innerHTML=html;
+    document.body.classList.add("ob-print-offer");
+    var cleanup=function(){ document.body.classList.remove("ob-print-offer"); window.removeEventListener("afterprint", cleanup); };
+    window.addEventListener("afterprint", cleanup);
     setTimeout(function(){ window.print(); }, 60);
   }
 
@@ -1410,7 +1691,7 @@
     var c=cur();
     switch(act){
       case "open": ui.openId=id; var co=cust(id); ui.step=co?defaultStep(co):0; ui.draftNew=false; ui.activeLayer=null; ui.zonesOpen={1:true,3:true}; OnSite.go("sales"); break;
-      case "cliScope": { if(c){ var cit=(c.checklist||[]).filter(function(x){return x.id===id;})[0]; if(cit){ cit.scope=arg; save(); refreshChecklist(c); } } break; }
+      case "cliScope": { if(c){ var cit=(c.checklist||[]).filter(function(x){return x.id===id;})[0]; if(cit){ cit.scope=arg; save(); refreshChecklist(c); if(arg==="in" && ({lawn:1,hedges:1,beds:1,snow:1,paths:1,garage:1,facade:1})[cit.id]) toast("Tips: tegn denne sonen på kartet med «Tegn sone»"); } } break; }
       case "cliZone": { ui.zonesOpen[id]=!ui.zonesOpen[id]; if(c) setHTML("ob-checklist", checklistRowsHTML(c)); break; }
       case "weekStep": { var base=(ui.refMs!=null?ui.refMs:Date.now()); ui.refMs=base+parseInt(arg,10)*7*86400000; render(); break; }
       case "jumpTo": { var rd=refDate(), yy=rd.getFullYear(); ui.refMs = arg==="winter"?new Date(yy,0,15).getTime() : arg==="spring"?new Date(yy,4,6).getTime() : null; render(); break; }
@@ -1426,6 +1707,14 @@
       case "locateWalk": if(c) locate(c, c.addr); break;
       case "geotag": if(c) geotag(c); break;
       case "pick": if(c){ pickLayer(c,id); } break;
+      case "drawZone": startDraw(arg); break;
+      case "drawFinish": finishDraw(); break;
+      case "drawCancel": cancelDraw(); break;
+      case "saveZone": saveZoneFromSheet(); break;
+      case "editZone": editZone(id); break;
+      case "delZone": delZone(id); break;
+      case "closeObSheet": obCloseSheet(); pendingZone=null; break;
+      case "printMap": printMapCard(arg); break;
       case "genOffer": if(c){ if(!c.offer) generateOffer(c); if(c.stage==="Prospect"||c.stage==="Surveyed") setStage(c,"Surveyed"); ui.step=2; repaintSales(); } break;
       case "sendOffer": if(c) sendOffer(c); break;
       case "openBoard": ui.boardOpen=(c?c.id:null); OnSite.go("board"); break;
@@ -1462,6 +1751,7 @@
       if(f.checked && cc.layers.indexOf(id)<0) cc.layers.push(id);
       (cc.markers||[]).forEach(function(m){ m.inScope=(cc.requestedScope.indexOf(m.layer)>=0); });
       save(); return; }
+    if(name==="zoneService"){ if(pendingZone){ pendingZone.service=val; pendingZone.method=defaultMethod(val); obSheet(zoneSheetHTML(pendingZone)); } return; }
     if(!c) return;
     if(name==="cover"){ if(c.offer){ c.offer.coverNote=val; save(); } return; }
     if(name==="clival"){ var ci=(c.checklist||[]).filter(function(x){return x.id===id;})[0]; if(ci){ ci.value=val; save(); } return; }
@@ -1513,7 +1803,7 @@
     var c={ id:"cust"+uid(), name:"", addr:"", gnr:"", bnr:"", profile:PROFILES[0], buildYear:"", size:"",
       contacts:[{name:"",role:"Board chair",email:""}], meetingTime:"", stage:"Prospect",
       requestedScope:[], layers:[], center:{lat:59.9139, lon:10.7522, zoom:13}, baseLayer:"topo",
-      accessNote:"", markers:[], offer:null, offerHistory:[], changeRequests:[], buildingId:null, handover:null, enrichment:false,
+      accessNote:"", markers:[], zones:[], offer:null, offerHistory:[], changeRequests:[], buildingId:null, handover:null, enrichment:false,
       log:[{ts:nowStr(), text:"Prospect created"}] };
     customers().push(c); save();
     ui.openId=c.id; ui.step=0; ui.draftNew=true; ui.activeLayer=null;
