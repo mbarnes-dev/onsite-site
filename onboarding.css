@@ -438,3 +438,47 @@
   .ob-srdate{text-align:left}
   .ob-sropmap .ob-opmap{height:240px}
 }
+
+/* ---- team cockpit / in-cab view (doc 51, Phase 6c) ---- */
+.ob-cockchip{border:1px solid #2f6f4a;background:#eaf5ee;color:#1c5b34;border-radius:999px;padding:5px 12px;font-size:12.5px;font-weight:700;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:5px}
+.ob-cockchip:hover{background:#dcefe3}
+.ob-cockchip-x{opacity:.6;font-weight:800}
+.ob-cockboot{border:1.5px dashed #b9c7be;background:#f6faf7}
+.ob-teamchips{display:flex;gap:8px;flex-wrap:wrap}
+.ob-teamchip{flex:1 1 120px;min-width:120px;border:1px solid var(--line,#e1e5e1);background:#fff;border-radius:12px;padding:13px 10px;font-size:14px;font-weight:700;color:#1c2421;cursor:pointer;text-align:center}
+.ob-teamchip:hover{border-color:#2f8f5b;background:#eef6f0}
+.ob-cockbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;background:#0f1714;color:#fff;border:none}
+.ob-cockbar .ct{color:#fff}
+.ob-cockid{display:flex;align-items:center;gap:7px;font-size:14.5px}
+.ob-cockteam{font-weight:800}
+.ob-cockwho{opacity:.85;font-weight:600}
+.ob-cockid .ob-mini{background:#26332c;color:#dfeee6;border-color:#3a4a40}
+.ob-cockmodes{display:flex;gap:6px}
+.ob-rosterlist{display:flex;flex-direction:column;gap:7px;margin-bottom:6px}
+.ob-rosterbtn{border:1px solid var(--line,#e1e5e1);background:#fff;border-radius:11px;padding:13px;font-size:14.5px;font-weight:650;color:#1c2421;cursor:pointer;text-align:left}
+.ob-rosterbtn:hover{border-color:#2f8f5b;background:#eef6f0}
+.ob-routeintro .ct{display:flex;align-items:center;gap:8px}
+.ob-routeblock{border-left:3px solid #2f6fed}
+.ob-routehead{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.ob-routebldg{font-weight:750;font-size:14.5px}
+.ob-routeaddr{font-size:12.5px;color:#6b7670;margin-top:1px}
+.ob-routerows{margin-top:9px;display:flex;flex-direction:column;gap:2px}
+#ob-cockmap{display:none}
+#ob-cockmap.on{display:flex;flex-direction:column;position:fixed;inset:0;z-index:9000;background:rgba(15,23,20,.6);backdrop-filter:saturate(120%) blur(2px)}
+.ob-cockmap-bar{flex:0 0 auto;display:flex;align-items:center;gap:12px;padding:10px 16px;background:#0f1714;color:#fff}
+.ob-cockmapwho{margin-left:auto;background:#26332c;color:#dfeee6;border-radius:999px;padding:4px 11px;font-size:12.5px;font-weight:700;white-space:nowrap}
+#ob-cockmap .ob-board-scroll{flex:1 1 auto;overflow:auto;-webkit-overflow-scrolling:touch;padding:16px;max-width:900px;margin:0 auto;width:100%}
+#ob-cockmap .ob-opmap{height:46vh;min-height:300px;border-radius:10px;overflow:hidden;border:1px solid #2a3a30}
+.ob-cockzones{margin-top:12px;background:#fff;border-radius:12px;padding:6px 12px 10px}
+.ob-cockzoneshd{font-size:11.5px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:#6b7670;padding:9px 0 6px}
+.ob-ckzone{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid #f1f3f0}
+.ob-ckzone:last-child{border-bottom:none}
+.ob-ckzone.done{opacity:.72}
+.ob-ckzmain{font-size:14px;min-width:0}
+.ob-prio{display:inline-block;background:#1d4ed8;color:#fff;border-radius:5px;font-size:11px;font-weight:800;padding:1px 6px;vertical-align:1px}
+.ob-ckzone .ob-mini{flex:0 0 auto}
+@media (pointer:coarse){
+  .ob-teamchip,.ob-rosterbtn{min-height:48px}
+  .ob-ckzone .ob-mini{min-height:42px;padding:0 14px}
+  #ob-cockmap .ob-opmap{height:52vh}
+}

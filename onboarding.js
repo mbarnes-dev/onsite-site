@@ -190,7 +190,7 @@
   }
 
   /* ---------- ui (ephemeral, not persisted) ---------- */
-  var ui = { openId:null, step:0, activeLayer:null, draftNew:false, zonesOpen:{}, refMs:null, modOpen:{}, newBuilding:null };
+  var ui = { openId:null, step:0, activeLayer:null, draftNew:false, zonesOpen:{}, refMs:null, modOpen:{}, newBuilding:null, cockMode:"route", cockMapId:null };
 
   /* ---------- record helpers ---------- */
   function customers(){ var st=S(); if(!st.customers) st.customers=[]; return st.customers; }
@@ -1421,7 +1421,7 @@
   var pendingProof=null;
   function openProofSheet(inst){
     var c=clientOf(inst.lineId); if(!c){ completeInstance(inst); return; }
-    pendingProof={ id:"cl"+uid(), ts:null, by:currentUser(), service:serviceOfTask(c, inst.lineId),
+    pendingProof={ id:"cl"+uid(), ts:null, by:cockpitWho(), team:cockpitTeam(), service:serviceOfTask(c, inst.lineId),
       title:inst.title, building:inst.building, taskInstanceId:instKey(inst), zoneId:"", geo:null, photoIds:[], note:"", _inst:inst };
     obSheet(proofSheetHTML(c));
     setTimeout(function(){ hydratePhotos(document.getElementById("sheet")); }, 20);
@@ -1476,7 +1476,7 @@
     syncProofFromDOM();
     var inst=p._inst, c=clientOf(inst.lineId); if(!c){ proofCleanup(); obCloseSheet(); return; }
     p.ts=new Date().toISOString();
-    var entry={ id:p.id, ts:p.ts, by:p.by||currentUser(), service:p.service, title:p.title, building:p.building,
+    var entry={ id:p.id, ts:p.ts, by:p.by||cockpitWho(), team:p.team||cockpitTeam()||null, service:p.service, title:p.title, building:p.building,
       taskInstanceId:p.taskInstanceId, zoneId:p.zoneId||null, geo:p.geo||null, photoIds:p.photoIds||[], note:p.note||"" };
     setCurrentUser(entry.by);
     c.completionLog=c.completionLog||[]; c.completionLog.push(entry);
@@ -1484,6 +1484,7 @@
     pendingProof=null; obCloseSheet();
     completeInstance(inst, { by:entry.by, note:entry.note, hasPhoto:entry.photoIds.length>0, proofId:entry.id, silent:true });
     save(); render();
+    if(ui.cockMapId){ var ch=document.getElementById("ob-cockmap"); if(ch && ch.classList.contains("on")) showCockMap(ui.cockMapId); } // refresh in-cab map (render() destroyed op-maps)
     var what = entry.photoIds.length ? ("bilde"+(entry.geo?" + 📍":"")) : (entry.geo?"📍 posisjon":"bekreftelse");
     toast("✓ Utført — dokumentert ("+what+")");
   }
@@ -1584,8 +1585,137 @@
     }).join("") : '<div class="empty">Ingen beredskapstjenester i denne sesongen.</div>';
     return '<div class="card"><div class="ct">Beredskap · utløses ved forhold '+(winter?'<span class="chip blue">vintersesong</span>':'')+'</div>'+body+'</div>';
   }
+  /* ---- team cockpit / in-cab view (doc 51/52, Phase 6c) ---- */
+  var TEAMS=[
+    {key:"vaktmester", label:"Vaktmester",    icon:"🔧", services:["other","cleaning","technical"]},
+    {key:"snow",       label:"Snø",           icon:"❄️", services:["snow"]},
+    {key:"grass",      label:"Grønt",         icon:"🌿", services:["grass"]},
+    {key:"brann",      label:"Brannvern/HMS", icon:"🧯", services:["compliance"]}
+  ];
+  function teamDef(key){ for(var i=0;i<TEAMS.length;i++){ if(TEAMS[i].key===key) return TEAMS[i]; } return null; }
+  function cockpit(){ var st=S(); return st.cockpit||{team:null, individual:null}; }
+  function cockpitTeam(){ return cockpit().team; }
+  function cockpitWho(){ return cockpit().individual || currentUser(); } // 6c: real individual (was the 6a placeholder)
+  function setCockpit(team, individual){ var st=S(); st.cockpit={team:team, individual:individual||null}; if(individual) st.currentUser=individual; save(); }
+  function clearCockpit(){ var st=S(); st.cockpit={team:null, individual:null}; save(); }
+  function defaultRosters(){ return { vaktmester:["Martin","Geir H."], snow:["Tony B.","Per S."], grass:["Kari N.","Ola V."], brann:["HMS-ansvarlig"] }; }
+  function rosters(){ var st=S(); if(!st.rosters) st.rosters=defaultRosters(); return st.rosters; }
+  function addToRoster(team, name){ name=(name||"").trim(); if(!name) return; var r=rosters(); r[team]=r[team]||[]; if(r[team].indexOf(name)<0) r[team].push(name); save(); }
+  function teamMapKind(team){ return team==="snow"?"snow":"grass"; }   // snow→Vinter, grass→Grønt
+  function teamHasMap(team){ return team==="snow"||team==="grass"; }
+  function teamZones(c, team){ return teamMapKind(team)==="snow"
+      ? (c.zones||[]).filter(function(z){return z.service==="snow";})
+      : (c.zones||[]).filter(function(z){return z.service==="grass"||z.service==="greenery"||z.service==="beds";}); }
+  function syncCockpitChip(){
+    var inner=document.querySelector(".topbar .inner"); if(!inner) return;
+    var chip=document.getElementById("ob-cockchip"), ctx=cockpit();
+    if(!ctx.team){ if(chip&&chip.parentNode) chip.parentNode.removeChild(chip); return; }
+    var td=teamDef(ctx.team);
+    if(!chip){ chip=document.createElement("button"); chip.id="ob-cockchip"; chip.className="ob-cockchip"; chip.setAttribute("data-ob","cockSwitch");
+      inner.insertBefore(chip, inner.querySelector(".spacer")); }
+    chip.innerHTML=(td?td.icon:"")+' '+esc(td?td.label:"")+' · '+esc(ctx.individual||"—")+' <span class="ob-cockchip-x">⇄</span>';
+  }
+  function cockpitRosterSheet(team){
+    var td=teamDef(team); var names=(rosters()[team]||[]);
+    obSheet('<h3>'+td.icon+' '+esc(td.label)+' — hvem kjører i dag?</h3>'
+      +'<p class="muted" style="font-size:12.5px;margin:-6px 0 12px">Delt nettbrett i bilen — ingen pålogging. Velg deg selv fra laget.</p>'
+      +'<div class="ob-rosterlist">'+(names.length? names.map(function(n){ return '<button class="ob-rosterbtn" data-ob="cockPick" data-arg="'+team+'|'+encodeURIComponent(n)+'">'+esc(n)+'</button>'; }).join("") : '<div class="empty">Ingen på laget ennå.</div>')+'</div>'
+      +'<label>+ Legg til person</label><div style="display:flex;gap:8px"><input id="cock_newname" placeholder="navn / initialer"><button class="ob-mini ok on" data-ob="cockAddPerson" data-arg="'+team+'">Legg til</button></div>'
+      +'<button class="cancel" data-ob="closeObSheet">Avbryt</button>');
+  }
+  function cockpitSwitchSheet(){
+    obSheet('<h3>Bytt lag / person</h3>'
+      +'<p class="muted" style="font-size:12.5px;margin:-6px 0 12px">Ett nettbrett = én bil/ett lag. Bytt lag eller logg av.</p>'
+      +'<div class="ob-teamchips">'+TEAMS.map(function(t){ return '<button class="ob-teamchip" data-ob="cockTeam" data-arg="'+t.key+'">'+t.icon+' '+esc(t.label)+'</button>'; }).join("")+'</div>'
+      +'<button class="cancel" data-ob="cockLogoff">Logg av cockpit</button>');
+  }
+  function cockpitBarHTML(){
+    var ctx=cockpit();
+    if(!ctx.team){
+      return '<div class="card ob-cockboot"><div class="ct">🚗 Cockpit — bilens nettbrett</div>'
+        +'<p class="muted" style="font-size:12.5px;margin:-2px 0 10px">Velg lag for å starte dagens rute. Hver bil = ett lag (doc 51).</p>'
+        +'<div class="ob-teamchips">'+TEAMS.map(function(t){ return '<button class="ob-teamchip" data-ob="cockTeam" data-arg="'+t.key+'">'+t.icon+' '+esc(t.label)+'</button>'; }).join("")+'</div></div>';
+    }
+    var td=teamDef(ctx.team), mode=ui.cockMode||"route";
+    return '<div class="card ob-cockbar"><div class="ob-cockid"><span class="ob-cockteam">'+td.icon+' '+esc(td.label)+'</span> <span class="ob-cockwho">· '+esc(ctx.individual||"—")+'</span>'
+      +' <button class="ob-mini" data-ob="cockSwitch">⇄ bytt</button></div>'
+      +'<div class="ob-cockmodes"><button class="ob-mini'+(mode==="route"?' on':'')+'" data-ob="cockMode" data-arg="route">🧭 Min rute</button>'
+      +'<button class="ob-mini'+(mode==="building"?' on':'')+'" data-ob="cockMode" data-arg="building">📋 Alle bygg</button></div></div>';
+  }
+  function cockpitRouteHTML(){
+    var ctx=cockpit(), td=teamDef(ctx.team); if(!td) return "";
+    var today=refDate(), tIso=iso(today);
+    var blocks=liveClients().map(function(c){
+      var lines=scheduleLines(c), rows=[];
+      generateInstances(lines, mondayOf(today), addDays(today,6)).filter(function(i){ return i.date===tIso && !isDone(i) && td.services.indexOf(serviceOfTask(c, i.lineId))>=0; })
+        .forEach(function(i){ rows.push(planRow(i, true)); });
+      if(td.services.indexOf("snow")>=0){
+        lines.filter(function(l){return l.schedule.type==="event" && serviceOfTask(c,l.lineId)==="snow";}).forEach(function(l){
+          (l.schedule.events||[]).forEach(function(ev){
+            rows.push('<div class="ob-row"><div class="ob-line-top"><div class="rt">⚡ '+esc(ev.name)+'</div>'
+              +'<button class="ob-mini ok on" data-ob="eventDone" data-arg="'+l.lineId+'|'+encodeURIComponent(ev.name)+'|'+encodeURIComponent(c.name)+'">✓ Utført</button></div>'
+              +'<div class="rd">beredskap · utløses ved forhold</div></div>');
+          });
+        });
+      }
+      var zN=teamZones(c, ctx.team).length;
+      if(!rows.length && !zN) return null;
+      var mapBtn=(teamHasMap(ctx.team) && zN) ? '<button class="ob-mini ok on" data-ob="openCockMap" data-arg="'+c.id+'">🗺️ Åpne kart · '+zN+' soner</button>' : '';
+      return '<div class="card ob-routeblock"><div class="ob-routehead"><div><div class="ob-routebldg">📍 '+esc(c.name)+'</div><div class="ob-routeaddr">'+esc(c.addr||"")+'</div></div>'+mapBtn+'</div>'
+        +(rows.length? '<div class="ob-routerows">'+rows.join("")+'</div>' : '<div class="empty" style="margin-top:6px">Ingen planlagte oppgaver i dag — kartet er klart ved behov.</div>')+'</div>';
+    }).filter(Boolean);
+    var head='<div class="card ob-routeintro"><div class="ct">🧭 Min rute i dag · '+td.icon+' '+esc(td.label)+' <span class="chip grey">'+blocks.length+' bygg</span></div>'
+      +'<p class="muted" style="font-size:12px;margin:-2px 0 0">Dagens oppgaver for laget ditt, samlet per bygg. Åpne kartet som kjøreguide og marker utført rett fra sonen. <span style="opacity:.6">// later: ruterekkefølge/nav</span></p></div>';
+    return head + (blocks.length? blocks.join("") : '<div class="card"><div class="empty">Ingen aktive oppgaver for '+esc(td.label)+' i dag — sjekk «Alle bygg» eller kartet.</div></div>');
+  }
+  function zoneDoneToday(c, z){ var tIso=iso(refDate()); return (z.completionLog||[]).filter(function(e){return iso(new Date(e.ts))===tIso;}).slice(-1)[0] || null; }
+  function cockZoneRowHTML(c, z){
+    var done=zoneDoneToday(c,z), prio=z.priority?'<span class="ob-prio">P'+z.priority+'</span> ':'', ml=methodLabel(z);
+    return '<div class="ob-ckzone'+(done?' done':'')+'"><div class="ob-ckzmain">'+prio+'<b>'+esc(z.label||z.service)+'</b>'+(ml?' <span class="muted">· '+esc(ml)+'</span>':'')+'</div>'
+      +(done?'<span class="chip green">✓ '+esc(done.by||"")+' '+repTime(done.ts)+'</span>':'<button class="ob-mini ok on" data-ob="cockZoneDone" data-arg="'+c.id+'|'+z.id+'">✓ Utført</button>')+'</div>';
+  }
+  function showCockMap(custId){
+    var c=cust(custId), ctx=cockpit(), td=teamDef(ctx.team); if(!c||!td) return;
+    ui.cockMapId=custId;
+    var kind=teamMapKind(ctx.team), zones=teamZones(c, ctx.team);
+    var host=document.getElementById("ob-cockmap"); if(!host) return;
+    host.innerHTML='<div class="ob-cockmap-bar"><button class="ob-btn ghost" data-ob="closeCockMap">✕ Lukk</button>'
+      +'<div class="ob-board-title">'+(kind==="snow"?"❄️ Operasjonskart – Vinter":"🌿 Operasjonskart – Grønt")+' · '+esc(c.name)+'</div>'
+      +'<span class="ob-cockmapwho">'+td.icon+' '+esc(ctx.individual||td.label)+'</span></div>'
+      +'<div class="ob-board-scroll"><div class="ob-opmap" id="cock-opmap"></div>'+opLegend(kind)
+      +(kind==="snow"?'<div class="ob-opcap">'+esc(snowCaption(c))+'</div>':'')
+      +'<div class="ob-cockzones"><div class="ob-cockzoneshd">Marker utført rett fra sonen — logges med tid'+(' og hvem')+'</div>'
+      + zones.map(function(z){return cockZoneRowHTML(c,z);}).join("") +'</div></div>';
+    host.classList.add("on"); host.setAttribute("aria-hidden","false");
+    buildOpMap(c, kind, "cock-opmap");
+    hydratePhotos(host);
+  }
+  function closeCockMap(){
+    var host=document.getElementById("ob-cockmap"); if(!host) return;
+    if(opMaps["cock-opmap"]){ try{opMaps["cock-opmap"].remove();}catch(e){} delete opMaps["cock-opmap"]; }
+    ui.cockMapId=null; host.classList.remove("on"); host.setAttribute("aria-hidden","true"); host.innerHTML="";
+  }
+  function openZoneProof(custId, zoneId){
+    var c=cust(custId); if(!c) return; var z=findZone(c, zoneId); if(!z) return;
+    var service = z.service==="snow" ? "snow" : (z.service==="grass"||z.service==="greenery"||z.service==="beds") ? "grass" : "other";
+    var title=(service==="snow"?"Snørydding":"Grøntarbeid")+" – "+(z.label||z.service);
+    var lineKey=service==="snow"?"snow":"lawn";
+    pendingProof={ id:"cl"+uid(), ts:null, by:cockpitWho(), team:cockpitTeam(), service:service,
+      title:title, building:c.name, taskInstanceId:c.id+":zone:"+z.id, zoneId:z.id, geo:null, photoIds:[], note:"",
+      _inst:{ lineId:c.id+":"+lineKey, date:iso(refDate()), title:title, freq:"sone", building:c.name } };
+    obSheet(proofSheetHTML(c));
+    setTimeout(function(){ hydratePhotos(document.getElementById("sheet")); }, 20);
+  }
+
   function renderFieldExtras(cols){
     if(!liveClients().length) return;
+    var ctx=cockpit();
+    if(ctx.team && (ui.cockMode||"route")==="route"){
+      var rh=document.createElement("div"); rh.className="lane"; rh.style.gridColumn="1 / -1";
+      rh.innerHTML=cockpitBarHTML()+cockpitRouteHTML();
+      cols.insertBefore(rh, cols.firstChild);
+      return;
+    }
     var today=refDate(), ws=mondayOf(today), we=addDays(ws,6), tIso=iso(today), month=today.getMonth()+1;
     var inst=generateInstances(liveLines(), ws, addDays(today,28)).filter(function(i){return !isDone(i);});
     var todayL=inst.filter(function(i){return i.date===tIso;});
@@ -1593,7 +1723,8 @@
     var komL=inst.filter(function(i){return i.date>iso(we);}).sort(function(a,b){return a.date<b.date?-1:1;});
     var zc=liveClients().filter(function(c){return c.zones&&c.zones.length;})[0];
     var host=document.createElement("div"); host.className="lane"; host.style.gridColumn="1 / -1";
-    host.innerHTML = (zc?opMapsRow(zc,"fld"):"")
+    host.innerHTML = cockpitBarHTML()
+      + (zc?opMapsRow(zc,"fld"):"")
       + weekStepperHTML(today)
       + planSection("I dag · "+dateLabel(today), todayL, true)
       + planSection("Denne uka", weekL, true)
@@ -1635,6 +1766,7 @@
     seedIfNeeded();
     destroyMap();
     destroyOpMaps();
+    syncCockpitChip(); // 6c: keep the device's team/individual chip in the header across views
     if(view==="sales"){ renderSales(cols); }
     else if(view==="board"){ renderBoardExtras(cols); }
     else if(view==="office"){ renderOfficeExtras(cols); }
@@ -2592,6 +2724,7 @@
   document.addEventListener("click", function(e){
     if(e.target && e.target.id==="ob-board"){ closeBoard(); return; } // backdrop click closes board doc
     if(e.target && e.target.id==="ob-snowrep"){ closeSnowReport(); return; } // backdrop closes Brøyterapport
+    if(e.target && e.target.id==="ob-cockmap"){ closeCockMap(); return; } // backdrop closes in-cab map
     var t=e.target.closest("[data-ob]"); if(!t) return;
     var act=t.getAttribute("data-ob"), id=t.getAttribute("data-id"), arg=t.getAttribute("data-arg");
     var c=cur();
@@ -2614,6 +2747,15 @@
       case "closeSnowReport": closeSnowReport(); break;
       case "printSnowReport": printSnowReport(); break;
       case "markReportSent": markReportSent(arg); break;
+      case "cockTeam": cockpitRosterSheet(arg); break;
+      case "cockPick": { var cp=(arg||"").split("|"); setCockpit(cp[0], decodeURIComponent(cp[1]||"")); ui.cockMode="route"; obCloseSheet(); render(); var ctd=teamDef(cp[0]); toast("🚗 Cockpit: "+(ctd?ctd.label:cp[0])+" · "+decodeURIComponent(cp[1]||"")); break; }
+      case "cockAddPerson": { var nm=val("cock_newname"); if(nm){ addToRoster(arg, nm); cockpitRosterSheet(arg); } break; }
+      case "cockSwitch": cockpitSwitchSheet(); break;
+      case "cockLogoff": clearCockpit(); ui.cockMode="route"; obCloseSheet(); render(); toast("Logget av cockpit"); break;
+      case "cockMode": ui.cockMode=arg; render(); break;
+      case "openCockMap": showCockMap(arg); break;
+      case "closeCockMap": closeCockMap(); break;
+      case "cockZoneDone": { var cz=(arg||"").split("|"); openZoneProof(cz[0], cz[1]); break; }
       case "spawnEvt": spawnEvent(decodeURIComponent(arg||"")); break;
       case "back": ui.openId=null; ui.draftNew=false; repaintSales(); break;
       case "step": { var n=parseInt(id,10); if(c && n<=maxStep(c)){ ui.step=n; ui.activeLayer=null; repaintSales(); } break; }
