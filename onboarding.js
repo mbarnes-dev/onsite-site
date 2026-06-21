@@ -12,7 +12,7 @@
 
   /* ---------- store shortcuts ---------- */
   function S(){ return OnSite.state; }
-  function save(){ OnSite.save(); }
+  function save(){ return OnSite.save(); } // C1: propagate success/failure so writers can gate their success toast
   function render(){ OnSite.render(); }
   function toast(m){ OnSite.toast(m); }
   function esc(s){ return OnSite.esc(s); }
@@ -370,11 +370,8 @@
     var center=[c.center.lat, c.center.lon], zoom=c.center.zoom||17;
     map=L.map(el,{zoomControl:true});
     map.setView(center, zoom);
-    var topo=L.tileLayer("https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/{z}/{y}/{x}.png",{attribution:"© Kartverket", maxZoom:20});
-    var osm=L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{attribution:"© OpenStreetMap contributors", maxZoom:19});
-    (c.baseLayer==="osm" ? osm : topo).addTo(map);
-    L.control.layers({"Kartverket topo":topo, "OpenStreetMap":osm}, null, {position:"topright"}).addTo(map);
-    map.on("baselayerchange", function(e){ var cc=cur(); if(cc){ cc.baseLayer = (e.name.indexOf("Kart")>=0)?"topo":"osm"; save(); } });
+    // M19: Kartverket topo only — OSM public tiles removed (commercial-use terms compliance)
+    L.tileLayer(KARTVERKET,{attribution:"© Kartverket", maxZoom:20}).addTo(map);
     markerLayer=L.layerGroup().addTo(map);
     buildingMarker=L.marker(center,{interactive:false, keyboard:false,
       icon:L.divIcon({className:"", html:'<div class="ob-bpin">🏢</div>', iconSize:[30,30], iconAnchor:[15,15]})}).addTo(map);
@@ -494,7 +491,7 @@
   function prioIcon(p){ return L.divIcon({className:"", html:'<div class="ob-zprio">'+p+'</div>', iconSize:[22,22], iconAnchor:[11,11]}); }
   function bpinIcon(){ return L.divIcon({className:"", html:'<div class="ob-bpin">🏢</div>', iconSize:[30,30], iconAnchor:[15,15]}); }
   function zoneTip(z){ return (esc(z.label||methodLabel(z)||z.service))+' · '+zoneMeasureStr(z)+(z.priority?' · P'+z.priority:'')+(methodLabel(z)?' · '+esc(methodLabel(z)):''); }
-  function zoneShort(z){ return (z.priority?'P'+z.priority+' · ':'')+(methodLabel(z)||z.label||'')+(z.area_m2!=null||z.length_m!=null?' · '+zoneMeasureStr(z):''); }
+  function zoneShort(z){ return (z.priority?'P'+z.priority+' · ':'')+esc(methodLabel(z)||z.label||'')+(z.area_m2!=null||z.length_m!=null?' · '+zoneMeasureStr(z):''); } // M7: escape user-entered label (permanent tooltip → innerHTML)
   function zonePopupHTML(z){ return '<div style="min-width:170px"><div style="font-weight:750">'+esc(z.label||methodLabel(z)||z.service)+'</div>'
     +'<div class="muted" style="font-size:12px">'+esc(svcDef(z.service).label)+(methodLabel(z)?' · '+esc(methodLabel(z)):'')+' · '+zoneMeasureStr(z)+'</div>'
     +'<div style="margin-top:8px;display:flex;gap:6px"><button class="ob-mini" data-ob="editZone" data-id="'+z.id+'">✎ Rediger</button><button class="ob-mini no on" data-ob="delZone" data-id="'+z.id+'">🗑 Slett</button></div></div>'; }
@@ -692,17 +689,12 @@
   /* ---------- geocode + geotag ---------- */
   function geocode(addr, cb){
     if(!addr){ cb(null); return; }
+    // M19: geonorge only — Nominatim removed (OSM commercial-use policy). On failure → null (caller falls back to manual placement).
     var url="https://ws.geonorge.no/adresser/v1/sok?sok="+encodeURIComponent(addr)+"&treffPerSide=1";
     fetch(url).then(function(r){return r.json();}).then(function(j){
       var a=j&&j.adresser&&j.adresser[0];
-      if(a&&a.representasjonspunkt){ cb({lat:a.representasjonspunkt.lat, lon:a.representasjonspunkt.lon, label:a.adressetekst||addr}); }
-      else nominatim(addr,cb);
-    }).catch(function(){ nominatim(addr,cb); });
-  }
-  function nominatim(addr, cb){
-    fetch("https://nominatim.openstreetmap.org/search?format=json&limit=1&q="+encodeURIComponent(addr))
-      .then(function(r){return r.json();}).then(function(j){ cb(j&&j[0]?{lat:+j[0].lat, lon:+j[0].lon, label:j[0].display_name}:null); })
-      .catch(function(){ cb(null); });
+      cb(a&&a.representasjonspunkt ? {lat:a.representasjonspunkt.lat, lon:a.representasjonspunkt.lon, label:a.adressetekst||addr} : null);
+    }).catch(function(){ cb(null); });
   }
   function locate(c, addr){
     toast("Looking up address…");
@@ -1065,14 +1057,23 @@
     rebuildOfferFlat(c);
     return c.offer;
   }
-  function rebuildOfferFlat(c){
+  function lineRemoved(l){ return !!(l && l.review && l.review.decision==="remove"); } // C2: guards old-shape lines missing .review
+  // M4: module subtotals + grand totals exclude removed lines (+ travel), so module "Sum fast", the headline,
+  // the offer-detail total and the leave-behind all read ONE consistent number. Does NOT touch o.lines.
+  function syncOfferTotals(c){
     var o=c.offer; if(!o||!o.modules) return;
-    o.modules.forEach(function(m){ m.lines.forEach(function(l){ l.price=l.final; }); m.subtotal=m.lines.reduce(function(s,l){return s+(l.final||0);},0); });
-    var incl=o.modules.filter(function(m){return m.included;});
-    o.lines=[]; incl.forEach(function(m){ m.lines.forEach(function(l){ if(l.review.decision!=="remove") o.lines.push(l); }); });
-    var sum=incl.reduce(function(s,m){return s+m.subtotal;},0);
+    o.modules.forEach(function(m){ m.lines.forEach(function(l){ l.price=l.final; }); m.subtotal=m.lines.reduce(function(s,l){return s+(lineRemoved(l)?0:(l.final||0));},0); });
+    var sum=o.modules.filter(function(m){return m.included;}).reduce(function(s,m){return s+m.subtotal;},0)+(o.travel||0);
     if(o.period==="mnd"){ o.totalMonthly=Math.round(sum); o.totalYearly=Math.round(sum*12); }
     else { o.totalYearly=Math.round(sum); o.totalMonthly=Math.round(sum/12); }
+  }
+  function rebuildOfferFlat(c){
+    var o=c.offer; if(!o||!o.modules) return;
+    syncOfferTotals(c);
+    // rebuild the flat included-module mirror (removed lines excluded). Board review (setDecision) uses
+    // syncOfferTotals instead, so it does NOT rebuild this mirror — a removed line stays visible+togglable there.
+    var incl=o.modules.filter(function(m){return m.included;});
+    o.lines=[]; incl.forEach(function(m){ m.lines.forEach(function(l){ if(!lineRemoved(l)) o.lines.push(l); }); });
   }
   function recomputeOffer(c){ if(c&&c.offer&&c.offer.modules){ computeOffer(c); save(); } }
   function generateOffer(c){
@@ -1081,12 +1082,12 @@
     save();
   }
   function offerTotal(offer){
-    if(!offer) return 0;
-    return offer.lines.filter(function(l){return l.review.decision!=="remove";}).reduce(function(s,l){return s+(l.price||0);},0)+(offer.travel||0);
+    if(!offer || !offer.lines) return 0;
+    return offer.lines.filter(function(l){return !lineRemoved(l);}).reduce(function(s,l){return s+(l.price||0);},0)+(offer.travel||0);
   }
   function upsellTotal(offer){
-    if(!offer) return 0;
-    return offer.lines.filter(function(l){return !l.inScope && l.review.decision!=="remove";}).reduce(function(s,l){return s+(l.price||0);},0);
+    if(!offer || !offer.lines) return 0;
+    return offer.lines.filter(function(l){return !l.inScope && !lineRemoved(l);}).reduce(function(s,l){return s+(l.price||0);},0);
   }
   function sendOffer(c){
     if(!c.offer) generateOffer(c);
@@ -1104,6 +1105,7 @@
   function setDecision(c, lineId, decision){
     var l=findLine(c,lineId); if(!l) return;
     l.review.decision = (l.review.decision===decision ? null : decision);
+    syncOfferTotals(c); // M4: recompute subtotals + totals (keeps o.lines intact so the board can still toggle the line) so a "remove" reads consistently everywhere
     save();
     repaintBoard(c);
   }
@@ -1378,9 +1380,10 @@
     var st=S(); st.completedInstances=st.completedInstances||{}; st.completedInstances[instKey(inst)]=true;
     var c=clientOf(inst.lineId); var bldId=(c&&c.buildingId)?c.buildingId:(st.buildings[0]&&st.buildings[0].id);
     st.items.push({ id:uid(), kind:"task", bld:bldId, title:inst.title, detail:"Fra skjøtselsplan ("+inst.freq+") · "+inst.building, status:"done", billable:true, hours:0.5, time:new Date().toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}), who:opts.by||currentUser(), proof:{photo:!!opts.hasPhoto, note:opts.note||"Utført på plan", proofId:opts.proofId||null} });
-    save();
+    if(opts.noSave) return;   // C1: caller (proofConfirm) owns the gated save + rollback
+    var ok=save();
     if(opts.silent) return;   // proof flow renders + toasts itself
-    render(); toast("✓ Utført — dokumentert (Board) og fakturerbart (Office)");
+    render(); toast(ok ? "✓ Utført — dokumentert (Board) og fakturerbart (Office)" : "⚠️ Ikke lagret — lagringen er full. Oppgaven er IKKE markert utført.");
   }
   function spawnEvent(name){
     var st=S(); var c=liveClients()[0]; var bldId=(c&&c.buildingId)?c.buildingId:(st.buildings[0]&&st.buildings[0].id);
@@ -1478,12 +1481,24 @@
     p.ts=new Date().toISOString();
     var entry={ id:p.id, ts:p.ts, by:p.by||cockpitWho(), team:p.team||cockpitTeam()||null, service:p.service, title:p.title, building:p.building,
       taskInstanceId:p.taskInstanceId, zoneId:p.zoneId||null, geo:p.geo||null, photoIds:p.photoIds||[], note:p.note||"" };
-    setCurrentUser(entry.by);
+    // C1: mutate, then persist ONCE and only confirm if the write succeeded (no false "dokumentert" on quota failure)
+    var st=S(), prevUser=st.currentUser, itemsLen=(st.items||[]).length, instK=instKey(inst),
+        hadInst=!!(st.completedInstances&&st.completedInstances[instK]);
+    st.currentUser=entry.by;
     c.completionLog=c.completionLog||[]; c.completionLog.push(entry);
-    if(entry.zoneId){ var z=findZone(c,entry.zoneId); if(z){ z.completionLog=z.completionLog||[]; z.completionLog.push(entry); } } // Phase-1 zone hook
+    var z=entry.zoneId?findZone(c,entry.zoneId):null; if(z){ z.completionLog=z.completionLog||[]; z.completionLog.push(entry); } // Phase-1 zone hook
+    completeInstance(inst, { by:entry.by, note:entry.note, hasPhoto:entry.photoIds.length>0, proofId:entry.id, silent:true, noSave:true });
+    if(!save()){   // roll back every mutation so nothing is half-confirmed; keep the sheet open for retry
+      c.completionLog.pop(); if(z) z.completionLog.pop();
+      if(!hadInst && st.completedInstances) delete st.completedInstances[instK];
+      if((st.items||[]).length>itemsLen) st.items.length=itemsLen;
+      st.currentUser=prevUser;
+      render();
+      toast("⚠️ Ikke lagret — lagringen er full. Oppgaven er IKKE markert utført.");
+      return;
+    }
     pendingProof=null; obCloseSheet();
-    completeInstance(inst, { by:entry.by, note:entry.note, hasPhoto:entry.photoIds.length>0, proofId:entry.id, silent:true });
-    save(); render();
+    render();
     if(ui.cockMapId){ var ch=document.getElementById("ob-cockmap"); if(ch && ch.classList.contains("on")) showCockMap(ui.cockMapId); } // refresh in-cab map (render() destroyed op-maps)
     var what = entry.photoIds.length ? ("bilde"+(entry.geo?" + 📍":"")) : (entry.geo?"📍 posisjon":"bekreftelse");
     toast("✓ Utført — dokumentert ("+what+")");
@@ -1530,7 +1545,7 @@
   function boardProofHTML(){
     var entries=completionEntries(); if(!entries.length) return "";
     var groups=[], idx={};
-    entries.forEach(function(e){ var k=(e.ts||"").slice(0,10); if(!idx[k]){ idx[k]={key:k, items:[]}; groups.push(idx[k]); } idx[k].items.push(e); });
+    entries.forEach(function(e){ var k=iso(new Date(e.ts)); if(!idx[k]){ idx[k]={key:k, items:[]}; groups.push(idx[k]); } idx[k].items.push(e); }); // M5: group by LOCAL date (ts is UTC ISO) — matches the Brøyterapport so a late-evening completion files on the right day
     var body=groups.map(function(g){
       var d=new Date(g.key+"T00:00:00"), lbl=WD_NO[d.getDay()]+" "+d.getDate()+". "+MON_NO[d.getMonth()];
       return '<div class="ob-proofday">'+lbl.charAt(0).toUpperCase()+lbl.slice(1)+'</div>'+g.items.map(proofEntryHTML).join("");

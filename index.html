@@ -187,8 +187,10 @@
   "use strict";
   var LS_KEY = "onsite_day_v1";
 
+  var SCHEMA_VERSION = 1;
   function demo(){
     return {
+      schemaVersion: SCHEMA_VERSION,
       nextId: 100,
       buildings: [
         {id:"solbakken", name:"Solbakken Borettslag", addr:"Os Allé 12", code:"1948",
@@ -213,10 +215,46 @@
   var view = "field";
 
   function load(){
-    try{ var raw = localStorage.getItem(LS_KEY); if(raw) return JSON.parse(raw); }catch(e){}
+    try{ var raw = localStorage.getItem(LS_KEY); if(raw) return migrate(JSON.parse(raw)); }
+    catch(e){ try{ console.error("OnSite: load failed, starting fresh", e); }catch(_){} }
     return demo();
   }
-  function save(){ try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){} }
+  // C2: idempotent forward migration — backfills fields added in later phases so an
+  // old-shape persisted record never throws inside a render .map (the "reseed to restore" gotcha).
+  function migrate(s){
+    if(!s || typeof s!=="object") return demo();
+    if(!Array.isArray(s.buildings)) s.buildings = [];
+    if(!Array.isArray(s.items)) s.items = [];
+    if(!Array.isArray(s.customers)) s.customers = [];
+    if(!s.completedInstances || typeof s.completedInstances!=="object") s.completedInstances = {};
+    if(typeof s.nextId!=="number") s.nextId = 100;
+    function fixLine(l){ if(l && (!l.review || typeof l.review!=="object")) l.review = {decision:null, comment:""}; }
+    s.customers.forEach(function(c){
+      if(!Array.isArray(c.zones)) c.zones = [];
+      if(!Array.isArray(c.completionLog)) c.completionLog = [];
+      if(!Array.isArray(c.contacts)) c.contacts = [];
+      c.zones.forEach(function(z){ if(!Array.isArray(z.completionLog)) z.completionLog = []; if(!Array.isArray(z.photoIds)) z.photoIds = []; });
+      if(c.offer && typeof c.offer==="object"){
+        if(Array.isArray(c.offer.modules)) c.offer.modules.forEach(function(m){ if(Array.isArray(m.lines)) m.lines.forEach(fixLine); });
+        if(Array.isArray(c.offer.lines)) c.offer.lines.forEach(fixLine);
+        if(Array.isArray(c.offer.optionLines)) c.offer.optionLines.forEach(fixLine);
+        if(c.offer.travel==null) c.offer.travel = 0;
+      }
+    });
+    s.schemaVersion = SCHEMA_VERSION;
+    return s;
+  }
+  // C1: persistence must NOT silently swallow a failed write. Returns true on success,
+  // false (+ honest error toast) on QuotaExceededError or any throw, so callers can avoid a false success.
+  function save(){
+    try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); return true; }
+    catch(e){
+      try{ console.error("OnSite: save failed", e); }catch(_){}
+      try{ toast("⚠️ Kunne ikke lagre — lagringen er full. Eksporter/rydd før du fortsetter."); }catch(_){}
+      return false;
+    }
+    // PROD: move record persistence to a backend; localStorage is a single-device, ~5 MB demo store.
+  }
   function bldName(id){ var b=state.buildings.find(function(x){return x.id===id;}); return b?b.name:""; }
   function byKind(k){ return state.items.filter(function(i){return i.kind===k;}); }
 
@@ -268,7 +306,7 @@
       case "del": state.items=state.items.filter(function(i){return i.id!=id;}); commit("Removed"); break;
     }
   }
-  function commit(msg){ save(); render(); if(msg) toast(msg); }
+  function commit(msg){ var ok=save(); render(); if(ok && msg) toast(msg); } // C1: don't show a success toast if the write failed (save() already surfaced the error)
 
   function openMenu(){
     var s=document.getElementById("sheet");
@@ -286,7 +324,7 @@
   function openSheet(){
     draft = {kind:"task", bld:state.buildings[0].id, billable:true};
     var s=document.getElementById("sheet");
-    var blopts = state.buildings.map(function(b){return '<option value="'+b.id+'">'+b.name+'</option>';}).join("");
+    var blopts = state.buildings.map(function(b){return '<option value="'+esc(b.id)+'">'+esc(b.name)+'</option>';}).join("");
     s.innerHTML =
       '<h3>Add to today</h3>'+
       '<label>What kind of thing happened?</label>'+
@@ -461,7 +499,7 @@
     return html;
   }
 
-  function esc(s){ return (s||"").replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];}); }
+  function esc(s){ return (s||"").replace(/[&<>"'`]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;","`":"&#96;"}[c];}); }
 
   /* ---------- shared store (used by onboarding.js for the sales→onboarding flow) ---------- */
   // state is reassigned by seed/clear, so expose it via a getter (never a stale snapshot).
