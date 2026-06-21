@@ -371,6 +371,40 @@ export function expandLine(line, from, to) {
 /** Expand many lines (skips event-type, which are beredskap not calendar). */
 export function generateInstances(lines, from, to) { var out = []; lines.filter(function (l) { return l.schedule.type !== "event"; }).forEach(function (l) { out = out.concat(expandLine(l, from, to)); }); return out; }
 
+/* ============================================================ while-here ranking (Phase 7 "Mens du er her") */
+/** Rank "while you're here" candidates — the pure scoring/ranking/dedupe half of suggestWhileHere.
+ *  The app gathers the candidates (catalogue- + completedInstances/instKey-coupled — that part stays in
+ *  the app, by design); core owns the SCORING domain logic: co-location +200, co-equipment +60, statutory
+ *  +40, base 300, and (window − daysUntil) so nearer-due wins ties. Pure over its args (no globals).
+ *  @param cand  candidate objects: {title, area, equipment[], statutory, daysUntil, _svc, …passthrough}
+ *  @param opts  {hereAreas{}, hereEquip{}, WHILE_WINDOW=21, teamServices?[], areaLabel(fn), equipTypeLabel(fn)}
+ *  Mutates+returns the surviving candidates with .reasons[], .score, .coLoc — sorted desc by score. */
+export function rankWhileHere(cand, opts) {
+  opts = opts || {};
+  var W = opts.WHILE_WINDOW || 21, hereAreas = opts.hereAreas || {}, hereEquip = opts.hereEquip || {};
+  var areaLabel = opts.areaLabel || function (a) { return a; };
+  var equipTypeLabel = opts.equipTypeLabel || function (t) { return t; };
+  // dedupe by title+area
+  var seen = {}, uniq = [];
+  (cand || []).forEach(function (s) { var k = s.title + "|" + s.area; if (!seen[k]) { seen[k] = 1; uniq.push(s); } });
+  // optional team scope (cockpit) — filters on the app-annotated service bucket
+  if (opts.teamServices) uniq = uniq.filter(function (s) { return opts.teamServices.indexOf(s._svc) >= 0; });
+  uniq.forEach(function (s) {
+    var coLoc = !!hereAreas[s.area], matchedEq = null;
+    (s.equipment || []).some(function (t) { if (hereEquip[t]) { matchedEq = t; return true; } return false; });
+    var coEq = !!matchedEq;
+    s.reasons = [];
+    if (coLoc) s.reasons.push({ k: "loc", icon: "📍", text: "Samme område — " + areaLabel(s.area) });
+    s.reasons.push({ k: "time", icon: "⏰", text: "Forfaller om " + s.daysUntil + " dag" + (s.daysUntil === 1 ? "" : "er") });
+    if (coEq) s.reasons.push({ k: "equip", icon: "🔧", text: equipTypeLabel(matchedEq) + " er på stedet i dag" });
+    if (s.statutory) s.reasons.push({ k: "comp", icon: "✅", text: "Lovpålagt — forfaller nå" });
+    var score = 300; if (coLoc) score += 200; if (coEq) score += 60; if (s.statutory) score += 40; score += Math.max(0, (W - s.daysUntil));
+    s.score = score; s.coLoc = coLoc;
+  });
+  uniq.sort(function (a, b) { return b.score - a.score; });
+  return uniq;
+}
+
 /* ============================================================ migration — INTENTIONALLY NOT EXTRACTED.
  * Migration is the one engine that stays app-side (index.html `migrate`): it runs at parse-time, BEFORE
  * this deferred module loads, and depends on the app's `demo()` seed + `SCHEMA_VERSION`. A core copy would

@@ -59,6 +59,12 @@ export function expandLine(line: ScheduleLine, from: Date, to: Date): ScheduleIn
 export function generateInstances(lines: ScheduleLine[], from: Date, to: Date): ScheduleInstance[];
 export function freqText(s: { type: string; [k: string]: unknown }): string;
 
+// while-here ranking (Phase 7): the pure scoring/dedupe half of suggestWhileHere. The app gathers candidates
+// (catalogue- + completedInstances/instKey-coupled); core ranks them. Mutates+returns survivors, sorted by score.
+export interface WhileHereCandidate { title: string; area: string; equipment?: string[]; statutory?: boolean; daysUntil: number; _svc?: string; [k: string]: unknown; }
+export interface WhileHereReason { k: "loc" | "time" | "equip" | "comp"; icon: string; text: string; }
+export function rankWhileHere(cand: WhileHereCandidate[], opts?: { hereAreas?: Record<string, unknown>; hereEquip?: Record<string, unknown>; WHILE_WINDOW?: number; teamServices?: string[] | null; areaLabel?: (a: string) => string; equipTypeLabel?: (t: string) => string }): (WhileHereCandidate & { reasons: WhileHereReason[]; score: number; coLoc: boolean })[];
+
 export function recurringRadar(c: Customer, opts?: { now?: Date }): RadarOpportunity[];
 export function radarKeyword(s: string): string;
 export function radarSeasonOf(isoStr: string): string;

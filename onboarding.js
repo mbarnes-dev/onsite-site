@@ -2733,7 +2733,10 @@
     if(s.kind==="sched") return serviceOfTask(c, s.lineId);
     return ({greenery:"grass", grass:"grass", snow:"snow", cleaning:"cleaning", compliance:"compliance", technical:"technical", other:"other"})[s.service]||"other";
   }
-  // the heart: ranked, explainable suggestions for a building right now
+  // the heart: ranked, explainable suggestions for a building right now. Candidate GATHERING stays here by
+  // design — it's catalogue-coupled (catEquipment/areaOfLineId) AND owns the isDone/instKey completion
+  // contract (real schedule instances vs c.id+":up:"+id upcoming items); moving it would risk completed
+  // tasks silently re-surfacing. The pure SCORING/RANKING/dedupe domain logic delegates to @onsite/core.
   function suggestWhileHere(c, ctx){
     ctx=ctx||{};
     var today=refDate(), tIso=iso(today);
@@ -2753,25 +2756,11 @@
       if(isDone(i)) return; var d=Math.round((new Date(i.date+"T00:00:00")-new Date(tIso+"T00:00:00"))/86400000);
       if(d<=0 || d>WHILE_WINDOW) return;
       cand.push({ key:"sc:"+instKey(i), kind:"sched", lineId:i.lineId, title:i.title, area:i.statutory?areaOfComplianceTitle(i.title):areaOfLineId(i.lineId), equipment:catEquipment(itemKeyOf(i.lineId)), statutory:!!i.statutory, freq:i.freq, daysUntil:d, dueIso:i.date }); });
-    // dedupe by title+area
-    var seen={}, uniq=[]; cand.forEach(function(s){ var k=s.title+"|"+s.area; if(!seen[k]){ seen[k]=1; uniq.push(s); } });
-    // optional team scope (cockpit)
-    if(ctx.teamServices){ uniq=uniq.filter(function(s){ return ctx.teamServices.indexOf(candService(c,s))>=0; }); }
-    // 3) reasons + score (co-located+due-soon highest; then equipment; then compliance; nearer-due wins ties)
-    uniq.forEach(function(s){
-      var coLoc=!!hereAreas[s.area], matchedEq=null;
-      (s.equipment||[]).some(function(t){ if(hereEquip[t]){ matchedEq=t; return true; } return false; });   // real equipment on site today
-      var coEq=!!matchedEq;
-      s.reasons=[];
-      if(coLoc) s.reasons.push({k:"loc", icon:"📍", text:"Samme område — "+areaLabel(s.area)});
-      s.reasons.push({k:"time", icon:"⏰", text:"Forfaller om "+s.daysUntil+" dag"+(s.daysUntil===1?"":"er")});
-      if(coEq) s.reasons.push({k:"equip", icon:"🔧", text:equipTypeLabel(matchedEq)+" er på stedet i dag"});
-      if(s.statutory) s.reasons.push({k:"comp", icon:"✅", text:"Lovpålagt — forfaller nå"});
-      var score=300; if(coLoc) score+=200; if(coEq) score+=60; if(s.statutory) score+=40; score+=Math.max(0,(WHILE_WINDOW-s.daysUntil));
-      s.score=score; s.coLoc=coLoc;
-    });
-    uniq.sort(function(a,b){ return b.score-a.score; });
-    return uniq;
+    // annotate the catalogue-derived service bucket so core can apply the optional team-scope filter (cockpit)
+    if(ctx.teamServices){ cand.forEach(function(s){ s._svc=candService(c,s); }); }
+    // 3) delegate dedupe + reasons + score + sort to @onsite/core (pure ranking over the gathered candidates)
+    return window.OnSiteCore.rankWhileHere(cand, { hereAreas:hereAreas, hereEquip:hereEquip, WHILE_WINDOW:WHILE_WINDOW,
+      teamServices:ctx.teamServices||null, areaLabel:areaLabel, equipTypeLabel:equipTypeLabel });
   }
   function whileHereHTML(c, ctx){
     var sugs=suggestWhileHere(c, ctx); if(!sugs.length) return "";
