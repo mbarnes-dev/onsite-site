@@ -306,6 +306,7 @@
       checklist:holtetChecklist(),
       upcoming:holtetUpcoming(),  // Phase 7: known upcoming maintenance (data; the while-here engine recomputes suggestions from it)
       assets:holtetAssets(),      // Phase 10: location-tagged building-asset registry (the moat layer)
+      requests:holtetRequests(), notices:[],  // Phase 11: ad-hoc approval/money loop seed (two open requests) + generated comms
       offer:null, offerHistory:[], changeRequests:[], buildingId:null, handover:null, enrichment:false,
       log:[{ts:"16 Jun 2026", text:"Step 0 ferdig fra registre — USBL + styret hentet, 7 oppganger pinnet, sjekkliste forhåndsutfylt"},
            {ts:"15 Jun 2026", text:"Prospect opprettet fra Bygårdsservice-kontrakt (Kongsveien 82 A–G)"}]
@@ -870,6 +871,7 @@
     (c.checklist||[]).forEach(function(it){ (it.photoIds||[]).forEach(function(p){live[p]=1;}); });
     (c.completionLog||[]).forEach(function(e){ (e.photoIds||[]).forEach(function(p){live[p]=1;}); });
     (c.assets||[]).forEach(function(a){ (a.photoIds||[]).forEach(function(p){live[p]=1;}); });  // Phase 10: keep asset photos
+    (c.requests||[]).forEach(function(r){ (r.photoIds||[]).forEach(function(p){live[p]=1;}); });  // Phase 11: keep request photos
   }); return live; }
   function photoGC(){   // delete IndexedDB + LS blobs no longer referenced by any record (reconcile after bulk removals)
     var live=collectLivePhotoIds();
@@ -918,7 +920,7 @@
     var kind=input.getAttribute("data-photocap"), id=input.getAttribute("data-id");
     var files=input.files; if(!files||!files.length) return;
     var c=cur();
-    var t = (kind==="proof") ? pendingProof : (kind==="asset") ? pendingAsset : (c&&photoTarget(c,kind,id));
+    var t = (kind==="proof") ? pendingProof : (kind==="asset") ? pendingAsset : (kind==="request") ? pendingRequest : (c&&photoTarget(c,kind,id));
     if(!t){ input.value=""; return; }
     var n=files.length, done=0, totalKb=0;
     toast("Komprimerer "+n+" bilde"+(n>1?"r":"")+"…");
@@ -928,6 +930,7 @@
         done++; if(done===n){
           if(kind==="proof"){ syncProofFromDOM(); reRenderProofSheet(); }   // photo blob already in IndexedDB; draft holds the id until confirm
           else if(kind==="asset"){ syncAssetFromDOM(); reRenderAssetSheet(); }  // Phase 10: draft holds the id until confirm
+          else if(kind==="request"){ syncRequestFromDOM(); reRenderRequestSheet(); }  // Phase 11: request draft holds the id until submit
           else { save(); afterPhotoChange(c); }
           toast("📷 "+n+" bilde"+(n>1?"r":"")+" lagret (~"+totalKb+" KB)");
         }
@@ -944,6 +947,7 @@
   function photoDelHandler(arg){
     var p=(arg||"").split("|"); var kind=p[0], id=p[1], pid=p[2];
     if(kind==="asset"){ if(pendingAsset){ pendingAsset.photoIds=(pendingAsset.photoIds||[]).filter(function(x){return x!==pid;}); photoDel(pid); reRenderAssetSheet(); } return; }
+    if(kind==="request"){ if(pendingRequest){ pendingRequest.photoIds=(pendingRequest.photoIds||[]).filter(function(x){return x!==pid;}); photoDel(pid); reRenderRequestSheet(); } return; }
     var c=cur(); var t=c&&photoTarget(c,kind,id); if(!t) return;
     t.photoIds=(t.photoIds||[]).filter(function(x){return x!==pid;}); photoDel(pid); save(); afterPhotoChange(c); toast("Bilde slettet");
   }
@@ -1644,9 +1648,13 @@
     st.currentUser=entry.by;
     c.completionLog=c.completionLog||[]; c.completionLog.push(entry);
     var z=entry.zoneId?findZone(c,entry.zoneId):null; if(z){ z.completionLog=z.completionLog||[]; z.completionLog.push(entry); } // Phase-1 zone hook
+    var linkedReq = /:req:/.test(inst.lineId) ? findRequestByLine(c, inst.lineId) : null;  // Phase 11: ad-hoc approved job → mark its request done
+    var reqPrev = linkedReq ? {done:linkedReq.done, completedTs:linkedReq.completedTs, proofId:linkedReq.proofId} : null;
+    if(linkedReq){ linkedReq.done=true; linkedReq.completedTs=entry.ts; linkedReq.proofId=entry.id; }
     completeInstance(inst, { by:entry.by, note:entry.note, hasPhoto:entry.photoIds.length>0, proofId:entry.id, silent:true, noSave:true });
     if(!save()){   // roll back every mutation so nothing is half-confirmed; keep the sheet open for retry
       c.completionLog.pop(); if(z) z.completionLog.pop();
+      if(linkedReq){ linkedReq.done=reqPrev.done; linkedReq.completedTs=reqPrev.completedTs; linkedReq.proofId=reqPrev.proofId; }
       if(!hadInst && st.completedInstances) delete st.completedInstances[instK];
       if((st.items||[]).length>itemsLen) st.items.length=itemsLen;
       st.currentUser=prevUser;
@@ -1835,7 +1843,7 @@
       var mapBtn=(teamHasMap(ctx.team) && zN) ? '<button class="ob-mini ok on" data-ob="openCockMap" data-arg="'+c.id+'">🗺️ Åpne kart · '+zN+' soner</button>' : '';
       var block='<div class="card ob-routeblock"><div class="ob-routehead"><div><div class="ob-routebldg">📍 '+esc(c.name)+'</div><div class="ob-routeaddr">'+esc(c.addr||"")+'</div></div>'+mapBtn+'</div>'
         +(rows.length? '<div class="ob-routerows">'+rows.join("")+'</div>' : '<div class="empty" style="margin-top:6px">Ingen planlagte oppgaver i dag — kartet er klart ved behov.</div>')+'</div>';
-      return block + emergencyMiniHTML(c) + whileHereHTML(c, {team:ctx.team, teamServices:td.services}); // Phase 7 suggestions + Phase 10 in-cab urgent access
+      return block + emergencyMiniHTML(c) + requestsCardHTML(c) + whileHereHTML(c, {team:ctx.team, teamServices:td.services}); // Phase 7 suggestions + Phase 10 urgent access + Phase 11 behov/jobber
     }).filter(Boolean);
     var head='<div class="card ob-routeintro"><div class="ct">🧭 Min rute i dag · '+td.icon+' '+esc(td.label)+' <span class="chip grey">'+blocks.length+' bygg</span></div>'
       +'<p class="muted" style="font-size:12px;margin:-2px 0 0">Dagens oppgaver for laget ditt, samlet per bygg. Åpne kartet som kjøreguide og marker utført rett fra sonen. <span style="opacity:.6">// later: ruterekkefølge/nav</span></p></div>';
@@ -2115,6 +2123,7 @@
       +'<div class="ob-acard-sec"><div class="ob-acard-lbl">📝 Notat</div><div>'+esc(a.notes||"—")+'</div></div>'
       +(a.complianceLink?'<div class="ob-acard-sec"><div class="ob-acard-lbl">📋 Lovpålagt kontroll</div><div>'+esc(a.complianceLink)+(due?' · neste: '+esc(dueLabel(due)):'')+'</div></div>':'')
       +(a.geo?'<button class="ob-mini" data-ob="assetGeoView" data-arg="'+a.geo.lat+','+a.geo.lon+'">📍 Vis på kart</button> ':'')
+      +'<button class="ob-mini" data-ob="reqFromAsset" data-arg="'+custId+'|'+assetId+'">🛠 Meld behov</button>'  // Phase 11: request from an asset
       +'<button class="save" data-ob="assetEdit" data-arg="'+custId+'|'+assetId+'">✏️ Rediger</button>'
       +'<button class="cancel" data-ob="closeObSheet">Lukk</button>');
     hydratePhotos(document.getElementById("sheet"));
@@ -2196,6 +2205,272 @@
     if(!save()){ c.assets.push(a); return; }  // rollback on failed write
     keepPhotos.forEach(function(pid){ photoDel(pid); }); photoGC();
     pendingAsset=null; assetCtx=null; obCloseSheet(); render(); toast("Anlegg slettet");
+  }
+
+  /* ===========================================================================
+     PHASE 11 — approval economics (the money loop) + comms that write themselves
+     (doc 01 §4.3 + §4.8). Field request → board approve (one tap) → job → 6a proof
+     → Office "klar til fakturering"; plus "varsle ansvarlig" + resident notices
+     generated from data (TEMPLATES, no LLM; right recipient + suggested supplier +
+     photo + plain Norwegian). Reuses 6a proof, Phase-3 contacts, the partner concept.
+     // PROD: real e-post/SMS/push send + invoicing/payment — all stubs here.
+     =========================================================================== */
+  // small seeded supplier list — enough for the "suggested supplier" win (P3: marketplace/vetting)
+  var SUPPLIERS = [
+    {id:"sup-matter", name:"Dørmatte Gutta AS",   trade:"matter",  phone:"22 00 11 22", partner:true},
+    {id:"sup-ror",    name:"Halden Rørlegger AS", trade:"ror",     phone:"69 00 00 10"},
+    {id:"sup-el",     name:"Os Elektro AS",       trade:"el",      phone:"69 00 00 20"},
+    {id:"sup-heis",   name:"KONE Heisservice",    trade:"heis",    phone:"815 00 100"},
+    {id:"sup-tak",    name:"Halden Tak & Blikk",  trade:"tak",     phone:"69 00 00 30"},
+    {id:"sup-gart",   name:"Grøntpartner Øst AS", trade:"gartner", phone:"69 00 00 40"},
+    {id:"sup-bygg",   name:"Holm Maler & Bygg",   trade:"bygg",    phone:"69 00 00 50"}
+  ];
+  function supplierById(id){ return SUPPLIERS.filter(function(s){return s.id===id;})[0]||null; }
+  function supplierLabel(s){ return s.name+(s.partner?" (partner)":"")+" · "+s.phone; }
+  // keyword → trade matcher over title+desc+category+area
+  function suggestSupplier(req){
+    var hay=((req.title||"")+" "+(req.desc||"")+" "+(req.category||"")+" "+(req.area||"")).toLowerCase();
+    var rules=[["heis",["heis","lift"]],["ror",["vann","rør","ror","lekkasje","sluk","avløp","stoppekran","sanitær"," wc","kran"]],
+      ["el",["el-skap","elektr","sikring","kurs","tavle","kabel","varmekabel","røykvarsler"]],["tak",["tak","renne","nedløp","beslag","vannbord","pipe"]],
+      ["gartner",["hekk","tre","busk","plen","beskjær","grønt","beplant"]],["matter",["matte","matter"]],["bygg",["male","maling","råte","puss","mur","snekker","dør","vindu","fasade"]]];
+    for(var i=0;i<rules.length;i++){ for(var j=0;j<rules[i][1].length;j++){ if(hay.indexOf(rules[i][1][j])>=0){ return SUPPLIERS.filter(function(s){return s.trade===rules[i][0];})[0]||null; } } }
+    return null;
+  }
+  // resident-impact detection → a ready notice line (templates)
+  function residentImpact(req){
+    var hay=((req.title||"")+" "+(req.desc||"")+" "+(req.category||"")+" "+(req.area||"")).toLowerCase();
+    if(/vann|rør|ror|stoppekran|lekkasje|sanitær|sluk/.test(hay)) return {type:"vann", emoji:"🚰", line:"vannet stenges midlertidig"};
+    if(/heis/.test(hay)) return {type:"heis", emoji:"🛗", line:"heisen settes ut av drift"};
+    if(/strøm|el-skap|elektr|sikring|tavle|kurs/.test(hay)) return {type:"strom", emoji:"⚡", line:"strømmen kan bli borte i perioder"};
+    if(/støy|bore|pigg|riv|male|maling|fasade|tak|råte/.test(hay)) return {type:"stoy", emoji:"🔧", line:"det kan bli noe støy og begrenset tilgang"};
+    return null;
+  }
+  function reqStatusLabel(s){ return ({ny:"Til godkjenning", godkjent:"Godkjent", "pris-bedt":"Pris etterspurt", "avslått":"Avslått"})[s]||s; }
+  function reqUrgLabel(u){ return ({low:"lav", med:"middels", "høy":"høy"})[u]||u; }
+  function customerRequests(c){ return (c&&c.requests)?c.requests:[]; }
+  function requestById(c, id){ return customerRequests(c).filter(function(r){return r.id===id;})[0]||null; }
+  function findRequestByLine(c, lineId){ var p=(lineId||"").split(":req:"); return p[1]?requestById(c, p[1]):null; }
+  function allRequests(){ var a=[]; customers().forEach(function(c){ (c.requests||[]).forEach(function(r){ a.push({c:c, r:r}); }); }); return a; }
+  function pendingApprovals(){ return allRequests().filter(function(x){ return x.r.status==="ny"||x.r.status==="pris-bedt"; }); }
+  function approvedJobs(c){ return customerRequests(c).filter(function(r){ return r.status==="godkjent" && !r.done; }); }
+  function invoiceReady(){ return allRequests().filter(function(x){ return x.r.status==="godkjent" && x.r.done && !x.r.invoiced; }); }
+  function proofEntryById(c, id){ return (c.completionLog||[]).filter(function(e){return e.id===id;})[0]||null; }
+  function tsLabel(ts){ try{ return dateLabel(new Date(ts)); }catch(e){ return ""; } }
+  function reqThumbs(r){ return (r.photoIds||[]).map(function(pid){ return '<img class="ob-reqthumb" data-ob="photoView" data-arg="'+pid+'" '+(photoCache[pid]?'src="'+photoCache[pid]+'"':'data-photo-id="'+pid+'"')+' alt="bilde">'; }).join(""); }
+  // Holtet demo seed — two open ad-hoc requests so the board approval loop is live on first load
+  function holtetRequests(){
+    function R(o){ o.id="rq"+(holtetRequests._n=(holtetRequests._n||0)+1); o.buildingId="holtet-cust"; o.building="Sameiet Holtet Horisont I";
+      o.ts=o.ts||"2026-06-20T08:00:00.000Z"; o.by=o.by||"Martin"; o.photoIds=o.photoIds||[]; o.status=o.status||"ny";
+      o.approvedBy=null; o.approvedTs=null; o.jobLineId=null; o.done=false; o.completedTs=null; o.proofId=null; o.invoiced=false; o.invoicedTs=null; o.assetId=o.assetId||null; o.fromUpsell=!!o.fromUpsell; return o; }
+    holtetRequests._n=0;
+    return [
+      R({title:"Løs takstein over inngang C", desc:"To takstein har løsnet etter vinden — fare for fall ned på inngangspartiet. Bør sikres straks.", category:"drift", area:"tak", urgency:"høy", estCost:4500, type:"gjør-nå"}),
+      R({title:"Vannlekkasje under kjøkkenbenk fellesvaskeri", desc:"Dryppende kobling under benken i fellesvaskeriet, oppgang B. Trenger rørlegger.", category:"service", area:"kjeller", urgency:"med", estCost:null, type:"be-om-pris"})
+    ];
+  }
+
+  /* ---- create-request sheet (Field / cockpit / asset / out-of-scope) ---- */
+  var pendingRequest=null, requestCtx=null, pendingNotice=null;
+  function openRequestSheet(c, prefill){
+    if(!c) return; prefill=prefill||{};
+    requestCtx={custId:c.id};
+    pendingRequest={ id:"rq"+uid(), buildingId:c.id, building:c.name, ts:null, by:cockpitWho(),
+      title:prefill.title||"", desc:prefill.desc||"", category:prefill.category||"drift", area:prefill.area||"teknisk",
+      urgency:prefill.urgency||"med", photoIds:[], estCost:(prefill.estCost!=null?prefill.estCost:null), type:prefill.type||"gjør-nå",
+      status:"ny", approvedBy:null, approvedTs:null, jobLineId:null, done:false, completedTs:null, proofId:null, invoiced:false, invoicedTs:null,
+      assetId:prefill.assetId||null, fromUpsell:!!prefill.fromUpsell, _origPhotoIds:[] };
+    obSheet(requestSheetHTML(pendingRequest)); hydratePhotos(document.getElementById("sheet"));
+  }
+  function requestSheetHTML(r){
+    var catKeys=["vinter","hage","renhold","drift","service","anlegg"];
+    var catOpts=catKeys.map(function(k){ return '<option value="'+k+'"'+(r.category===k?' selected':'')+'>'+esc(catKeyLabel(k))+'</option>'; }).join("");
+    var areaOpts=Object.keys(AREA_LABEL).map(function(k){ return '<option value="'+k+'"'+(r.area===k?' selected':'')+'>'+esc(AREA_LABEL[k])+'</option>'; }).join("");
+    function urg(v,l){ return '<label class="ob-urgopt'+(r.urgency===v?' on':'')+'"><input type="radio" name="rq_urg" value="'+v+'"'+(r.urgency===v?' checked':'')+' data-obf="reqUrg" hidden>'+l+'</label>'; }
+    function typ(v,l){ return '<label class="ob-typopt'+(r.type===v?' on':'')+'"><input type="radio" name="rq_typ" value="'+v+'"'+(r.type===v?' checked':'')+' data-obf="reqType" hidden>'+l+'</label>'; }
+    return '<h3>🛠 Meld behov / be om godkjenning</h3>'
+      +'<div class="muted" style="font-size:12px;margin:-4px 0 10px">'+esc(r.building)+' · sendes til styret for ett-trykks godkjenning</div>'
+      +(r.fromUpsell?'<div class="ob-callout" style="font-size:12px;margin-bottom:8px">⬆ Utenfor avtalen — be styret godkjenne som tilleggsjobb.</div>':'')
+      +'<label>Hva gjelder det</label><input id="rq_title" data-obf="reqTitle" value="'+esc(r.title)+'" placeholder="f.eks. Løs takstein over inngang C">'
+      +'<label>Beskrivelse</label><textarea id="rq_desc" data-obf="reqDesc" rows="3" placeholder="hva, hvor, hvorfor det haster">'+esc(r.desc)+'</textarea>'
+      +'<label>Kategori</label><select id="rq_cat" data-obf="reqCat">'+catOpts+'</select>'
+      +'<label>Område</label><select id="rq_area" data-obf="reqArea">'+areaOpts+'</select>'
+      +'<label>Hvor mye haster det</label><div class="ob-urgrow">'+urg("low","🟢 Lav")+urg("med","🟡 Middels")+urg("høy","🔴 Høy")+'</div>'
+      +'<label>Type</label><div class="ob-typrow">'+typ("gjør-nå","⚡ Gjør nå")+typ("be-om-pris","💬 Be om pris først")+'</div>'
+      +'<label>Estimert kostnad (valgfritt)</label><input id="rq_cost" data-obf="reqCost" type="number" inputmode="numeric" value="'+(r.estCost!=null?r.estCost:"")+'" placeholder="kr">'
+      +'<label>Bilde (valgfritt)</label>'+photoStripHTML("request", r.id, r.photoIds)
+      +'<button class="save" data-ob="reqSubmit">Send til styret</button>'
+      +'<button class="cancel" data-ob="reqCancel">Avbryt</button>';
+  }
+  function reopenRequestSheet(){ if(pendingRequest){ obSheet(requestSheetHTML(pendingRequest)); } }
+  function reRenderRequestSheet(){ reopenRequestSheet(); hydratePhotos(document.getElementById("sheet")); }
+  function syncRequestFromDOM(){
+    if(!pendingRequest) return; function g(id){ var e=document.getElementById(id); return e?e.value:null; }
+    var t=g("rq_title"); if(t!=null) pendingRequest.title=t;
+    var d=g("rq_desc"); if(d!=null) pendingRequest.desc=d;
+    var ca=g("rq_cat"); if(ca!=null) pendingRequest.category=ca;
+    var ar=g("rq_area"); if(ar!=null) pendingRequest.area=ar;
+    var co=g("rq_cost"); if(co!=null) pendingRequest.estCost=(co===""?null:Math.round(parseFloat(co)||0));
+    var u=document.querySelector('input[name="rq_urg"]:checked'); if(u) pendingRequest.urgency=u.value;
+    var ty=document.querySelector('input[name="rq_typ"]:checked'); if(ty) pendingRequest.type=ty.value;
+  }
+  function reqSubmit(){
+    syncRequestFromDOM();
+    var c=requestCtx&&cust(requestCtx.custId); if(!c||!pendingRequest){ obCloseSheet(); return; }
+    if(!(pendingRequest.title||"").trim()){ toast("Skriv kort hva det gjelder"); return; }
+    pendingRequest.ts=new Date().toISOString();
+    var saved=pendingRequest; delete saved._origPhotoIds;
+    c.requests=c.requests||[]; c.requests.push(saved);
+    if(!save()){ c.requests.pop(); return; }   // C1 gated rollback
+    pendingRequest=null; requestCtx=null; obCloseSheet(); render(); toast("🛠 Behov sendt til styret for godkjenning");
+  }
+  function reqCancel(){ requestCleanup(); obCloseSheet(); }
+  function requestCleanup(){ if(pendingRequest){ var o=pendingRequest._origPhotoIds||[]; (pendingRequest.photoIds||[]).forEach(function(pid){ if(o.indexOf(pid)<0) photoDel(pid); }); } pendingRequest=null; requestCtx=null; }
+
+  /* ---- Field/cockpit: approved jobs to do + open requests + create ---- */
+  function requestsCardHTML(c){
+    var jobs=approvedJobs(c), open=customerRequests(c).filter(function(r){return r.status==="ny"||r.status==="pris-bedt";});
+    var jobRows=jobs.map(function(r){
+      var imp=residentImpact(r);
+      return '<div class="ob-jobrow"><div class="ob-jobmain"><div class="ob-jobtitle">✅ '+esc(r.title)+' <span class="ob-asset-area">'+esc(areaLabel(r.area))+'</span></div>'
+        +'<div class="ob-jobmeta">Godkjent'+(r.approvedBy?' av '+esc(r.approvedBy):'')+(r.estCost!=null?' · '+kr(r.estCost):'')+'</div></div>'
+        +'<div class="ob-jobacts"><button class="ob-mini ok on" data-ob="reqDoJob" data-arg="'+c.id+'|'+r.id+'">✓ Gjør + dokumentér</button>'
+        +(imp?'<button class="ob-mini" data-ob="reqResident" data-arg="'+c.id+'|'+r.id+'">📢 Beboervarsel</button>':'')+'</div></div>';
+    }).join("");
+    var openRows=open.map(function(r){
+      return '<div class="ob-jobrow muted-row"><div class="ob-jobmain"><div class="ob-jobtitle">'+esc(r.title)+' <span class="ob-asset-area">'+esc(areaLabel(r.area))+'</span></div>'
+        +'<div class="ob-jobmeta">'+reqStatusLabel(r.status)+' · venter på styret</div></div></div>';
+    }).join("");
+    return '<div class="card ob-reqcard"><div class="ct">🛠 Behov & godkjente jobber — '+esc(c.name)+'</div>'
+      +((jobRows||openRows)? (jobRows+openRows) : '<div class="empty" style="margin:4px 0">Ingen åpne behov. Oppdaget et avvik? Meld det — styret godkjenner i ett trykk.</div>')
+      +'<button class="ob-newbtn" data-ob="reqNew" data-arg="'+c.id+'">＋ Meld behov / avvik</button></div>';
+  }
+
+  /* ---- Board: "Til godkjenning" — one-tap approve/decline/ask-price ---- */
+  function pendingApprovalsHTML(){
+    var ps=pendingApprovals(); if(!ps.length) return "";
+    var rows=ps.map(function(x){ var c=x.c, r=x.r;
+      var cost=r.estCost!=null?kr(r.estCost):(r.type==="be-om-pris"?'pris etterspørres':'—');
+      return '<div class="ob-approw"><div class="ob-appmain"><div class="ob-apptitle">'+esc(r.title)+' <span class="ob-urg '+r.urgency+'">'+reqUrgLabel(r.urgency)+'</span></div>'
+        +'<div class="ob-appmeta">'+esc(c.name)+' · '+esc(areaLabel(r.area))+' · '+esc(r.by)+' · '+tsLabel(r.ts)+'</div>'
+        +'<div class="ob-appdesc">'+esc(r.desc||"")+'</div>'+(r.photoIds&&r.photoIds.length?'<div class="ob-reqphotos">'+reqThumbs(r)+'</div>':'')
+        +'<div class="ob-appcost">'+cost+'</div></div>'
+        +'<div class="ob-appacts"><button class="ob-mini ok on" data-ob="reqApprove" data-arg="'+c.id+'|'+r.id+'">✓ Godkjenn</button>'
+        +'<button class="ob-mini" data-ob="reqAskPrice" data-arg="'+c.id+'|'+r.id+'">💬 Be om pris</button>'
+        +'<button class="ob-mini danger" data-ob="reqDecline" data-arg="'+c.id+'|'+r.id+'">✕ Avslå</button>'
+        +'<button class="ob-mini" data-ob="reqVarsle" data-arg="'+c.id+'|'+r.id+'">✉️ Varsle ansvarlig</button></div></div>';
+    }).join("");
+    return '<div class="card ob-apprcard"><div class="ct">🧾 Til godkjenning <span class="chip grey">'+ps.length+'</span></div>'
+      +'<p class="muted" style="font-size:12px;margin:-2px 0 8px">Avvik og behov fra felt — godkjenn i ett trykk, så blir det en dokumentert jobb.</p>'+rows+'</div>';
+  }
+  function boardApprover(c){ var ct=(c.contacts||[]).filter(function(x){return /leder/i.test(x.role||"");})[0]||(c.contacts||[])[0]; return ct?ct.name:"Styret"; }
+  function reqApprove(custId, reqId){ var c=cust(custId); var r=c&&requestById(c,reqId); if(!c||!r) return;
+    var prev={status:r.status, approvedBy:r.approvedBy, approvedTs:r.approvedTs, jobLineId:r.jobLineId};
+    r.status="godkjent"; r.approvedBy=boardApprover(c); r.approvedTs=new Date().toISOString(); r.jobLineId=c.id+":req:"+r.id;
+    if(!save()){ r.status=prev.status; r.approvedBy=prev.approvedBy; r.approvedTs=prev.approvedTs; r.jobLineId=prev.jobLineId; return; }
+    render(); toast("✓ Godkjent — nå en jobb feltet kan utføre og dokumentere"); }
+  function reqSetStatus(custId, reqId, status){ var c=cust(custId); var r=c&&requestById(c,reqId); if(!c||!r) return;
+    var prev=r.status; r.status=status; if(!save()){ r.status=prev; return; } render(); toast(status==="avslått"?"Avslått":"Pris etterspurt — feltet/Office legger inn pris"); }
+  function reqInvoice(custId, reqId){ var c=cust(custId); var r=c&&requestById(c,reqId); if(!c||!r) return;
+    var prev={invoiced:r.invoiced, invoicedTs:r.invoicedTs}; r.invoiced=true; r.invoicedTs=new Date().toISOString();
+    if(!save()){ r.invoiced=prev.invoiced; r.invoicedTs=prev.invoicedTs; return; } render(); toast("💰 Markert fakturert (// PROD: faktura/regnskap)"); }
+
+  /* ---- Office: "Klar til fakturering" + generated comms ---- */
+  function invoiceReadyHTML(){
+    var rs=invoiceReady(); if(!rs.length) return "";
+    var rows=rs.map(function(x){ var c=x.c, r=x.r; var proof=r.proofId?proofEntryById(c, r.proofId):null;
+      return '<div class="ob-invrow"><div class="ob-invmain"><div class="ob-invtitle">'+esc(r.title)+'</div>'
+        +'<div class="ob-invmeta">'+esc(c.name)+' · '+esc(areaLabel(r.area))+' · godkjent av '+esc(r.approvedBy||"styret")+' · utført '+tsLabel(r.completedTs)+(proof&&proof.by?' av '+esc(proof.by):'')+(proof&&proof.geo?' · 📍':'')+'</div>'
+        +(r.photoIds&&r.photoIds.length?'<div class="ob-reqphotos">'+reqThumbs(r)+'</div>':'')+'</div>'
+        +'<div class="ob-invright"><div class="ob-invcost">'+(r.estCost!=null?kr(r.estCost):'—')+'</div>'
+        +'<button class="ob-mini ok on" data-ob="reqInvoice" data-arg="'+c.id+'|'+r.id+'">Marker fakturert</button></div></div>';
+    }).join("");
+    var sum=rs.reduce(function(s,x){return s+(x.r.estCost||0);},0);
+    return '<div class="card ob-invcard"><div class="ct">💰 Klar til fakturering <span class="chip grey">'+rs.length+'</span></div>'
+      +rows+'<div class="ob-invsum">Sum klar: '+kr(sum)+' <span class="muted">· godkjent + utført + dokumentert</span></div></div>';
+  }
+  function noticesHTML(){
+    var all=[]; customers().forEach(function(c){ (c.notices||[]).forEach(function(n){ all.push({c:c,n:n}); }); });
+    if(!all.length) return "";
+    all.sort(function(a,b){ return a.n.ts<b.n.ts?1:-1; });
+    var rows=all.map(function(x){ var n=x.n;
+      return '<div class="ob-noticerow"><div class="ob-noticemain"><div class="ob-noticetop">'+(n.kind==="beboer"?"📢 Beboervarsel — "+esc(n.to):"✉️ Til "+esc(n.to))+' '+(n.sentTs?'<span class="ob-sentpill">sendt</span>':'<span class="ob-newpill">klar</span>')+'</div>'
+        +'<div class="ob-noticebody">'+esc(n.text)+'</div>'+(n.supplier?'<div class="ob-noticesupp">🔧 Foreslått leverandør: '+esc(n.supplier)+'</div>':'')+'</div>'
+        +(n.sentTs?'':'<button class="ob-mini ok on" data-ob="noticeSend" data-arg="'+x.c.id+'|'+n.id+'">Send</button>')+'</div>';
+    }).join("");
+    return '<div class="card ob-noticecard"><div class="ct">📨 Genererte meldinger <span class="chip grey">'+all.length+'</span></div>'
+      +'<p class="muted" style="font-size:12px;margin:-2px 0 8px">Skrevet automatisk fra jobbdata — rett mottaker, foreslått leverandør, bilde, klart språk. Du redigerer og sender.</p>'+rows+'</div>';
+  }
+
+  /* ---- comms generators (templates, no LLM) + sheets ---- */
+  function genMessage(c, r, contact, supplier){
+    var L=[]; L.push("Hei "+((contact&&contact.name)||"styret")+",");
+    L.push(""); L.push("På "+c.name+" har vi registrert: "+r.title+".");
+    if(r.desc) L.push(r.desc);
+    var urgTxt={low:"Ikke hastverk.", "med":"Bør tas snart.", "høy":"Dette haster — bør sikres straks."}[r.urgency];
+    if(urgTxt) L.push(urgTxt);
+    if(r.estCost!=null) L.push("Estimert kostnad: "+kr(r.estCost)+".");
+    else if(r.type==="be-om-pris") L.push("Vi innhenter pris før arbeidet bestilles.");
+    if(supplier) L.push("Foreslått leverandør: "+supplier.name+" (tlf "+supplier.phone+").");
+    L.push(""); L.push("Ber om godkjenning for å "+(r.type==="be-om-pris"?"innhente pris":"utføre arbeidet")+"."+((r.photoIds&&r.photoIds.length)?" Bilde er vedlagt.":""));
+    L.push(""); L.push("Mvh"); L.push((r.by||cockpitWho())+" · OnSite");
+    return L.join("\n");
+  }
+  function genResidentNotice(c, r, imp){
+    imp=imp||residentImpact(r)||{emoji:"🔔", line:"planlagt arbeid utføres"};
+    var area=r.area?(" i "+areaLabel(r.area).toLowerCase()):"";
+    return imp.emoji+" Til beboerne: "+imp.line+area+" i forbindelse med «"+r.title+"». Planlagt kommende uke — endelig tidspunkt varsles på oppslag/SMS. Vi beklager ulempen.\n\nMvh styret · "+c.name;
+  }
+  function varsleSheet(custId, reqId){
+    var c=cust(custId); var r=c&&requestById(c,reqId); if(!c||!r) return;
+    var contact=(c.contacts||[])[0]||{name:"Styret", role:""}; var supplier=suggestSupplier(r);
+    pendingNotice={ id:"nt"+uid(), buildingId:c.id, reqId:r.id, kind:"varsel", to:contact.name, channel:"e-post",
+      supplier:supplier?supplier.name:null, supplierId:supplier?supplier.id:null, text:genMessage(c,r,contact,supplier), sentTs:null, photoIds:(r.photoIds||[]).slice() };
+    obSheet(noticeSheetHTML(c, r));
+  }
+  function residentNoticeSheet(custId, reqId){
+    var c=cust(custId); var r=c&&requestById(c,reqId); if(!c||!r) return;
+    pendingNotice={ id:"nt"+uid(), buildingId:c.id, reqId:r.id, kind:"beboer", to:"Beboere"+(r.area?" — "+areaLabel(r.area):""), channel:"oppslag/SMS",
+      supplier:null, supplierId:null, text:genResidentNotice(c,r,residentImpact(r)), sentTs:null, photoIds:[] };
+    obSheet(noticeSheetHTML(c, r));
+  }
+  function noticeSheetHTML(c, r){
+    var p=pendingNotice; if(!p) return "";
+    var head, fields="";
+    if(p.kind==="varsel"){
+      head="✉️ Varsle ansvarlig";
+      var contactOpts=(c.contacts||[]).map(function(ct){ return '<option value="'+esc(ct.name)+'"'+(p.to===ct.name?' selected':'')+'>'+esc(ct.name)+(ct.role?' — '+esc(ct.role):'')+'</option>'; }).join("");
+      var suppOpts='<option value="">— ingen —</option>'+SUPPLIERS.map(function(s){ return '<option value="'+s.id+'"'+(p.supplierId===s.id?' selected':'')+'>'+esc(supplierLabel(s))+'</option>'; }).join("");
+      fields='<label>Mottaker (styret)</label><select id="nt_to" data-obf="ntTo">'+contactOpts+'</select>'
+        +'<label>Foreslått leverandør</label><select id="nt_supp" data-obf="ntSupp">'+suppOpts+'</select>';
+    } else { head="📢 Beboervarsel"; }
+    return '<h3>'+head+'</h3>'
+      +'<div class="muted" style="font-size:12px;margin:-4px 0 10px">'+esc(r.title)+' · '+esc(c.name)+'</div>'
+      +fields
+      +'<label>Melding</label><textarea id="nt_text" data-obf="ntText" rows="9">'+esc(p.text)+'</textarea>'
+      +((p.photoIds&&p.photoIds.length)?'<div class="muted" style="font-size:12px;margin-bottom:8px">📎 '+p.photoIds.length+' bilde vedlagt</div>':'')
+      +'<button class="save" data-ob="noticeSaveSend">Send</button>'
+      +'<button class="ob-mini" data-ob="noticeSaveDraft">Lagre som klar</button>'
+      +'<button class="cancel" data-ob="noticeCancel">Avbryt</button>';
+  }
+  function syncNoticeFromDOM(){ if(!pendingNotice) return; var t=document.getElementById("nt_text"); if(t) pendingNotice.text=t.value; }
+  function noticeCommit(send){
+    syncNoticeFromDOM();
+    var c=cust(pendingNotice&&pendingNotice.buildingId); if(!c||!pendingNotice){ obCloseSheet(); return; }
+    if(send) pendingNotice.ts=new Date().toISOString(), pendingNotice.sentTs=pendingNotice.ts;
+    else pendingNotice.ts=new Date().toISOString();
+    var n=pendingNotice; c.notices=c.notices||[]; c.notices.push(n);
+    if(!save()){ c.notices.pop(); return; }
+    pendingNotice=null; obCloseSheet(); render(); toast(send?"✉️ Sendt (// PROD: e-post/SMS/push)":"📨 Lagret som klar melding");
+  }
+  function noticeSend(custId, noticeId){ var c=cust(custId); var n=c&&(c.notices||[]).filter(function(x){return x.id===noticeId;})[0]; if(!c||!n) return;
+    var prev=n.sentTs; n.sentTs=new Date().toISOString(); if(!save()){ n.sentTs=prev; return; } render(); toast("✉️ Sendt (// PROD: e-post/SMS/push)"); }
+  // regenerate a draft message in place when recipient/supplier changes (updates the textarea, keeps focus/dropdowns)
+  function regenNotice(){
+    if(!pendingNotice) return; var c=cust(pendingNotice.buildingId), r=c&&requestById(c, pendingNotice.reqId); if(!c||!r) return;
+    var contact=(c.contacts||[]).filter(function(ct){return ct.name===pendingNotice.to;})[0]||{name:pendingNotice.to, role:""};
+    var supplier=pendingNotice.supplierId?supplierById(pendingNotice.supplierId):null;
+    pendingNotice.text = pendingNotice.kind==="beboer" ? genResidentNotice(c, r, residentImpact(r)) : genMessage(c, r, contact, supplier);
+    var ta=document.getElementById("nt_text"); if(ta) ta.value=pendingNotice.text;
   }
   // area derived from the doc-38 walkaround taxonomy via the checklist/line item id
   // area + method now live in SERVICE_CATALOGUE (read via catArea/catMethod) — Phase 8 consolidation
@@ -2289,6 +2564,7 @@
       + whileHereCards({})   // doc-01 ordering: dagens oppgaver → 💡 Mens du er her → kommende
       + (komL.length? planCondensed("Kommende (4 uker)", komL) : "")
       + beredskapHTML(month)
+      + liveClients().map(function(c){return requestsCardHTML(c);}).join("")  // Phase 11: behov & godkjente jobber (the money loop)
       + liveClients().map(function(c){return byggInfoHTML(c);}).join("");  // Phase 10: building-asset registry per live bygg
     cols.insertBefore(host, cols.firstChild);
     if(zc){ buildOpMap(zc,"snow","fld-opmap-snow"); buildOpMap(zc,"grass","fld-opmap-grass"); }
@@ -2803,7 +3079,8 @@
       +ol.map(function(l){
         var amt = (l.role==="hedge"||l.role==="bed") ? kr(l.final)+'/år' : (l.oneOff?kr(l.final)+' eng.':kr(l.final)+'/'+per);
         var driver = (l.qty!=null&&l.rate!=null) ? ' <span class="muted" style="font-size:11.5px">· '+fmtNum(l.qty)+' '+esc(l.unit||"")+' × '+kr(l.rate)+'</span>' : '';
-        return '<div class="ob-row"><div class="ob-line-top"><div class="rt">⬆ '+(l.emoji||"")+' '+esc(l.label)+driver+(l.zoneId?' <span class="ob-zlink">🗺️</span>':'')+'</div><div class="rp">'+amt+'</div></div></div>';
+        return '<div class="ob-row"><div class="ob-line-top"><div class="rt">⬆ '+(l.emoji||"")+' '+esc(l.label)+driver+(l.zoneId?' <span class="ob-zlink">🗺️</span>':'')+'</div><div class="rp">'+amt+'</div></div>'
+          +'<div class="rd"><button class="ob-mini ob-requpsell" data-ob="reqFromUpsell" data-id="'+c.id+'" data-arg="'+encodeURIComponent(l.label)+'">→ be styret om godkjenning</button></div></div>';  // Phase 11: out-of-scope → request in one tap
       }).join("")+'</div>';
   }
   function refreshTiered(c){ setHTML("ob-tiered", modulesHTML(c)+optionLinesHTML(c)); setHTML("ob-headline-amt", headlineAmtHTML(c)); }
@@ -2969,9 +3246,10 @@
     var awaiting=customers().filter(function(c){ return c.offer && (c.stage==="Offer sent"||c.stage==="Changes requested"); });
     var snowreps=snowReportsListHTML();
     var proof=boardProofHTML();
-    if(!awaiting.length && !proof && !snowreps) return;
+    var approvals=pendingApprovalsHTML();  // Phase 11: ad-hoc requests to godkjenne
+    if(!awaiting.length && !proof && !snowreps && !approvals) return;
     var host=document.createElement("div"); host.className="lane"; host.style.gridColumn="1 / -1";
-    var html="";
+    var html=approvals;
     if(awaiting.length){ var c=awaiting[0];
       html+='<div class="ob-board-banner"><h3>📋 New service offer to review — '+esc(c.name)+'</h3>'
         +'<p>OnSite granted you access to your building. Review the offer line by line, or just reply by email.</p>'
@@ -2998,7 +3276,9 @@
     }).join(""):'<div class="empty">No customers in the pipeline yet.</div>';
     var ars=liveClients().map(function(c){return arsplanHTML(c);}).join("");
     host.innerHTML='<div class="card"><div class="ct">Sales pipeline — new customers</div>'+rows
-      +'<button class="ob-newbtn" data-ob="new">＋ Set up a new client (sales → onboarding)</button></div>'+fleetHTML()+ars
+      +'<button class="ob-newbtn" data-ob="new">＋ Set up a new client (sales → onboarding)</button></div>'
+      +invoiceReadyHTML()+noticesHTML()  // Phase 11: money loop close + generated comms
+      +fleetHTML()+ars
       +liveClients().map(function(c){return byggInfoHTML(c);}).join("");  // Phase 10: Bygg-info visible in Office too
     cols.insertBefore(host, cols.firstChild);
   }
@@ -3328,6 +3608,22 @@
       case "assetPin": startAssetPin(); break;
       case "assetGeoView": assetGeoView(arg); break;
       case "assetFilter": { ui.assetFilter=arg; render(); break; }
+      case "reqNew": { var rnc=cust(arg); if(rnc) openRequestSheet(rnc, {}); break; }
+      case "reqSubmit": reqSubmit(); break;
+      case "reqCancel": reqCancel(); break;
+      case "reqDoJob": { var rj=(arg||"").split("|"); var rjc=cust(rj[0]); var rjr=rjc&&requestById(rjc,rj[1]); if(rjc&&rjr){ rjr.jobLineId=rjc.id+":req:"+rjr.id; openProofSheet({lineId:rjr.jobLineId, date:iso(refDate()), title:rjr.title, freq:"ad-hoc", building:rjr.building}); } break; }
+      case "reqApprove": { var rap=(arg||"").split("|"); reqApprove(rap[0], rap[1]); break; }
+      case "reqDecline": { var rdc=(arg||"").split("|"); reqSetStatus(rdc[0], rdc[1], "avslått"); break; }
+      case "reqAskPrice": { var rkp=(arg||"").split("|"); reqSetStatus(rkp[0], rkp[1], "pris-bedt"); break; }
+      case "reqInvoice": { var riv=(arg||"").split("|"); reqInvoice(riv[0], riv[1]); break; }
+      case "reqVarsle": { var rvp=(arg||"").split("|"); varsleSheet(rvp[0], rvp[1]); break; }
+      case "reqResident": { var rrp=(arg||"").split("|"); residentNoticeSheet(rrp[0], rrp[1]); break; }
+      case "reqFromUpsell": { var ruc=cust(id); if(ruc) openRequestSheet(ruc, {title:decodeURIComponent(arg||""), fromUpsell:true, type:"be-om-pris"}); break; }
+      case "reqFromAsset": { var rfa=(arg||"").split("|"); var rfc=cust(rfa[0]); var rfas=rfc&&assetById(rfc,rfa[1]); if(rfc&&rfas){ obCloseSheet(); openRequestSheet(rfc, {title:rfas.label+" — ", area:rfas.area, assetId:rfas.id}); } break; }
+      case "noticeSaveSend": noticeCommit(true); break;
+      case "noticeSaveDraft": noticeCommit(false); break;
+      case "noticeCancel": pendingNotice=null; obCloseSheet(); break;
+      case "noticeSend": { var nsp=(arg||"").split("|"); noticeSend(nsp[0], nsp[1]); break; }
       case "spawnEvt": spawnEvent(decodeURIComponent(arg||"")); break;
       case "back": ui.openId=null; ui.draftNew=false; repaintSales(); break;
       case "step": { var n=parseInt(id,10); if(c && n<=maxStep(c)){ ui.step=n; ui.activeLayer=null; repaintSales(); } break; }
@@ -3359,7 +3655,7 @@
       case "saveZone": saveZoneFromSheet(); break;
       case "editZone": editZone(id); break;
       case "delZone": delZone(id); break;
-      case "closeObSheet": obCloseSheet(); pendingZone=null; if(pendingProof) proofCleanup(); if(pendingAsset) assetCleanup(); if(geoMini){ try{geoMini.remove();}catch(e){} geoMini=null; } break;
+      case "closeObSheet": obCloseSheet(); pendingZone=null; if(pendingProof) proofCleanup(); if(pendingAsset) assetCleanup(); if(pendingRequest) requestCleanup(); pendingNotice=null; if(geoMini){ try{geoMini.remove();}catch(e){} geoMini=null; } break;
       case "printMap": printMapCard(arg); break;
       case "genOffer": if(c){ if(!c.offer) generateOffer(c); if(c.stage==="Prospect"||c.stage==="Surveyed") setStage(c,"Surveyed"); ui.step=2; repaintSales(); } break;
       case "sendOffer": if(c) sendOffer(c); break;
@@ -3412,6 +3708,11 @@
         if(pendingAsset.area===assetTypeDef(prevType).area) pendingAsset.area=d.area;   // move area to new type's default only if untouched
         if(!pendingAsset.complianceLink && d.complianceHint){ var atc=assetCtx&&cust(assetCtx.custId); if(atc&&(atc.compliance||[]).some(function(r){return r.label===d.complianceHint;})) pendingAsset.complianceLink=d.complianceHint; }
         reopenAssetSheet(); hydratePhotos(document.getElementById("sheet")); } return; }
+    if(name==="reqUrg"){ if(pendingRequest){ pendingRequest.urgency=val; [].forEach.call(document.querySelectorAll('.ob-urgopt'),function(l){ var i=l.querySelector('input'); l.classList.toggle('on', !!i&&i.value===val); }); } return; }
+    if(name==="reqType"){ if(pendingRequest){ pendingRequest.type=val; [].forEach.call(document.querySelectorAll('.ob-typopt'),function(l){ var i=l.querySelector('input'); l.classList.toggle('on', !!i&&i.value===val); }); } return; }
+    if(name==="ntTo"){ if(pendingNotice){ pendingNotice.to=val; regenNotice(); } return; }
+    if(name==="ntSupp"){ if(pendingNotice){ var sp=supplierById(val); pendingNotice.supplierId=val||null; pendingNotice.supplier=sp?sp.name:null; regenNotice(); } return; }
+    if(name==="ntText"){ if(pendingNotice) pendingNotice.text=val; return; }
     if(!c) return;
     if(name==="cover"){ if(c.offer){ c.offer.coverNote=val; save(); } return; }
     if(name==="modIncl"){ if(c.offer){ var mm=c.offer.modules.filter(function(x){return x.service===id;})[0]; if(mm){ mm.included=f.checked; rebuildOfferFlat(c); save(); refreshTiered(c); toast(mm.included?(mm.title+" inkludert"):(mm.title+" valgt bort — kan sies opp separat")); } } return; }

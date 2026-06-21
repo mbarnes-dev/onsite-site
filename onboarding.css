@@ -570,3 +570,60 @@
 .ob-pinok{font-size:12px;font-weight:700;color:#1c6b3a}
 .ob-del{color:#9c241c;border-color:#eec4bf}
 @media (pointer:coarse){ .ob-asset-row{padding:13px 2px} .ob-emergchip{min-height:40px} .ob-assettab{min-height:38px} }
+
+/* ---- approval economics + comms (doc 01 §4.3 + §4.8, Phase 11) ---- */
+/* Field: behov & godkjente jobber */
+.ob-reqcard{border:1.5px solid #cfe6d6;background:linear-gradient(180deg,#f4fbf6,#fff)}
+.ob-jobrow{display:flex;align-items:center;justify-content:space-between;gap:11px;padding:9px 0;border-bottom:1px solid #eef3ef}
+.ob-jobrow:last-of-type{border-bottom:none}
+.ob-jobrow.muted-row{opacity:.72}
+.ob-jobmain{flex:1 1 auto;min-width:0}
+.ob-jobtitle{font-weight:650;font-size:13.5px;color:#1c2421;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.ob-jobmeta{font-size:11.5px;color:#5d7268;margin-top:2px}
+.ob-jobacts{display:flex;gap:6px;flex-wrap:wrap;flex:0 0 auto;align-items:center}
+/* Board: til godkjenning */
+.ob-apprcard{border:1.5px solid #f0d68a;background:linear-gradient(180deg,#fffdf5,#fff)}
+.ob-apprcard .ct{display:flex;align-items:center;gap:8px}
+.ob-approw{display:flex;gap:12px;justify-content:space-between;align-items:flex-start;padding:11px 0;border-bottom:1px solid #f3f1ea}
+.ob-approw:last-child{border-bottom:none}
+.ob-appmain{flex:1 1 auto;min-width:0}
+.ob-apptitle{font-weight:700;font-size:14px;color:#1c2421;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ob-appmeta{font-size:11.5px;color:#6b7670;margin:3px 0}
+.ob-appdesc{font-size:12.5px;color:#3a443f;line-height:1.45;margin:4px 0}
+.ob-appcost{font-weight:750;font-size:13.5px;color:#1f6b3a;margin-top:4px}
+.ob-appacts{display:flex;flex-direction:column;gap:6px;flex:0 0 auto;align-items:stretch;min-width:128px}
+.ob-urg{font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.03em;border-radius:6px;padding:1px 7px}
+.ob-urg.low{background:#e7f6ec;color:#1c6b3a}
+.ob-urg.med{background:#fcefdb;color:#9a5a12}
+.ob-urg.høy{background:#fdecea;color:#9c241c}
+.ob-mini.danger{color:#9c241c;border-color:#eec4bf}
+.ob-requpsell{margin-top:4px}
+.ob-reqphotos{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
+.ob-reqthumb{width:62px;height:62px;object-fit:cover;border-radius:8px;border:1px solid #dde3e9;cursor:pointer}
+/* Office: klar til fakturering */
+.ob-invcard{border:1.5px solid #bfe3c9;background:linear-gradient(180deg,#f1fbf4,#fff)}
+.ob-invcard .ct{display:flex;align-items:center;gap:8px}
+.ob-invrow{display:flex;gap:12px;justify-content:space-between;align-items:flex-start;padding:10px 0;border-bottom:1px solid #e7f1ea}
+.ob-invrow:last-of-type{border-bottom:none}
+.ob-invmain{flex:1 1 auto;min-width:0}
+.ob-invtitle{font-weight:650;font-size:13.5px;color:#1c2421}
+.ob-invmeta{font-size:11.5px;color:#5d7268;margin-top:2px}
+.ob-invright{flex:0 0 auto;text-align:right;display:flex;flex-direction:column;gap:5px;align-items:flex-end}
+.ob-invcost{font-weight:750;font-size:14px;color:#1f6b3a}
+.ob-invsum{margin-top:9px;padding-top:8px;border-top:1px dashed #cfe6d6;font-weight:750;font-size:13.5px;color:#1f6b3a}
+/* generated messages */
+.ob-noticecard{border:1.5px solid #c4cdd6;background:linear-gradient(180deg,#f7f9fb,#fff)}
+.ob-noticecard .ct{display:flex;align-items:center;gap:8px}
+.ob-noticerow{display:flex;gap:11px;justify-content:space-between;align-items:flex-start;padding:10px 0;border-bottom:1px solid #eef1f4}
+.ob-noticerow:last-child{border-bottom:none}
+.ob-noticemain{flex:1 1 auto;min-width:0}
+.ob-noticetop{font-weight:650;font-size:13px;color:#1c2421;display:flex;align-items:center;gap:8px;margin-bottom:3px}
+.ob-noticebody{font-size:12.5px;color:#3a443f;line-height:1.5;white-space:pre-wrap;background:#fbfcfd;border:1px solid #eef1f4;border-radius:8px;padding:8px 10px}
+.ob-noticesupp{font-size:11.5px;color:#2f6fed;margin-top:4px}
+.ob-sentpill{font-size:10px;font-weight:800;text-transform:uppercase;color:#1c6b3a;background:#e7f6ec;border-radius:5px;padding:1px 6px}
+.ob-newpill{font-size:10px;font-weight:800;text-transform:uppercase;color:#9a5a12;background:#fcefdb;border-radius:5px;padding:1px 6px}
+/* request sheet: urgency + type segmented */
+.ob-urgrow,.ob-typrow{display:flex;gap:7px;margin-bottom:4px}
+.ob-urgopt,.ob-typopt{flex:1 1 auto;text-align:center;font-size:12.5px;font-weight:650;color:#5d6973;background:#eef1f4;border:1.5px solid #dde3e9;border-radius:9px;padding:9px 6px;cursor:pointer}
+.ob-urgopt.on,.ob-typopt.on{background:#33414d;color:#fff;border-color:#33414d}
+@media (pointer:coarse){ .ob-jobrow,.ob-approw,.ob-invrow{padding:13px 0} .ob-appacts .ob-mini{min-height:40px} .ob-urgopt,.ob-typopt{padding:12px 6px} }
