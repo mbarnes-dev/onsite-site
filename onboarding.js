@@ -649,7 +649,8 @@
   function editZone(id){ var c=cur(); if(!c) return; var z=findZone(c,id); if(!z) return;
     if(map){ try{ var b=L.geoJSON(z.geometry).getBounds(); map.panTo(b.getCenter()); }catch(e){} }
     openZoneSheet(c, z, z.geometry); }
-  function delZone(id){ var c=cur(); if(!c) return; c.zones=(c.zones||[]).filter(function(z){return z.id!==id;}); save(); refreshZones(c); toast("Sone slettet"); }
+  function delZone(id){ var c=cur(); if(!c) return; var dz=findZone(c,id); if(dz) zonePhotoIds(dz).forEach(photoDel); // M13: free the deleted zone's orphaned photo blobs
+    c.zones=(c.zones||[]).filter(function(z){return z.id!==id;}); save(); refreshZones(c); toast("Sone slettet"); }
 
   /* ---- operational maps (read-only, board-grade) ---- */
   function destroyOpMaps(){ for(var k in opMaps){ try{ opMaps[k].remove(); }catch(e){} } opMaps={}; }
@@ -803,16 +804,23 @@
      // PROD: offload to object storage; this is the prototype-local approximation.
      =========================================================================== */
   var photoCache = {};                 // id → dataUrl (in-memory; renders read this synchronously)
-  var PHOTO_DB="onsite_photos_db", PHOTO_STORE="photos", _idb=null, _idbTried=false;
+  var PHOTO_DB="onsite_photos_db", PHOTO_STORE="photos", _idb=null, _idbNoIDB=false, _idbOpening=false, _idbWaiters=[];
+  // M16: robust open — handles onblocked/onerror/version-change + an open-timeout, coalesces concurrent
+  // opens, and (unlike before) does NOT permanently latch after a transient failure — it retries next call,
+  // falling back to the localStorage photo store for the calls that hit the failure.
   function idbOpen(cb){
     if(_idb) return cb(_idb);
-    if(_idbTried && !_idb) return cb(null);
-    if(!window.indexedDB){ _idbTried=true; return cb(null); }
+    if(_idbNoIDB || !window.indexedDB){ _idbNoIDB=true; return cb(null); }  // permanent: this browser has no IndexedDB
+    _idbWaiters.push(cb); if(_idbOpening) return; _idbOpening=true;
+    var settled=false;
+    function done(db){ if(settled) return; settled=true; _idbOpening=false; var ws=_idbWaiters; _idbWaiters=[]; ws.forEach(function(w){ try{ w(db); }catch(e){} }); }
     try{ var rq=indexedDB.open(PHOTO_DB,1);
       rq.onupgradeneeded=function(){ try{ rq.result.createObjectStore(PHOTO_STORE,{keyPath:"id"}); }catch(e){} };
-      rq.onsuccess=function(){ _idb=rq.result; _idbTried=true; cb(_idb); };
-      rq.onerror=function(){ _idbTried=true; cb(null); };
-    }catch(e){ _idbTried=true; cb(null); }
+      rq.onsuccess=function(){ _idb=rq.result; try{ _idb.onversionchange=function(){ try{_idb.close();}catch(e){} _idb=null; }; }catch(e){} done(_idb); };
+      rq.onerror=function(){ done(null); };    // transient → LS fallback this round, retry next call (no latch)
+      rq.onblocked=function(){ try{ toast("Bildelagring midlertidig blokkert (annen fane) — lagrer lokalt"); }catch(e){} done(null); };
+      setTimeout(function(){ done(null); }, 3000);  // open-timeout (Safari/private-mode hang) → LS fallback
+    }catch(e){ done(null); }
   }
   var PHOTO_LS="onsite_photos", PHOTO_CAP=50;
   function lsAll(){ try{ return JSON.parse(localStorage.getItem(PHOTO_LS)||"{}"); }catch(e){ return {}; } }
@@ -849,8 +857,21 @@
     try{ var st=db.transaction(PHOTO_STORE,"readwrite").objectStore(PHOTO_STORE); var rq=st.get(id); rq.onsuccess=function(){ var r=rq.result; if(r){ r.caption=caption; st.put(r); } }; }catch(e){} }); }
   function photoGetCaption(id, cb){ idbOpen(function(db){ if(!db){ var l=lsGet(id); return cb(l?l.caption||"":""); }
     try{ var rq=db.transaction(PHOTO_STORE,"readonly").objectStore(PHOTO_STORE).get(id); rq.onsuccess=function(){ cb(rq.result?(rq.result.caption||""):""); }; rq.onerror=function(){ cb(""); }; }catch(e){ cb(""); } }); }
-  function photoDel(id){ delete photoCache[id]; idbOpen(function(db){ if(!db) return lsDel(id);
-    try{ db.transaction(PHOTO_STORE,"readwrite").objectStore(PHOTO_STORE).delete(id); }catch(e){ lsDel(id); } }); }
+  function photoDel(id){ delete photoCache[id]; lsDel(id); idbOpen(function(db){ if(!db) return;  // delete from BOTH stores (no split-brain orphan)
+    try{ db.transaction(PHOTO_STORE,"readwrite").objectStore(PHOTO_STORE).delete(id); }catch(e){} }); }
+  // M13: reclaim orphaned photo blobs. zonePhotoIds = a zone's own + its completionLog photos.
+  function zonePhotoIds(z){ var out=(z&&z.photoIds)?z.photoIds.slice():[]; if(z&&z.completionLog) z.completionLog.forEach(function(e){ (e.photoIds||[]).forEach(function(p){ out.push(p); }); }); return out; }
+  function collectLivePhotoIds(){ var live={}; (customers()||[]).forEach(function(c){
+    (c.zones||[]).forEach(function(z){ (z.photoIds||[]).forEach(function(p){live[p]=1;}); (z.completionLog||[]).forEach(function(e){(e.photoIds||[]).forEach(function(p){live[p]=1;});}); });
+    (c.checklist||[]).forEach(function(it){ (it.photoIds||[]).forEach(function(p){live[p]=1;}); });
+    (c.completionLog||[]).forEach(function(e){ (e.photoIds||[]).forEach(function(p){live[p]=1;}); });
+  }); return live; }
+  function photoGC(){   // delete IndexedDB + LS blobs no longer referenced by any record (reconcile after bulk removals)
+    var live=collectLivePhotoIds();
+    try{ var m=lsAll(), changed=false; Object.keys(m).forEach(function(k){ if(!live[k]){ delete m[k]; delete photoCache[k]; changed=true; } }); if(changed) localStorage.setItem(PHOTO_LS, JSON.stringify(m)); }catch(e){}
+    idbOpen(function(db){ if(!db) return; try{ var st=db.transaction(PHOTO_STORE,"readwrite").objectStore(PHOTO_STORE);
+      if(st.getAllKeys){ var rq=st.getAllKeys(); rq.onsuccess=function(){ (rq.result||[]).forEach(function(k){ if(!live[k]){ try{st.delete(k);}catch(e){} delete photoCache[k]; } }); }; } }catch(e){} });
+  }
 
   // downscale + compress a File → dataUrl (no deps; canvas)
   function compressImage(file, cb){
@@ -2973,8 +2994,8 @@
       case "goLive": if(c) goLive(c); break;
       case "photo": togglePhoto(id); break;
       case "delMarker": deleteMarker(id); break;
-      case "clearCustomers": if(window.confirm("Clear all sales customers? (the day app is unaffected)")){ S().customers=[]; S().obSeeded=true; save(); ui.openId=null; repaintSales(); toast("Customers cleared — add a real one with ＋ New customer"); } break;
-      case "reseed": { var rst=S(); rst.customers=(rst.customers||[]).filter(function(x){return x.id!=="holtet-cust"&&x.id!=="solbakken-cust";}); rst.customers.unshift(seedSolbakken()); rst.customers.unshift(seedHoltet()); rst.obSeeded=true; save(); ui.openId=null; repaintSales(); toast("Seed-klienter tilbakestilt (Holtet + Solbakken)"); break; }
+      case "clearCustomers": if(window.confirm("Clear all sales customers? (the day app is unaffected)")){ S().customers=[]; S().obSeeded=true; save(); photoGC(); ui.openId=null; repaintSales(); toast("Customers cleared — add a real one with ＋ New customer"); } break;
+      case "reseed": { var rst=S(); rst.customers=(rst.customers||[]).filter(function(x){return x.id!=="holtet-cust"&&x.id!=="solbakken-cust";}); rst.customers.unshift(seedSolbakken()); rst.customers.unshift(seedHoltet()); rst.obSeeded=true; save(); photoGC(); ui.openId=null; repaintSales(); toast("Seed-klienter tilbakestilt (Holtet + Solbakken)"); break; }
     }
   });
 
