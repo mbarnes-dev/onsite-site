@@ -314,12 +314,12 @@
   // offsetDays = days from "today" (evergreen demo; a real task would carry an absolute due date — same engine).
   function holtetUpcoming(){
     return [
-      {id:"u-roof-today",   title:"Tak – visuell inspeksjon etter vind",          area:"tak",     method:"stige",   service:"other",      offsetDays:0},
-      {id:"u-facade-today", title:"Fasade sokkel – spotvask svertesopp",          area:"fasade",  method:"lift",    service:"cleaning",   offsetDays:0},
-      {id:"u-gutter",       title:"Takrennerens (løv + nedløp)",                  area:"tak",     method:"stige",   service:"other",      offsetDays:9},
-      {id:"u-vannbord",     title:"Vannbord + beslag – sjekk og fest",            area:"tak",     method:"stige",   service:"other",      offsetDays:17},
-      {id:"u-hedge",        title:"Beskjæring høy hekk + tre (>3 m)",             area:"ute",     method:"lift",    service:"greenery",   offsetDays:13},
-      {id:"u-brann",        title:"Brannvern: slokkere + røykvarslere (kvartal)", area:"teknisk", method:"manuell", service:"compliance", statutory:true, offsetDays:6}
+      {id:"u-roof-today",   title:"Tak – visuell inspeksjon etter vind",          area:"tak",     method:"stige",   service:"other",      equipment:["stige"],        offsetDays:0},
+      {id:"u-facade-today", title:"Fasade sokkel – spotvask svertesopp",          area:"fasade",  method:"lift",    service:"cleaning",   equipment:["lift","spyler"],offsetDays:0},
+      {id:"u-gutter",       title:"Takrennerens (løv + nedløp)",                  area:"tak",     method:"stige",   service:"other",      equipment:["stige"],        offsetDays:9},
+      {id:"u-vannbord",     title:"Vannbord + beslag – sjekk og fest",            area:"tak",     method:"stige",   service:"other",      equipment:["stige"],        offsetDays:17},
+      {id:"u-hedge",        title:"Beskjæring høy hekk + tre (>3 m)",             area:"ute",     method:"lift",    service:"greenery",   equipment:["hekksaks","lift"],offsetDays:13},
+      {id:"u-brann",        title:"Brannvern: slokkere + røykvarslere (kvartal)", area:"teknisk", method:"manuell", service:"compliance", statutory:true, equipment:[], offsetDays:6}
     ];
   }
   function seedSolbakken(){
@@ -362,6 +362,7 @@
     var st=S(); if(!st) return;
     if(!st.customers) st.customers=[];
     if(!st.completedInstances) st.completedInstances={};   // schedule-engine completion set (lineId|isoDate)
+    seedEquipmentIfNeeded();   // Phase 9: equipment/storage registry (also backfills migrated users)
     if(!st.obSeeded){
       if(!cust("holtet-cust")) st.customers.push(seedHoltet());      // featured real client
       if(!cust("solbakken-cust")) st.customers.push(seedSolbakken()); // demo client
@@ -1337,8 +1338,8 @@
      =========================================================================== */
   var SERVICE_CATALOGUE = {
     // grounds / green
-    lawn:      {cadence:{type:"growingSeason"},                                       area:"ute",     method:"maskin",  service:"grass",     rateKey:"grass.mow_m2_mnd"},
-    hedges:    {cadence:{type:"seasonal", windows:[[[5,1],[7,15]],[[9,1],[10,31]]]},   area:"ute",     method:"manuell", service:"grass",     rateKey:"greenery.hedge_m_year"},
+    lawn:      {cadence:{type:"growingSeason"},                                       area:"ute",     method:"maskin",  service:"grass",     rateKey:"grass.mow_m2_mnd", equipment:["gressklipper"]},
+    hedges:    {cadence:{type:"seasonal", windows:[[[5,1],[7,15]],[[9,1],[10,31]]]},   area:"ute",     method:"manuell", service:"grass",     rateKey:"greenery.hedge_m_year", equipment:["hekksaks","lift"]},
     trees:     {                                                                       area:"ute",                       service:"grass"},
     beds:      {cadence:{type:"seasonal", windows:[[[4,1],[4,30]]]},                   area:"ute",                       service:"grass"},
     weeds:     {cadence:{type:"nPerYear", count:3, season:true},                       area:"ute",                       service:"grass"},
@@ -1346,8 +1347,8 @@
     greenwaste:{                                                                       area:"ute",                       service:"grass"},
     taps:      {cadence:{type:"seasonal", windows:[[[4,10],[4,20]],[[10,1],[10,10]]]}, area:"teknisk",                   service:"technical"},
     bootscr:   {                                                                       area:"teknisk",                   service:"technical"},
-    paths:     {cadence:{type:"dateAnchored", anchor:"before17mai"},                   area:"ute",     method:"maskin",  service:"technical"},
-    snow:      {cadence:EVT_SNOW,                                                      area:"ute",     method:"maskin",  service:"snow",      rateKey:"snow.machine_m2_mnd"},
+    paths:     {cadence:{type:"dateAnchored", anchor:"before17mai"},                   area:"ute",     method:"maskin",  service:"technical", equipment:["traktor"]},
+    snow:      {cadence:EVT_SNOW,                                                      area:"ute",     method:"maskin",  service:"snow",      rateKey:"snow.machine_m2_mnd", equipment:["snofreser"]},
     roofsnow:  {                                                                       area:"ute",                       service:"snow"},
     // waste
     wells:     {                                                                       area:"teknisk",                   service:"technical"},
@@ -1358,7 +1359,7 @@
     mats:      {cadence:{type:"monthly"},                                             area:"oppgang",                   service:"cleaning"},
     glass:     {cadence:{type:"weekly"},                                              area:"fasade",                    service:"cleaning"},
     lighting:  {                                                                       area:"teknisk",                   service:"technical"},
-    facade:    {                                                                       area:"ute",                       service:"cleaning"},
+    facade:    {                                                                       area:"ute",                       service:"cleaning",  equipment:["lift"]},
     // lifts
     heiser:    {cadence:{type:"weekly"},                                              area:"heis",                      service:"cleaning",  rateKey:"cleaning.per_heis_week"},
     liftctrl:  {                                                                       area:"heis",                      service:"technical"},
@@ -1373,12 +1374,12 @@
     firepanel: {                                                                       area:"teknisk",                   service:"technical"},
     pumpekum:  {                                                                       area:"teknisk",                   service:"technical"},
     // garage
-    garage:    {cadence:{type:"dateAnchored", anchor:"beforeSthans"},                  area:"garasje", method:"maskin",  service:"technical"},
+    garage:    {cadence:{type:"dateAnchored", anchor:"beforeSthans"},                  area:"garasje", method:"maskin",  service:"technical", equipment:["spyler","blaser","kjegler"]},
     // doors & access
     doors:     {                                                                       area:"dorer",                     service:"technical"},
     access:    {                                                                       area:"ute",                       service:"technical"},
     // roof
-    roof:      {cadence:{type:"dateAnchored", anchor:"autumn"},                        area:"tak",     method:"stige",   service:"technical"},
+    roof:      {cadence:{type:"dateAnchored", anchor:"autumn"},                        area:"tak",     method:"stige",   service:"technical", equipment:["stige"]},
     // stakeholders & admin
     round:     {cadence:{type:"weekly"},                                              area:"ute",                       service:"technical"},
     approver:  {                                                                       area:"ute",                       service:"technical"},
@@ -1393,6 +1394,7 @@
   function catArea(id){ var e=SERVICE_CATALOGUE[id]; return e&&e.area?e.area:"ute"; } // was AREA_OF_ITEM[id]||"ute"
   function catMethod(id){ var e=SERVICE_CATALOGUE[id]; return e&&e.method?e.method:null; } // was METHOD_OF_ITEM[id]
   function catService(id){ var e=SERVICE_CATALOGUE[id]; return e&&e.service?e.service:null; } // was serviceOfTask byCat
+  function catEquipment(id){ var e=SERVICE_CATALOGUE[id]; return (e&&e.equipment)?e.equipment:[]; } // Phase 9: equipment types a task needs
   // fold the checklist template's display facets into the catalogue → it becomes the single RUNTIME source for the
   // walkaround too. Adding one catalogue entry (with checklist facets) makes it appear in the walkaround (acceptance #1).
   (function foldChecklistIntoCatalogue(){
@@ -1402,6 +1404,59 @@
       e.emoji=it.emoji; e.freq=it.freq||""; e.upsell=!!it.upsell; e.compliance=!!it.compliance;
     });
   })();
+
+  /* ===========================================================================
+     EQUIPMENT / RESOURCE INTELLIGENCE (doc 10, Phase 9 — wedge 2).
+     Track THINGS, not people (doc 10 §5): equipment + vehicles have location/state;
+     person location stays the voluntary cockpit check-in only. Tier-0 manual state
+     (no QR/BLE/GPS hardware this phase — // TODO Tier1 BLE / Tier2 GPS).
+       equipment[] : {id,name,type,owned,purchaseValue,state,location,usageCount}
+       storage[]   : {id,name,kind:"lager"|"bil",geo?,team?}  (a vehicle = mobile storage tied to a team)
+       state ∈ lager | bil | påSted | medPerson | leidUt | leidInn | service | mangler
+     =========================================================================== */
+  var EQUIP_TYPE_LABEL={ stige:"Stige", lift:"Lift", spyler:"Høytrykkspyler", blaser:"Løvblåser", kjegler:"Kjegler", snofreser:"Snøfreser", gressklipper:"Gressklipper", hekksaks:"Hekksaks", traktor:"Traktor", tilhenger:"Tilhenger" };
+  var EQUIP_TYPE_EMOJI={ stige:"🪜", lift:"🏗️", spyler:"💦", blaser:"🍃", kjegler:"🚧", snofreser:"❄️", gressklipper:"🚜", hekksaks:"✂️", traktor:"🚜", tilhenger:"🛻" };
+  var EQUIP_STATE_LABEL={ lager:"På lager", bil:"I bil", påSted:"På sted", medPerson:"Med person", leidUt:"Leid ut", leidInn:"Leid inn", service:"På service", mangler:"Mangler" };
+  function equipTypeLabel(t){ return EQUIP_TYPE_LABEL[t]||cap(t||""); }
+  function equipTypeEmoji(t){ return EQUIP_TYPE_EMOJI[t]||"🔧"; }
+  function equipList(){ var st=S(); if(!Array.isArray(st.equipment)) st.equipment=[]; return st.equipment; }
+  function storageList(){ var st=S(); if(!Array.isArray(st.storage)) st.storage=[]; return st.storage; }
+  function equipById(id){ return equipList().filter(function(e){return e.id===id;})[0]; }
+  function equipByType(t){ return equipList().filter(function(e){return e.type===t;}); }
+  function storageById(id){ return storageList().filter(function(s){return s.id===id;})[0]; }
+  function teamVehicle(team){ return storageList().filter(function(s){return s.kind==="bil" && s.team===team;})[0]; }
+  function equipLocLabel(e){
+    if(!e) return "";
+    if(e.state==="bil"){ var v=storageById(e.location); return "I bil"+(v?(" · "+v.name):""); }
+    if(e.state==="lager"){ var s=storageById(e.location); return s?s.name:"Lager"; }
+    if(e.state==="påSted"){ var c=cust(e.location); return "På sted"+(c?(" · "+c.name):""); }
+    return EQUIP_STATE_LABEL[e.state]||e.state;
+  }
+  function seedStorage(){
+    return [
+      {id:"lagerA", name:"Lager A — Halden sentrum", kind:"lager", geo:{lat:59.1242, lon:11.3875}},
+      {id:"lagerB", name:"Lager B — Os/nord",        kind:"lager", geo:{lat:59.1350, lon:11.3600}},
+      {id:"bil-vaktmester", name:"Servicebil 1", kind:"bil", team:"vaktmester"},
+      {id:"bil-snow",       name:"Brøytebil",   kind:"bil", team:"snow"},
+      {id:"bil-grass",      name:"Hagebil",     kind:"bil", team:"grass"}
+    ];
+  }
+  function seedEquipment(){
+    return [
+      {id:"eq-stige1",    name:"Stige 6 m",              type:"stige",       owned:true,  purchaseValue:4000,  state:"lager",   location:"lagerA",         usageCount:18},
+      {id:"eq-lift1",     name:"Personløfter (lift)",    type:"lift",        owned:false, purchaseValue:0,     state:"leidInn", location:"lagerA",         usageCount:11},
+      {id:"eq-spyler1",   name:"Høytrykkspyler #1",      type:"spyler",      owned:true,  purchaseValue:9000,  state:"lager",   location:"lagerA",         usageCount:34},
+      {id:"eq-spyler2",   name:"Høytrykkspyler #2",      type:"spyler",      owned:true,  purchaseValue:9000,  state:"bil",     location:"bil-vaktmester", usageCount:9},
+      {id:"eq-blaser1",   name:"Løvblåser",              type:"blaser",      owned:true,  purchaseValue:3500,  state:"lager",   location:"lagerB",         usageCount:22},
+      {id:"eq-kjegler1",  name:"Kjeglesett (10 stk)",    type:"kjegler",     owned:true,  purchaseValue:1200,  state:"lager",   location:"lagerA",         usageCount:15},
+      {id:"eq-snofreser1",name:"Snøfreser",              type:"snofreser",   owned:true,  purchaseValue:22000, state:"lager",   location:"lagerB",         usageCount:7},
+      {id:"eq-klipper1",  name:"Gressklipper (traktor)", type:"gressklipper",owned:true,  purchaseValue:48000, state:"bil",     location:"bil-grass",      usageCount:40},
+      {id:"eq-hekksaks1", name:"Hekksaks (teleskop)",    type:"hekksaks",    owned:true,  purchaseValue:2800,  state:"lager",   location:"lagerB",         usageCount:12},
+      {id:"eq-tilhenger2",name:"Tilhenger #2",           type:"tilhenger",   owned:true,  purchaseValue:18000, state:"lager",   location:"lagerA",         usageCount:4}
+    ];
+  }
+  function seedEquipmentIfNeeded(){ var st=S(); if(!Array.isArray(st.storage)||!st.storage.length) st.storage=seedStorage(); if(!Array.isArray(st.equipment)||!st.equipment.length) st.equipment=seedEquipment(); }
+  function equipSetState(id, state, location){ var e=equipById(id); if(!e) return; e.state=state; if(location!==undefined) e.location=location; save(); } // Tier-0 manual; // TODO Tier1 BLE / Tier2 GPS
   var COMPLIANCE_DUE = {
     "Heiskontroll (2-årlig)":  {month:9,  day:15, type:"intervalYears", years:2},
     "Sprinkler — årskontroll": {month:5,  day:5,  type:"annual"},
@@ -1842,33 +1897,35 @@
   function suggestWhileHere(c, ctx){
     ctx=ctx||{};
     var today=refDate(), tIso=iso(today);
-    // 1) what's being worked HERE today → in-use areas + methods (co-location / co-equipment context)
-    var hereAreas={}, hereMethods={};
+    // 1) what's being worked HERE today → in-use areas + EQUIPMENT (co-location / co-equipment context — Phase 9: real equipment, not the method heuristic)
+    var hereAreas={}, hereEquip={};
     generateInstances(scheduleLines(c), today, today).filter(function(i){return i.date===tIso && !isDone(i);}).forEach(function(i){
-      hereAreas[i.statutory?areaOfComplianceTitle(i.title):areaOfLineId(i.lineId)]=1; var m=methodOfLineId(i.lineId); if(m) hereMethods[m]=1; });
-    (c.upcoming||[]).filter(function(u){return (u.offsetDays||0)===0 && !isDone({lineId:c.id+":up:"+u.id, date:tIso});}).forEach(function(u){ if(u.area) hereAreas[u.area]=1; if(u.method) hereMethods[u.method]=1; });
+      hereAreas[i.statutory?areaOfComplianceTitle(i.title):areaOfLineId(i.lineId)]=1; catEquipment(itemKeyOf(i.lineId)).forEach(function(t){ hereEquip[t]=1; }); });
+    (c.upcoming||[]).filter(function(u){return (u.offsetDays||0)===0 && !isDone({lineId:c.id+":up:"+u.id, date:tIso});}).forEach(function(u){ if(u.area) hereAreas[u.area]=1; (u.equipment||[]).forEach(function(t){ hereEquip[t]=1; }); });
     if(ctx.area) hereAreas[ctx.area]=1;
-    if(ctx.method) hereMethods[ctx.method]=1;
+    (ctx.equipment||[]).forEach(function(t){ hereEquip[t]=1; });
     // 2) candidates within the pull-forward window (not today, not done)
     var cand=[];
     (c.upcoming||[]).forEach(function(u){ var d=(u.offsetDays==null?99:u.offsetDays);
       if(d<=0 || d>WHILE_WINDOW) return; if(isDone({lineId:c.id+":up:"+u.id, date:tIso})) return;
-      cand.push({ key:"up:"+u.id, kind:"upcoming", upId:u.id, title:u.title, area:u.area||"ute", method:u.method||null, statutory:!!u.statutory, service:u.service||"other", daysUntil:d, dueIso:tIso }); });
+      cand.push({ key:"up:"+u.id, kind:"upcoming", upId:u.id, title:u.title, area:u.area||"ute", equipment:u.equipment||[], statutory:!!u.statutory, service:u.service||"other", daysUntil:d, dueIso:tIso }); });
     generateInstances(scheduleLines(c), addDays(today,1), addDays(today,WHILE_WINDOW)).forEach(function(i){
       if(isDone(i)) return; var d=Math.round((new Date(i.date+"T00:00:00")-new Date(tIso+"T00:00:00"))/86400000);
       if(d<=0 || d>WHILE_WINDOW) return;
-      cand.push({ key:"sc:"+instKey(i), kind:"sched", lineId:i.lineId, title:i.title, area:i.statutory?areaOfComplianceTitle(i.title):areaOfLineId(i.lineId), method:methodOfLineId(i.lineId), statutory:!!i.statutory, freq:i.freq, daysUntil:d, dueIso:i.date }); });
+      cand.push({ key:"sc:"+instKey(i), kind:"sched", lineId:i.lineId, title:i.title, area:i.statutory?areaOfComplianceTitle(i.title):areaOfLineId(i.lineId), equipment:catEquipment(itemKeyOf(i.lineId)), statutory:!!i.statutory, freq:i.freq, daysUntil:d, dueIso:i.date }); });
     // dedupe by title+area
     var seen={}, uniq=[]; cand.forEach(function(s){ var k=s.title+"|"+s.area; if(!seen[k]){ seen[k]=1; uniq.push(s); } });
     // optional team scope (cockpit)
     if(ctx.teamServices){ uniq=uniq.filter(function(s){ return ctx.teamServices.indexOf(candService(c,s))>=0; }); }
     // 3) reasons + score (co-located+due-soon highest; then equipment; then compliance; nearer-due wins ties)
     uniq.forEach(function(s){
-      var coLoc=!!hereAreas[s.area], coEq=!!(s.method && hereMethods[s.method]);
+      var coLoc=!!hereAreas[s.area], matchedEq=null;
+      (s.equipment||[]).some(function(t){ if(hereEquip[t]){ matchedEq=t; return true; } return false; });   // real equipment on site today
+      var coEq=!!matchedEq;
       s.reasons=[];
       if(coLoc) s.reasons.push({k:"loc", icon:"📍", text:"Samme område — "+areaLabel(s.area)});
       s.reasons.push({k:"time", icon:"⏰", text:"Forfaller om "+s.daysUntil+" dag"+(s.daysUntil===1?"":"er")});
-      if(coEq) s.reasons.push({k:"equip", icon:"🔧", text:"Samme utstyr ("+methodLabelOf(s.method)+") er på stedet"});
+      if(coEq) s.reasons.push({k:"equip", icon:"🔧", text:equipTypeLabel(matchedEq)+" er på stedet i dag"});
       if(s.statutory) s.reasons.push({k:"comp", icon:"✅", text:"Lovpålagt — forfaller nå"});
       var score=300; if(coLoc) score+=200; if(coEq) score+=60; if(s.statutory) score+=40; score+=Math.max(0,(WHILE_WINDOW-s.daysUntil));
       s.score=score; s.coLoc=coLoc;
@@ -2995,7 +3052,7 @@
       case "photo": togglePhoto(id); break;
       case "delMarker": deleteMarker(id); break;
       case "clearCustomers": if(window.confirm("Clear all sales customers? (the day app is unaffected)")){ S().customers=[]; S().obSeeded=true; save(); photoGC(); ui.openId=null; repaintSales(); toast("Customers cleared — add a real one with ＋ New customer"); } break;
-      case "reseed": { var rst=S(); rst.customers=(rst.customers||[]).filter(function(x){return x.id!=="holtet-cust"&&x.id!=="solbakken-cust";}); rst.customers.unshift(seedSolbakken()); rst.customers.unshift(seedHoltet()); rst.obSeeded=true; save(); photoGC(); ui.openId=null; repaintSales(); toast("Seed-klienter tilbakestilt (Holtet + Solbakken)"); break; }
+      case "reseed": { var rst=S(); rst.customers=(rst.customers||[]).filter(function(x){return x.id!=="holtet-cust"&&x.id!=="solbakken-cust";}); rst.customers.unshift(seedSolbakken()); rst.customers.unshift(seedHoltet()); rst.obSeeded=true; rst.storage=seedStorage(); rst.equipment=seedEquipment(); save(); photoGC(); ui.openId=null; repaintSales(); toast("Seed-klienter + utstyr tilbakestilt"); break; }
     }
   });
 

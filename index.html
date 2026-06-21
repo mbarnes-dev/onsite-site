@@ -187,7 +187,7 @@
   "use strict";
   var LS_KEY = "onsite_day_v1";
 
-  var SCHEMA_VERSION = 2;
+  var SCHEMA_VERSION = 3;
   function demo(){
     return {
       schemaVersion: SCHEMA_VERSION,
@@ -228,6 +228,8 @@
     if(!Array.isArray(s.customers)) s.customers = [];
     if(!s.completedInstances || typeof s.completedInstances!=="object") s.completedInstances = {};
     if(typeof s.nextId!=="number") s.nextId = 100;
+    if(!Array.isArray(s.equipment)) s.equipment = [];  // v3: Phase 9 equipment/resource registry (onboarding.js seeds it)
+    if(!Array.isArray(s.storage)) s.storage = [];
     function fixLine(l){ if(l && (!l.review || typeof l.review!=="object")) l.review = {decision:null, comment:""}; }
     s.customers.forEach(function(c){
       if(!Array.isArray(c.zones)) c.zones = [];
