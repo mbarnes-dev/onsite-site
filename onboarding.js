@@ -471,7 +471,10 @@
   function methodLabel(z){ var ms=METHODS[z.service]||[]; var m=ms.filter(function(x){return x.key===z.method;})[0]; return m?m.label:""; }
   function defaultMethod(service){ var ms=METHODS[service]||[]; return ms.length?ms[0].key:null; }
 
-  /* ---- geodesic measurement (no deps): equirectangular shoelace + haversine ---- */
+  /* ---- geodesic measurement (no deps): equirectangular shoelace + haversine ----
+     STAYS INLINE: a stateless math primitive (like iso/addDays/kr) that the seed needs at PARSE-TIME
+     — holtetZones→zoneRecompute→geoArea runs before the deferred @onsite/core module loads. core ships a
+     portable copy (geoArea/geoLength, node-tested) for the PROD boundary; the app keeps its own here. */
   function geoArea(pts){ if(pts.length<3) return 0; var R=6378137, lat0=0; pts.forEach(function(p){lat0+=p[0];}); lat0=(lat0/pts.length)*Math.PI/180;
     var xy=pts.map(function(p){ return [R*(p[1]*Math.PI/180)*Math.cos(lat0), R*(p[0]*Math.PI/180)]; });
     var a=0; for(var i=0;i<xy.length;i++){ var j=(i+1)%xy.length; a+=xy[i][0]*xy[j][1]-xy[j][0]*xy[i][1]; } return Math.abs(a)/2; }
@@ -994,143 +997,23 @@
       review:{decision:null, comment:""} };
   }
   /* ===========================================================================
-     PRICING ENGINE (Phase 2, docs 46/47) — drive price from measured zones + counts
-     RATES = the editable "blue input cells"; reverse-engineered so Holtet's drivers
-     compute ≈ kr 16 558/mnd (doc 37 signed price = the QA anchor).
+     PRICING + OFFER ENGINE — delegated to @onsite/core (doc-55 step-1 cleanup).
+     RATES (the "blue input cells"), the driver/zone aggregation (driverCounts/
+     zoneAgg/ckVal/keptVal), the line factory (oLine) and the whole computeOffer →
+     totals pipeline now live in packages/core/src/index.mjs as the SINGLE source —
+     the kr 16 530 Holtet anchor is a core node-test. The app keeps only thin
+     delegates: it owns the customer record + persistence; core owns the math.
+     Engine globals pass in as opts: nowStr (the FUNCTION, so each offer's createdAt
+     reflects its own compute moment — not a frozen first render) + LAYERS + catLabel
+     (marker-model path). RATES, MOD_TITLES/MOD_ORDER, WPM, layerToService, driverCounts
+     and zoneAgg were core-internal and are deleted here. The first engine call is always
+     post-load (a
+     render or user action) so window.OnSiteCore is defined — both seeds set offer:null.
      =========================================================================== */
-  var RATES = {
-    snow:     { machine_m2_mnd: 0.48, hand_per_entry_mnd: 86 },   // source: Holtet vinter ≈ kr 1 800/mnd over 2 486 m² maskin + 7 innganger hånd
-    grass:    { mow_m2_mnd: 0.42, edge_m_mnd: 6 },                // source: Holtet klipp ≈ kr 1 400/mnd over 3 357 m²; kant nominell
-    greenery: { hedge_m_year: 200, gartner_bed_m2_year: 90 },     // source: hekk 45 m × 200 ≈ kr 9 000/år (2×/sesong); bed nominell
-    cleaning: { per_oppgang_floor_week: 60, per_heis_week: 35 },  // source: Holtet renhold ≈ kr 4 800/mnd — 4 oppg × 4 etg ukentlig + 4 heis
-    base:     { vaktmester_round_mnd: 4200 }                      // source: Holtet ukentlig vaktmesterrunde + tilsyn (doc 37)
-  };
-  var WPM = 52/12;  // weeks per month
-  var MOD_TITLES = { base:"Drift / vaktmester", cleaning:"Renhold", snow:"Vintertjeneste", grass:"Grønt – klipp", greenery:"Grønt – skjøtsel", other:"Annet" };
-  var MOD_ORDER = ["base","cleaning","snow","grass","greenery","other"];
-  function layerToService(layer){ return ({grass:"grass", snow:"snow", gritting:"snow", laundry:"cleaning", stairwell:"cleaning", facade:"cleaning",
-    greenery:"greenery", beds:"greenery", tech:"base", fire:"base", lift:"base", entrance:"base", playground:"base", panel:"base", valve:"base"})[layer] || "other"; }
-  function ckVal(c,id){ var it=(c.checklist||[]).filter(function(x){return x.id===id;})[0]; return it?it.value:null; }
-  function keptVal(c,id,fb){ var it=(c.checklist||[]).filter(function(x){return x.id===id;})[0]; return (it&&it.price)?it.price:fb; }
-  function driverCounts(c){
-    var entry=(c.markers||[]).filter(function(m){return m.layer==="entrance";}).length;
-    return { oppganger: parseInt(ckVal(c,"oppganger"),10) || entry || 4,
-             heiser: parseInt(ckVal(c,"heiser"),10) || 0,
-             entryways: entry || parseInt(ckVal(c,"oppganger"),10) || 4,
-             floors: c.floors || 4 };
-  }
-  function zoneAgg(c){
-    var z=c.zones||[];
-    function sa(f){ return z.filter(f).reduce(function(s,x){return s+(x.area_m2||0);},0); }
-    function sl(f){ return z.filter(f).reduce(function(s,x){return s+(x.length_m||0);},0); }
-    return { snowMachine:sa(function(x){return x.service==="snow"&&x.method==="machine";}),
-      mow:sa(function(x){return x.service==="grass"&&(x.method==="mow"||!x.method);}),
-      edge:sl(function(x){return x.service==="grass"&&x.method==="edge";}),
-      hedgeZones:z.filter(function(x){return x.service==="greenery"&&x.geometry.type==="LineString";}),
-      bedZones:z.filter(function(x){return x.service==="greenery"&&x.geometry.type==="Polygon";}),
-      firstId:function(svc,meth){ var m=z.filter(function(x){return x.service===svc&&(!meth||x.method===meth);})[0]; return m?m.id:null; } };
-  }
-  // line factory. price === final (kept in sync; getters don't survive JSON round-trips).
-  function oLine(o){
-    return { id:o.id, src:o.src||"computed", service:o.service, role:o.role||"", label:o.label, subtype:o.label,
-      category:o.category||MOD_TITLES[o.service]||"", emoji:o.emoji||"•", layer:o.layer||null, zoneId:o.zoneId||null,
-      qty:(o.qty==null?null:o.qty), unit:o.unit||"", rate:(o.rate==null?null:o.rate), cadence:o.cadence||"",
-      computed:Math.round(o.computed||0), final:Math.round((o.final!=null?o.final:o.computed)||0), overridden:!!o.overridden,
-      price:Math.round((o.final!=null?o.final:o.computed)||0),
-      frequency:o.frequency||o.cadence||"", inScope:(o.inScope!==false), deliveredBy:o.deliveredBy||"in-house", partnerName:o.partnerName||null,
-      compliance:!!o.compliance, oneOff:!!o.oneOff, measure:o.measure||"count", review:{decision:null, comment:""} };
-  }
-  function computeOffer(c){
-    var prev=c.offer, per=c.period||"år";
-    var prevLine={}, prevMod={};
-    if(prev&&prev.modules){ prev.modules.forEach(function(m){ prevMod[m.service]={included:m.included, startDate:m.startDate, indexationPct:m.indexationPct, cap:m.cap};
-      m.lines.forEach(function(l){ prevLine[l.id]={final:l.final, overridden:l.overridden}; }); }); }
-    function withPrev(l){ var p=prevLine[l.id]; if(p&&p.overridden){ l.final=p.final; l.price=p.final; l.overridden=true; } return l; }
-    var lines=[], optionLines=[];
-
-    if(c.checklist && c.checklist.length){
-      // ---- driver model (zones + counts + kept non-spatial checklist lines) ----
-      var n=driverCounts(c), z=zoneAgg(c), id=c.id+":";
-      // base — the standard vaktmester round is always offered; teknisk only when captured/priced
-      lines.push(withPrev(oLine({id:id+"base:round", service:"base", role:"round", label:"Ukentlig vaktmesterrunde + tilsyn", emoji:"🧰", qty:1, unit:"runde", rate:RATES.base.vaktmester_round_mnd, cadence:"Ukentlig", computed:RATES.base.vaktmester_round_mnd})));
-      var tek=keptVal(c,"water",0); if(tek>0) lines.push(withPrev(oLine({id:id+"base:teknisk", service:"base", role:"teknisk", label:"Teknisk rom – tilsyn", emoji:"🔧", cadence:"Månedlig", computed:tek})));
-      // counts only when actually captured (a fresh building stays low/empty until the rep enters them — no fabricated fallbacks)
-      var oppCaptured = ckVal(c,"oppganger")!=null && ckVal(c,"oppganger")!=="";
-      var entryCaptured = (c.markers||[]).some(function(m){return m.layer==="entrance";}) || oppCaptured;
-      if(oppCaptured){
-        var cl=Math.round(n.oppganger*n.floors*RATES.cleaning.per_oppgang_floor_week*WPM);
-        lines.push(withPrev(oLine({id:id+"cleaning:opp", service:"cleaning", role:"opp", label:"Trappevask "+n.oppganger+" oppg × "+n.floors+" etg", emoji:"🧹", qty:n.oppganger*n.floors, unit:"etg/uke", rate:RATES.cleaning.per_oppgang_floor_week, cadence:"Ukentlig", computed:cl})));
-        if(n.heiser>0){ var he=Math.round(n.heiser*RATES.cleaning.per_heis_week*WPM);
-          lines.push(withPrev(oLine({id:id+"cleaning:heis", service:"cleaning", role:"heis", label:"Heisrenhold "+n.heiser+" heis", emoji:"🛗", qty:n.heiser, unit:"heis/uke", rate:RATES.cleaning.per_heis_week, cadence:"Ukentlig", computed:he}))); }
-      }
-      var mats=keptVal(c,"mats",0); if(mats>0) lines.push(withPrev(oLine({id:id+"cleaning:mats", service:"cleaning", role:"mats", label:"Inngangsmatter (8 stk)", emoji:"🧺", cadence:"Månedlig", computed:mats, deliveredBy:"partner", partnerName:"Dørmatte Gutta AS"})));
-      // snow: machine always priced from zone area; hand only when entryways captured
-      if(z.snowMachine>0){ lines.push(withPrev(oLine({id:id+"snow:machine", service:"snow", role:"machine", label:"Maskinell brøyting", emoji:"❄️", qty:z.snowMachine, unit:"m²", rate:RATES.snow.machine_m2_mnd, cadence:"Per snøfall >5 cm", computed:z.snowMachine*RATES.snow.machine_m2_mnd, zoneId:z.firstId("snow","machine")}))); }
-      if(entryCaptured) lines.push(withPrev(oLine({id:id+"snow:hand", service:"snow", role:"hand", label:"Manuell rydding + strøing ("+n.entryways+" innganger)", emoji:"🧂", qty:n.entryways, unit:"inngang", rate:RATES.snow.hand_per_entry_mnd, cadence:"Per snøfall / is", computed:n.entryways*RATES.snow.hand_per_entry_mnd, zoneId:z.firstId("snow","hand")})));
-      // grass (mow + edge zones)
-      if(z.mow>0){ lines.push(withPrev(oLine({id:id+"grass:mow", service:"grass", role:"mow", label:"Gressklipping", emoji:"🌿", qty:z.mow, unit:"m²", rate:RATES.grass.mow_m2_mnd, cadence:"Ukentlig i vekstsesong", computed:z.mow*RATES.grass.mow_m2_mnd, zoneId:z.firstId("grass","mow")}))); }
-      if(z.edge>0){ lines.push(withPrev(oLine({id:id+"grass:edge", service:"grass", role:"edge", label:"Kantklipp", emoji:"✂️", qty:z.edge, unit:"m", rate:RATES.grass.edge_m_mnd, cadence:"Sesong", computed:z.edge*RATES.grass.edge_m_mnd, zoneId:z.firstId("grass","edge")}))); }
-      // greenery kept spraying only when captured/priced; hedge/beds → option lines
-      var grnt=keptVal(c,"weeds",0); if(grnt>0) lines.push(withPrev(oLine({id:id+"greenery:ovrig", service:"greenery", role:"ovrig", label:"Grøntområde – sprøyting, bed, trær", emoji:"🌳", cadence:"Sesong", computed:grnt})));
-      z.hedgeZones.forEach(function(zz,i){ var yr=Math.round((zz.length_m||0)*RATES.greenery.hedge_m_year);
-        optionLines.push(oLine({id:id+"opt:hedge"+i, service:"greenery", role:"hedge", label:"Beskjæring hekk ("+zz.label+")", emoji:"🌳", qty:zz.length_m, unit:"m", rate:RATES.greenery.hedge_m_year, cadence:"2×/år", computed:yr, oneOff:false, zoneId:zz.id})); zz.priceLineId=id+"opt:hedge"+i; });
-      z.bedZones.forEach(function(zz,i){ var yr=Math.round((zz.area_m2||0)*RATES.greenery.gartner_bed_m2_year);
-        optionLines.push(oLine({id:id+"opt:bed"+i, service:"greenery", role:"bed", label:"Gartner bed ("+zz.label+")", emoji:"🌷", qty:zz.area_m2, unit:"m²", rate:RATES.greenery.gartner_bed_m2_year, cadence:"Sesong", computed:yr, zoneId:zz.id})); zz.priceLineId=id+"opt:bed"+i; });
-      // checklist upsells → option/per-gang lines (separate from recurring total)
-      (c.checklist||[]).filter(function(it){return it.scope==="upsell" && (it.price||0)>0;}).forEach(function(it,i){
-        optionLines.push(oLine({id:id+"opt:up"+i, service:layerToService(it.id)||"other", role:"upsell", label:it.subtype||it.label, emoji:it.emoji||"⬆", qty:null, computed:it.price, oneOff:!!it.oneOff, cadence:it.oneOff?"engangs":"løpende"})); });
-      // link zone priceLineId for the recurring zone-driven lines
-      lines.forEach(function(l){ if(l.zoneId){ var zz=findZone(c,l.zoneId); if(zz) zz.priceLineId=l.id; } });
-
-    } else {
-      // ---- marker model (Solbakken etc.) — keep existing prices, grouped into modules ----
-      (c.markers||[]).filter(function(m){ return !LAYERS[m.layer].recordOnly; }).forEach(function(m){
-        var d=LAYERS[m.layer];
-        lines.push(withPrev(oLine({id:c.id+":mk:"+m.id, service:layerToService(m.layer), role:"marker", label:d.label, category:catLabel(m.layer), emoji:d.emoji,
-          qty:m.qty, unit:(m.unit||d.unit), rate:d.rate, cadence:m.frequency||d.freq, computed:m.price, frequency:m.frequency||d.freq, inScope:m.inScope, measure:d.measure, compliance:d.compliance })));
-      });
-    }
-
-    // Phase 12: fold radar-accepted standing lines into the recurring offer (survive rebuilds; group by service)
-    (c.addedLines||[]).forEach(function(a){ lines.push(withPrev(oLine(a))); });
-
-    // group into modules
-    var modules=MOD_ORDER.map(function(svc){
-      var ml=lines.filter(function(l){return l.service===svc;}); if(!ml.length) return null;
-      var pm=prevMod[svc]||{};
-      return { service:svc, title:MOD_TITLES[svc], lines:ml,
-        included:(pm.included!=null?pm.included:true),
-        startDate:pm.startDate||(svc==="snow"?"15.11.2026":"01.01.2026"),
-        indexationPct:(pm.indexationPct!=null?pm.indexationPct:2.5), cap:(pm.cap!=null?pm.cap:3), subtotal:0 };
-    }).filter(Boolean);
-
-    c.offer = { version:(prev?prev.version:1), createdAt:nowStr(), period:per, modules:modules, optionLines:optionLines,
-      lines:[], upsells:optionLines, totalMonthly:0, totalYearly:0, travel:0, terms:c.terms||null,
-      coverNote:(prev&&prev.coverNote) ? prev.coverNote : (per==="mnd"
-        ? "Månedlig serviceavtale for "+c.name+" — priset fra bygningens målte arealer og talte enheter (ikke rundsum). Hver tjeneste er en egen modul som kan velges bort separat. Opsjoner holdes utenfor grunnbeløpet."
-        : "Service plan for "+c.name+" — computed from measured zones + counts; each service is a severable module.") };
-    if(!c.offerHistory) c.offerHistory=[];
-    rebuildOfferFlat(c);
-    return c.offer;
-  }
-  function lineRemoved(l){ return !!(l && l.review && l.review.decision==="remove"); } // C2: guards old-shape lines missing .review
-  // M4: module subtotals + grand totals exclude removed lines (+ travel), so module "Sum fast", the headline,
-  // the offer-detail total and the leave-behind all read ONE consistent number. Does NOT touch o.lines.
-  function syncOfferTotals(c){
-    var o=c.offer; if(!o||!o.modules) return;
-    o.modules.forEach(function(m){ m.lines.forEach(function(l){ l.price=l.final; }); m.subtotal=m.lines.reduce(function(s,l){return s+(lineRemoved(l)?0:(l.final||0));},0); });
-    var sum=o.modules.filter(function(m){return m.included;}).reduce(function(s,m){return s+m.subtotal;},0)+(o.travel||0);
-    if(o.period==="mnd"){ o.totalMonthly=Math.round(sum); o.totalYearly=Math.round(sum*12); }
-    else { o.totalYearly=Math.round(sum); o.totalMonthly=Math.round(sum/12); }
-  }
-  function rebuildOfferFlat(c){
-    var o=c.offer; if(!o||!o.modules) return;
-    syncOfferTotals(c);
-    // rebuild the flat included-module mirror (removed lines excluded). Board review (setDecision) uses
-    // syncOfferTotals instead, so it does NOT rebuild this mirror — a removed line stays visible+togglable there.
-    var incl=o.modules.filter(function(m){return m.included;});
-    o.lines=[]; incl.forEach(function(m){ m.lines.forEach(function(l){ if(!lineRemoved(l)) o.lines.push(l); }); });
-  }
+  function computeOffer(c){ return window.OnSiteCore.computeOffer(c, {nowStr:nowStr, LAYERS:LAYERS, catLabel:catLabel}); }
+  function lineRemoved(l){ return window.OnSiteCore.lineRemoved(l); }   // guards old-shape lines missing .review
+  function syncOfferTotals(c){ return window.OnSiteCore.syncOfferTotals(c); }  // module subtotals + grand totals (excl. removed + travel)
+  function rebuildOfferFlat(c){ return window.OnSiteCore.rebuildOfferFlat(c); } // syncs totals + rebuilds flat included-module mirror
   function recomputeOffer(c){ if(c&&c.offer&&c.offer.modules){ computeOffer(c); save(); } }
   function generateOffer(c){
     computeOffer(c);
@@ -1490,14 +1373,7 @@
       lift:{type:"intervalYears", years:2, dueMonth:9, dueDay:15}, playground:{type:"annual", dueMonth:5, dueDay:1}
     })[layer] || {type:"monthly"};
   }
-  function freqText(s){
-    switch(s.type){
-      case "weekly": return "ukentlig"; case "monthly": return "månedlig"; case "nPerYear": return s.count+"×/år";
-      case "seasonal": return "sesong ("+s.windows.length+" vindu)"; case "growingSeason": return "ukentlig i vekstsesong";
-      case "dateAnchored": return {before17mai:"før 17. mai", beforeSthans:"før st.hans", autumn:"høst", spring:"vår"}[s.anchor]||"årlig";
-      case "intervalYears": return s.years+"-årlig"; case "annual": return "årlig"; case "event": return "beredskap";
-    } return "";
-  }
+  // freqText → @onsite/core (cadence label, used inside core's expandLine; no app-side caller remains).
   /* ---- date helpers (browser Date is fine here) ---- */
   function refDate(){ return ui.refMs!=null ? new Date(ui.refMs) : new Date(); }
   function pad2(n){ return (n<10?"0":"")+n; }
@@ -1512,18 +1388,7 @@
     return ((m>VEKST_START[0])||(m===VEKST_START[0]&&day>=VEKST_START[1])) && ((m<VEKST_END[0])||(m===VEKST_END[0]&&day<=VEKST_END[1])); }
   function isoWeek(d){ var x=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate())); var dn=(x.getUTCDay()+6)%7; x.setUTCDate(x.getUTCDate()-dn+3); var f=new Date(Date.UTC(x.getUTCFullYear(),0,4)); return 1+Math.round(((x-f)/86400000-3+((f.getUTCDay()+6)%7))/7); }
 
-  function expandLine(line, from, to){
-    var s=line.schedule, out=[], y0=from.getFullYear(), y1=to.getFullYear();
-    function push(d){ if(inRange(d,from,to)) out.push({lineId:line.lineId, building:line.building, title:line.title, category:line.category, zone:line.zone, partner:line.partner, statutory:line.statutory, date:iso(d), freq:freqText(s)}); }
-    if(s.type==="weekly"){ for(var d=mondayOf(from); d.getTime()<=to.getTime(); d=addDays(d,7)) push(addDays(d,2)); }
-    else if(s.type==="growingSeason"){ for(var d2=mondayOf(from); d2.getTime()<=to.getTime(); d2=addDays(d2,7)){ var w=addDays(d2,2); if(inGrowing(w)) push(w); } }
-    else if(s.type==="monthly"){ for(var y=y0;y<=y1;y++) for(var m=1;m<=12;m++) push(ymd(y,m,1)); }
-    else if(s.type==="nPerYear"){ for(var y3=y0;y3<=y1;y3++){ var st0=s.season?ymd(y3,VEKST_START[0],VEKST_START[1]):ymd(y3,1,1), en=s.season?ymd(y3,VEKST_END[0],VEKST_END[1]):ymd(y3,12,31); for(var i=0;i<s.count;i++) push(new Date(st0.getTime()+((i+0.5)/s.count)*(en.getTime()-st0.getTime()))); } }
-    else if(s.type==="seasonal"){ for(var y4=y0;y4<=y1;y4++) s.windows.forEach(function(wd){ push(ymd(y4,wd[0][0],wd[0][1])); }); }
-    else if(s.type==="dateAnchored"){ var a={before17mai:[5,10], beforeSthans:[6,20], autumn:[10,10], spring:[4,15]}[s.anchor]||[6,1]; for(var y5=y0;y5<=y1;y5++) push(ymd(y5,a[0],a[1])); }
-    else if(s.type==="annual"||s.type==="intervalYears"){ for(var y6=y0;y6<=y1;y6++) push(ymd(y6, s.dueMonth||6, s.dueDay||1)); }
-    return out;
-  }
+  function expandLine(line, from, to){ return window.OnSiteCore.expandLine(line, from, to); }  // cadence → dated instances (delegated to @onsite/core)
   function scheduleLines(client){
     var out=[], bld=client.name;
     if(client.checklist&&client.checklist.length){
@@ -1543,7 +1408,7 @@
   }
   function liveClients(){ return customers().filter(function(c){return c.stage==="Live";}); }
   function liveLines(){ var a=[]; liveClients().forEach(function(c){ a=a.concat(scheduleLines(c)); }); return a; }
-  function generateInstances(lines, from, to){ var out=[]; lines.filter(function(l){return l.schedule.type!=="event";}).forEach(function(l){ out=out.concat(expandLine(l,from,to)); }); return out; }
+  function generateInstances(lines, from, to){ return window.OnSiteCore.generateInstances(lines, from, to); }  // delegated; skips event-type lines
   function instKey(i){ return i.lineId+"|"+i.date; }
   function isDone(i){ var st=S(); return !!(st.completedInstances&&st.completedInstances[instKey(i)]); }
   function clientOf(lineId){ return cust(lineId.split(":")[0]); }
@@ -2577,7 +2442,7 @@
     var monthly=opp.estValueYr ? (per==="mnd"?Math.round(opp.estValueYr/12):opp.estValueYr) : 0;
     c.addedLines=c.addedLines||[]; c.radarActioned=c.radarActioned||[];
     c.addedLines.push({ id:c.id+":radar:"+opp.key, src:"radar", service:opp.service||"other", role:"recurring",
-      label:opp.label+" (fast plan)", emoji:"🔁", qty:null, unit:"", rate:null, cadence:opp.suggestedCadence, computed:monthly, category:MOD_TITLES[opp.service||"other"]||"Annet" });
+      label:opp.label+" (fast plan)", emoji:"🔁", qty:null, unit:"", rate:null, cadence:opp.suggestedCadence, computed:monthly, category:window.OnSiteCore.MOD_TITLES[opp.service||"other"]||"Annet" });
     c.radarActioned.push(opp.id);
     computeOffer(c);   // folds the new line in, regroups modules, recomputes totals
     if(!save()){ c.addedLines.pop(); c.radarActioned.pop(); computeOffer(c); return; }   // gated rollback
@@ -2995,6 +2860,9 @@
      extracted + tested in core (anchors green standalone) and follow the same per-call-
      site pattern — the honest next increment. // PROD: full swap once a build step lands. */
   function CORE(fn){ return (typeof window!=="undefined" && window.OnSiteCore && window.OnSiteCore[fn]) || null; }
+  // Phase 16: the offer/schedule/geodesic engines are definition-delegated to @onsite/core directly in
+  // their declarations above (the binding IS the delegate — no swap needed). radar/intake/scope route via
+  // CORE("fn") at the call site (see below). All calls are post-load, so window.OnSiteCore is always defined.
   function renderExtras(view, cols){
     seedIfNeeded();
     destroyMap();

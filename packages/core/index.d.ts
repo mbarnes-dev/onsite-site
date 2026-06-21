@@ -78,7 +78,8 @@ export function scopeDomLabel(k: string): string;
 export function geoArea(pts: LngLat[]): number;   // pts = [[lat,lng],…]; returns m²
 export function geoLength(pts: LngLat[]): number;  // returns metres
 
-export function migrateState<T = any>(s: T, schemaVersion?: number): T;
+// NB: migration is NOT exported — it stays in the app (index.html `migrate`, parse-time + demo()-coupled).
+// See CORE-EXTRACTION.md.
 
 /* ---- data + formatters ---- */
 export const RATES: Record<string, Record<string, number>>;

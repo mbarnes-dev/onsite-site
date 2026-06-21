@@ -128,17 +128,3 @@ test("geoArea / geoLength within tolerance", () => {
   assert.ok(sq > 6000 && sq < 6700, `square ≈ 6.4k m², got ${sq.toFixed(0)}`);
   assert.equal(Core.geoArea([[59, 10], [59, 10]]), 0, "degenerate → 0");
 });
-
-/* ---- migration: idempotent forward backfill ---- */
-test("migrateState → backfills the sv8 shape, idempotent", () => {
-  const s = { customers: [{ id: "x" }] };
-  Core.migrateState(s, 8);
-  assert.equal(s.schemaVersion, 8);
-  assert.ok(Array.isArray(s.intake) && Array.isArray(s.equipment));
-  const c = s.customers[0];
-  assert.ok(Array.isArray(c.requests) && Array.isArray(c.assets) && c.contractScope === null);
-  // idempotent
-  const before = JSON.stringify(s);
-  Core.migrateState(s, 8);
-  assert.equal(JSON.stringify(s), before);
-});

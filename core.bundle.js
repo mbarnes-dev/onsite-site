@@ -88,7 +88,9 @@ export function lineRemoved(l) { return !!(l && l.review && l.review.decision ==
  *  prototype's global reads (nowStr() for createdAt; LAYERS/catLabel for the marker-model path). */
 export function computeOffer(c, opts) {
   opts = opts || {};
-  var nowStr = opts.nowStr || (function () { try { return new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }); } catch (e) { return "today"; } })();
+  // nowStr may be a value OR a function (called fresh per compute) — the app passes the function so
+  // each offer's createdAt reflects its compute moment, not a frozen first-render timestamp.
+  var nowStr = (typeof opts.nowStr === "function" ? opts.nowStr() : opts.nowStr) || (function () { try { return new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }); } catch (e) { return "today"; } })();
   var LAYERS = opts.LAYERS || {}, catLabel = opts.catLabel || function (k) { return k; };
   var prev = c.offer, per = c.period || "år";
   var prevLine = {}, prevMod = {};
@@ -371,42 +373,10 @@ export function expandLine(line, from, to) {
 /** Expand many lines (skips event-type, which are beredskap not calendar). */
 export function generateInstances(lines, from, to) { var out = []; lines.filter(function (l) { return l.schedule.type !== "event"; }).forEach(function (l) { out = out.concat(expandLine(l, from, to)); }); return out; }
 
-/* ============================================================ migration (state shape forward-compat, sv8) */
-/** Idempotent forward migration of a persisted state object. Pure: backfills fields, sets schemaVersion.
- *  (The app keeps the null→demo() fallback; core handles a well-formed object.) */
-export function migrateState(s, schemaVersion) {
-  if (!s || typeof s !== "object") return s;
-  if (!Array.isArray(s.buildings)) s.buildings = [];
-  if (!Array.isArray(s.items)) s.items = [];
-  if (!Array.isArray(s.customers)) s.customers = [];
-  if (!s.completedInstances || typeof s.completedInstances !== "object") s.completedInstances = {};
-  if (typeof s.nextId !== "number") s.nextId = 100;
-  if (!Array.isArray(s.equipment)) s.equipment = [];
-  if (!Array.isArray(s.storage)) s.storage = [];
-  if (!Array.isArray(s.intake)) s.intake = [];
-  function fixLine(l) { if (l && (!l.review || typeof l.review !== "object")) l.review = { decision: null, comment: "" }; }
-  s.customers.forEach(function (c) {
-    if (!Array.isArray(c.zones)) c.zones = [];
-    if (!Array.isArray(c.completionLog)) c.completionLog = [];
-    if (!Array.isArray(c.contacts)) c.contacts = [];
-    if (!Array.isArray(c.upcoming)) c.upcoming = [];
-    if (!Array.isArray(c.assets)) c.assets = [];
-    if (!Array.isArray(c.requests)) c.requests = [];
-    c.requests.forEach(function (r) { if (r && r.source == null) r.source = "field"; if (r && r.channel === undefined) r.channel = null; });
-    if (!Array.isArray(c.notices)) c.notices = [];
-    if (!Array.isArray(c.addedLines)) c.addedLines = [];
-    if (!Array.isArray(c.radarActioned)) c.radarActioned = [];
-    if (c.contractScope === undefined) c.contractScope = null;
-    c.zones.forEach(function (z) { if (!Array.isArray(z.completionLog)) z.completionLog = []; if (!Array.isArray(z.photoIds)) z.photoIds = []; });
-    if (c.offer && typeof c.offer === "object") {
-      if (Array.isArray(c.offer.modules)) c.offer.modules.forEach(function (m) { if (Array.isArray(m.lines)) m.lines.forEach(fixLine); });
-      if (Array.isArray(c.offer.lines)) c.offer.lines.forEach(fixLine);
-      if (Array.isArray(c.offer.optionLines)) c.offer.optionLines.forEach(fixLine);
-      if (c.offer.travel == null) c.offer.travel = 0;
-    }
-  });
-  if (typeof schemaVersion === "number") s.schemaVersion = schemaVersion;
-  return s;
-}
+/* ============================================================ migration — INTENTIONALLY NOT EXTRACTED.
+ * Migration is the one engine that stays app-side (index.html `migrate`): it runs at parse-time, BEFORE
+ * this deferred module loads, and depends on the app's `demo()` seed + `SCHEMA_VERSION`. A core copy would
+ * be a duplicate the app never calls — an untested-against-live drift surface — so it lives only in the app.
+ * See CORE-EXTRACTION.md ("What stays in the app"). */
 
 export var VERSION = "0.1.0";
