@@ -1832,7 +1832,86 @@
     }).filter(Boolean);
     var head='<div class="card ob-routeintro"><div class="ct">🧭 Min rute i dag · '+td.icon+' '+esc(td.label)+' <span class="chip grey">'+blocks.length+' bygg</span></div>'
       +'<p class="muted" style="font-size:12px;margin:-2px 0 0">Dagens oppgaver for laget ditt, samlet per bygg. Åpne kartet som kjøreguide og marker utført rett fra sonen. <span style="opacity:.6">// later: ruterekkefølge/nav</span></p></div>';
-    return head + (blocks.length? blocks.join("") : '<div class="card"><div class="empty">Ingen aktive oppgaver for '+esc(td.label)+' i dag — sjekk «Alle bygg» eller kartet.</div></div>');
+    return head + morningManifestHTML(ctx) + (blocks.length? blocks.join("") : '<div class="card"><div class="empty">Ingen aktive oppgaver for '+esc(td.label)+' i dag — sjekk «Alle bygg» eller kartet.</div></div>');
+  }
+  /* ---- morning manifest (doc 10, Phase 9): the day's load-list writes itself ---- */
+  function svcToTeamBucket(s){ return ({greenery:"grass", grass:"grass", snow:"snow", cleaning:"cleaning", compliance:"compliance", technical:"technical", other:"other"})[s]||"other"; }
+  function teamNeedsType(team, type){
+    var td=teamDef(team); if(!td) return false; var today=refDate(), found=false;
+    liveClients().forEach(function(c){
+      (c.upcoming||[]).forEach(function(u){ if((u.equipment||[]).indexOf(type)>=0 && td.services.indexOf(svcToTeamBucket(u.service))>=0) found=true; });
+      generateInstances(scheduleLines(c), today, addDays(today,7)).forEach(function(i){ if(!isDone(i) && catEquipment(itemKeyOf(i.lineId)).indexOf(type)>=0 && td.services.indexOf(serviceOfTask(c,i.lineId))>=0) found=true; });
+    });
+    return found;
+  }
+  function teamManifest(team){
+    var td=teamDef(team); if(!td) return null;
+    var today=refDate(), tIso=iso(today), needTypes={}, bld={};
+    liveClients().forEach(function(c){
+      generateInstances(scheduleLines(c), today, today).filter(function(i){ return i.date===tIso && !isDone(i) && td.services.indexOf(serviceOfTask(c,i.lineId))>=0; })
+        .forEach(function(i){ var eq=catEquipment(itemKeyOf(i.lineId)); if(eq.length){ eq.forEach(function(t){needTypes[t]=1;}); bld[c.name]=1; } });
+      (c.upcoming||[]).filter(function(u){ return (u.offsetDays||0)<=1 && !isDone({lineId:c.id+":up:"+u.id, date:tIso}) && td.services.indexOf(svcToTeamBucket(u.service))>=0; })
+        .forEach(function(u){ var eq=u.equipment||[]; if(eq.length){ eq.forEach(function(t){needTypes[t]=1;}); bld[c.name]=1; } });
+    });
+    var types=Object.keys(needTypes); if(!types.length) return null;
+    var items=types.map(function(t){ var its=equipByType(t); return its.length? its[0] : {id:null, name:equipTypeLabel(t), type:t, state:"mangler", location:null}; });
+    // start storage = the lager holding the most of the needed items (else the team vehicle)
+    var lagerCount={}; items.forEach(function(e){ if(e.state==="lager" && e.location) lagerCount[e.location]=(lagerCount[e.location]||0)+1; });
+    var startId=Object.keys(lagerCount).sort(function(a,b){return lagerCount[b]-lagerCount[a];})[0] || (teamVehicle(team)?teamVehicle(team).id:null);
+    // end-of-day drop: another team needs one of these items next
+    var drop=null, otherTeams=TEAMS.filter(function(t){return t.key!==team;});
+    for(var i=0;i<items.length && !drop;i++){ var e=items[i]; if(!e.id) continue;
+      var needer=otherTeams.filter(function(t){ return teamNeedsType(t.key, e.type); })[0];
+      if(needer){ var dropTo=(storageById(e.location)&&storageById(e.location).id==="lagerB")?"lagerA":"lagerB"; drop={equip:e, team:needer, storage:dropTo}; }
+    }
+    return { team:team, items:items, startId:startId, buildings:Object.keys(bld), drop:drop };
+  }
+  function morningManifestHTML(ctx){
+    var m=teamManifest(ctx.team); if(!m) return "";
+    var td=teamDef(ctx.team), start=storageById(m.startId), veh=teamVehicle(ctx.team);
+    var loadRows=m.items.map(function(e){
+      var inVeh = e.state==="bil" && veh && e.location===veh.id;
+      var miss = e.state==="mangler";
+      var btn = inVeh ? '<span class="chip green">✓ i bilen</span>'
+        : miss ? '<span class="chip amber">⚠️ mangler</span>'
+        : '<button class="ob-mini ok on" data-ob="equipLoad" data-arg="'+esc(e.id)+'">Last</button>';
+      return '<div class="ob-loadrow'+(inVeh?' done':'')+'"><div class="ob-loadmain">'+equipTypeEmoji(e.type)+' <b>'+esc(e.name)+'</b> <span class="muted">· '+esc(equipLocLabel(e))+'</span></div>'+btn+'</div>';
+    }).join("");
+    var drop="";
+    if(m.drop){ var dropTo=storageById(m.drop.storage), dt=teamDef(m.drop.team.key);
+      drop='<div class="ob-manifest-drop">📦 <b>Etter jobben:</b> lever <b>'+esc(m.drop.equip.name)+'</b> til '+esc(dropTo?dropTo.name:"Lager B")+' — '+(dt?dt.icon+' '+esc(dt.label):"")+' trenger den neste. '
+        +'<button class="ob-mini" data-ob="equipDrop" data-arg="'+esc(m.drop.equip.id)+'|'+esc(m.drop.storage)+'">Levert</button></div>'; }
+    return '<div class="card ob-manifest"><div class="ct">🌅 Din dag</div>'
+      +'<div class="ob-manifest-start">Start på <b>'+esc(start?start.name:(veh?veh.name:"bilen"))+'</b> · '+m.buildings.length+' bygg på ruta</div>'
+      +'<div class="ob-manifest-loadhd">Last med deg:</div>'+loadRows+drop
+      +'<p class="muted" style="font-size:11px;margin:8px 0 0">Trykk «Last»/«Levert» når du flytter utstyret — oppdaterer hvor det er. <span style="opacity:.6">// Tier-0 manuelt; BLE/GPS senere. Vi sporer utstyr, ikke folk.</span></p></div>';
+  }
+  /* ---- Office fleet view (doc 10 §3 conflict + handoff, §6 rent-vs-buy) — rules + counters, no solver ---- */
+  function teamsNeedingType(type){ return TEAMS.filter(function(t){ return teamNeedsType(t.key, type); }); }
+  function fleetConflicts(){
+    var seen={}, out=[]; equipList().forEach(function(e){ if(seen[e.type]) return; seen[e.type]=1;
+      var needers=teamsNeedingType(e.type), n=equipByType(e.type).length;
+      if(needers.length>=2 && n<needers.length) out.push({type:e.type, teams:needers, items:n});
+    }); return out;
+  }
+  function fleetHTML(){
+    var eq=equipList(); if(!eq.length) return "";
+    var rows=eq.map(function(e){
+      return '<div class="ob-equiprow"><div>'+equipTypeEmoji(e.type)+' <b>'+esc(e.name)+'</b> <span class="ob-equiploc">· '+esc(equipLocLabel(e))+(e.owned?'':' · leid')+' · brukt '+(e.usageCount||0)+'×</span></div>'
+        +'<span class="ob-equipstate '+e.state+'">'+esc(EQUIP_STATE_LABEL[e.state]||e.state)+'</span></div>';
+    }).join("");
+    var conf=fleetConflicts().map(function(c){
+      var names=c.teams.map(function(t){return t.icon+" "+esc(t.label);}).join(" + ");
+      return '<div class="ob-fleetflag warn"><span>⚠️</span><div><b>'+esc(equipTypeLabel(c.type))+' i konflikt</b> — '+names+' trenger den samme uke, men dere har '+c.items+'. Lei en til, eller flytt en oppgave.</div></div>'
+        +'<div class="ob-fleetflag hand"><span>💡</span><div>Handoff: avslutt '+esc(c.teams[0].label)+' på Lager B og legg igjen '+esc(equipTypeLabel(c.type))+' der — '+esc(c.teams[1].label)+' tar den derfra.</div></div>';
+    }).join("");
+    var rvb=eq.map(function(e){ var u=e.usageCount||0;
+      if(!e.owned && u>=10) return '<div class="ob-fleetflag buy"><span>💡</span><div>Leid <b>'+esc(e.name)+'</b> '+u+'× i år — vurder å kjøpe (binder opp leie).</div></div>';
+      if(e.owned && u<=5)  return '<div class="ob-fleetflag sell"><span>📉</span><div><b>'+esc(e.name)+'</b> brukt bare '+u+'× — vurder å selge eller dele.</div></div>';
+      return "";
+    }).filter(Boolean).join("");
+    return '<div class="card ob-fleetcard"><div class="ct">🧰 Utstyr & ressurser <span class="chip grey">'+eq.length+'</span> <span class="muted" style="font-weight:600;font-size:11.5px">· vi sporer utstyr, ikke folk (doc 10 §5)</span></div>'
+      + rows + (conf||rvb? '<div style="margin-top:6px"></div>':'') + conf + rvb +'</div>';
   }
   function zoneDoneToday(c, z){ var tIso=iso(refDate()); return (z.completionLog||[]).filter(function(e){return iso(new Date(e.ts))===tIso;}).slice(-1)[0] || null; }
   function cockZoneRowHTML(c, z){
@@ -2681,7 +2760,7 @@
     }).join(""):'<div class="empty">No customers in the pipeline yet.</div>';
     var ars=liveClients().map(function(c){return arsplanHTML(c);}).join("");
     host.innerHTML='<div class="card"><div class="ct">Sales pipeline — new customers</div>'+rows
-      +'<button class="ob-newbtn" data-ob="new">＋ Set up a new client (sales → onboarding)</button></div>'+ars;
+      +'<button class="ob-newbtn" data-ob="new">＋ Set up a new client (sales → onboarding)</button></div>'+fleetHTML()+ars;
     cols.insertBefore(host, cols.firstChild);
   }
 
@@ -2999,6 +3078,8 @@
       case "openCockMap": showCockMap(arg); break;
       case "closeCockMap": closeCockMap(); break;
       case "cockZoneDone": { var cz=(arg||"").split("|"); openZoneProof(cz[0], cz[1]); break; }
+      case "equipLoad": { var veh=teamVehicle(cockpitTeam()); equipSetState(arg, "bil", veh?veh.id:null); render(); toast("📦 Lastet i bilen"); break; }
+      case "equipDrop": { var ed=(arg||"").split("|"); equipSetState(ed[0], "lager", ed[1]); render(); var sN=storageById(ed[1]); toast("📦 Levert"+(sN?(" til "+sN.name):"")); break; }
       case "spawnEvt": spawnEvent(decodeURIComponent(arg||"")); break;
       case "back": ui.openId=null; ui.draftNew=false; repaintSales(); break;
       case "step": { var n=parseInt(id,10); if(c && n<=maxStep(c)){ ui.step=n; ui.activeLayer=null; repaintSales(); } break; }
