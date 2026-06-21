@@ -1,0 +1,46 @@
+{
+  "_comment": "Sameiet Holtet Horisont I — the doc-37 ground-truth fixture. Drivers captured verbatim from the live seed (the real Bygårdsservice contract). computeOffer(this) must yield totalMonthly = 16530 (the signed-price anchor, docs 37/44). Also drives the radar + scope eval. Checklist trimmed to the items the engines read (5 kept-value drivers + the walkaround upsells); full seed is 41 items.",
+  "id": "holtet-cust",
+  "name": "Sameiet Holtet Horisont I",
+  "period": "mnd",
+  "floors": null,
+  "terms": { "kpi": true },
+  "checklist": [
+    { "id": "oppganger", "scope": "in", "value": 4, "price": 4800, "label": "Antall oppganger — trappevask", "subtype": "Trappevask (4 oppg.)", "category": "renhold", "oneOff": false, "compliance": false },
+    { "id": "heiser", "scope": "in", "value": 4, "price": 0, "label": "Antall heiser", "subtype": "Heisrenhold", "category": "renhold", "oneOff": false, "compliance": false },
+    { "id": "water", "scope": "in", "value": null, "price": 491, "label": "Teknisk rom — tilsyn", "subtype": "Teknisk rom", "category": "drift", "oneOff": false, "compliance": false },
+    { "id": "mats", "scope": "in", "value": 8, "price": 1200, "label": "Inngangsmatter", "subtype": "Inngangsmatter (8 stk)", "category": "renhold", "oneOff": false, "compliance": false },
+    { "id": "weeds", "scope": "in", "value": null, "price": 2667, "label": "Ugras/mose/alger — sprøyterunder", "subtype": "Grøntområde excl. klipping", "category": "hage", "oneOff": false, "compliance": false },
+    { "id": "binwash", "scope": "upsell", "value": null, "price": 600, "label": "Dunk-/containervask ⬆", "subtype": "Dunk-/containervask", "category": "service", "oneOff": false, "compliance": false },
+    { "id": "facade", "scope": "upsell", "value": null, "price": 45000, "label": "Fasade → svertesopp/fasadevask ⬆", "subtype": "Fasadevask (svertesopp)", "category": "renhold", "oneOff": true, "compliance": false },
+    { "id": "vent", "scope": "upsell", "value": null, "price": 900, "label": "Ventilasjon vifter/filter ⬆", "subtype": "Ventilasjon — servicekontrakt", "category": "service", "oneOff": false, "compliance": false },
+    { "id": "pest", "scope": "upsell", "value": null, "price": 350, "label": "Skadedyr — tegn? ⬆", "subtype": "Skadedyrkontroll", "category": "service", "oneOff": false, "compliance": false },
+    { "id": "playground", "scope": "upsell", "value": null, "price": 9000, "label": "Lekeplass — antall + årskontroll ⬆", "subtype": "Lekeplass — årskontroll (NS-EN 1176)", "category": "drift", "oneOff": false, "compliance": true }
+  ],
+  "zones": [
+    { "id": "hz-snow1", "service": "snow", "method": "machine", "area_m2": 2486, "length_m": 0, "geometry": { "type": "Polygon" }, "label": "Kjørevei + parkering" },
+    { "id": "hz-grass1", "service": "grass", "method": "mow", "area_m2": 3357, "length_m": 0, "geometry": { "type": "Polygon" }, "label": "Hovedplen" },
+    { "id": "hz-hedge1", "service": "greenery", "method": "manual", "area_m2": 0, "length_m": 45, "geometry": { "type": "LineString" }, "label": "Hekk sør (maks 180 cm)" }
+  ],
+  "markers": [
+    { "id": "hm1", "layer": "entrance", "inScope": true }, { "id": "hm2", "layer": "entrance", "inScope": true },
+    { "id": "hm3", "layer": "entrance", "inScope": true }, { "id": "hm4", "layer": "entrance", "inScope": true },
+    { "id": "hm5", "layer": "entrance", "inScope": true }, { "id": "hm6", "layer": "entrance", "inScope": true },
+    { "id": "hm7", "layer": "entrance", "inScope": true }
+  ],
+  "compliance": [
+    { "label": "Heiskontroll (2-årlig)" }, { "label": "Sprinkler — årskontroll" }, { "label": "Brannvernrunde" }
+  ],
+  "requests": [
+    { "id": "rq1", "title": "Løs takstein over inngang C", "desc": "fare for fall", "status": "ny", "done": false, "ts": "2026-06-20T08:00:00.000Z", "estCost": 4500, "category": "drift", "area": "tak" },
+    { "id": "rq2", "title": "Vannlekkasje under kjøkkenbenk fellesvaskeri", "desc": "rørlegger", "status": "ny", "done": false, "ts": "2026-06-20T08:00:00.000Z", "estCost": null, "category": "service", "area": "kjeller" },
+    { "id": "rq3", "title": "Hekklipp + beskjæring høy hekk", "desc": "tujahekk", "status": "godkjent", "done": true, "ts": "2025-09-18T08:00:00.000Z", "estCost": 4500, "category": "hage", "area": "ute" },
+    { "id": "rq4", "title": "Hekklipp + beskjæring høy hekk", "desc": "vårklipp", "status": "godkjent", "done": true, "ts": "2026-05-22T08:00:00.000Z", "estCost": 4500, "category": "hage", "area": "ute" },
+    { "id": "rq5", "title": "Vårvask av fasade (svertesopp nordvegg)", "desc": "algevask", "status": "avslått", "done": false, "ts": "2025-11-20T08:00:00.000Z", "estCost": 38000, "category": "renhold", "area": "fasade" },
+    { "id": "rq6", "title": "Skadedyr — mus i kjellerbod", "desc": "skadedyrkontroll", "status": "ny", "done": false, "ts": "2026-06-20T08:00:00.000Z", "estCost": null, "category": "service", "area": "kjeller" },
+    { "id": "rq7", "title": "Ventilasjonen bråker i oppgang B", "desc": "filter / service", "status": "ny", "done": false, "ts": "2026-06-20T08:00:00.000Z", "estCost": null, "category": "drift", "area": "teknisk" }
+  ],
+  "addedLines": [],
+  "radarActioned": [],
+  "contractScope": null
+}

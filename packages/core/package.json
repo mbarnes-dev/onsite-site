@@ -1,0 +1,19 @@
+{
+  "name": "@onsite/core",
+  "version": "0.1.0",
+  "description": "Portable, dependency-free domain engines for OnSite (pricing, schedule, while-here, radar, intake, contract-scope, geodesic). Pure functions, no DOM/storage/globals. The doc-55 migration's reusable core + eval harness.",
+  "type": "module",
+  "main": "./src/index.mjs",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "scripts": {
+    "test": "node --test",
+    "build": "node build.mjs"
+  },
+  "files": ["src", "index.d.ts"],
+  "license": "UNLICENSED",
+  "private": true,
+  "comment": "No runtime deps. Tests use Node's built-in node:test (zero install). PROD upgrade path: author in TS + tsup/vitest once a build step is acceptable (see CORE-EXTRACTION.md)."
+}
