@@ -1299,24 +1299,77 @@
      =========================================================================== */
   var VEKST_START=[4,20], VEKST_END=[10,15];          // vekstsesong ≈ 20 Apr – 15 Oct
   var EVT_SNOW={type:"event", season:"winter", events:[{name:"Snøbrøyting (>5 cm)", trigger:"Registrer snøfall >5 cm"},{name:"Strøing ved is", trigger:"Registrer is / glatt føre"}]};
-  // explicit cadence map for the doc-38 residential-template line ids
-  var SCHEDULE_MAP = {
-    round:    {type:"weekly"},
-    oppganger:{type:"weekly"},
-    heiser:   {type:"weekly"},
-    glass:    {type:"weekly"},
-    mats:     {type:"monthly"},
-    weeds:    {type:"nPerYear", count:3, season:true},          // spraying 3×/sesong
-    beds:     {type:"seasonal", windows:[[[4,1],[4,30]]]},       // vårrydding
-    svalg:    {type:"seasonal", windows:[[[4,1],[4,30]]]},       // svalganger vår
-    taps:     {type:"seasonal", windows:[[[4,10],[4,20]],[[10,1],[10,10]]]}, // vår/høst
-    hedges:   {type:"seasonal", windows:[[[5,1],[7,15]],[[9,1],[10,31]]]},   // mai–medio juli, sep–okt
-    lawn:     {type:"growingSeason"},                            // mowing ukentlig i vekstsesong
-    paths:    {type:"dateAnchored", anchor:"before17mai"},
-    garage:   {type:"dateAnchored", anchor:"beforeSthans"},
-    roof:     {type:"dateAnchored", anchor:"autumn"},
-    snow:     EVT_SNOW
+  /* ===========================================================================
+     SERVICE_CATALOGUE (doc 54, Phase 8) — SINGLE SOURCE for a task/service's
+     cross-cutting facets, keyed by checklist/task id. Replaces the scattered
+     SCHEDULE_MAP (cadence) + AREA_OF_ITEM (area) + METHOD_OF_ITEM (method) +
+     serviceOfTask/byCat (service). Display facets (label/zone/emoji/captureType/
+     compliance/upsell) live on CHECKLIST_TEMPLATE; rates live in RATES, referenced
+     by `rateKey`. Read only via the cat*() accessors below. See BACKBONE.md.
+       cadence  — schedule cadence (omit = not on the calendar plan)
+       area     — doc-38 walkaround area (default "ute")
+       method   — equipment heuristic (omit = none)
+       service  — pricing/classification bucket (snow|grass|cleaning|technical|compliance|other)
+       rateKey  — dotted path into RATES (informational link; computeOffer reads RATES)
+     =========================================================================== */
+  var SERVICE_CATALOGUE = {
+    // grounds / green
+    lawn:      {cadence:{type:"growingSeason"},                                       area:"ute",     method:"maskin",  service:"grass",     rateKey:"grass.mow_m2_mnd"},
+    hedges:    {cadence:{type:"seasonal", windows:[[[5,1],[7,15]],[[9,1],[10,31]]]},   area:"ute",     method:"manuell", service:"grass",     rateKey:"greenery.hedge_m_year"},
+    trees:     {                                                                       area:"ute",                       service:"grass"},
+    beds:      {cadence:{type:"seasonal", windows:[[[4,1],[4,30]]]},                   area:"ute",                       service:"grass"},
+    weeds:     {cadence:{type:"nPerYear", count:3, season:true},                       area:"ute",                       service:"grass"},
+    gravel:    {                                                                       area:"ute",                       service:"grass"},
+    greenwaste:{                                                                       area:"ute",                       service:"grass"},
+    taps:      {cadence:{type:"seasonal", windows:[[[4,10],[4,20]],[[10,1],[10,10]]]}, area:"teknisk",                   service:"technical"},
+    bootscr:   {                                                                       area:"teknisk",                   service:"technical"},
+    paths:     {cadence:{type:"dateAnchored", anchor:"before17mai"},                   area:"ute",     method:"maskin",  service:"technical"},
+    snow:      {cadence:EVT_SNOW,                                                      area:"ute",     method:"maskin",  service:"snow",      rateKey:"snow.machine_m2_mnd"},
+    roofsnow:  {                                                                       area:"ute",                       service:"snow"},
+    // waste
+    wells:     {                                                                       area:"teknisk",                   service:"technical"},
+    binwash:   {                                                                       area:"ute",                       service:"other"},
+    bulky:     {                                                                       area:"avfall",                    service:"technical"},
+    // entrances & stairwells
+    oppganger: {cadence:{type:"weekly"},                                              area:"oppgang",                   service:"cleaning",  rateKey:"cleaning.per_oppgang_floor_week"},
+    mats:      {cadence:{type:"monthly"},                                             area:"oppgang",                   service:"cleaning"},
+    glass:     {cadence:{type:"weekly"},                                              area:"fasade",                    service:"cleaning"},
+    lighting:  {                                                                       area:"teknisk",                   service:"technical"},
+    facade:    {                                                                       area:"ute",                       service:"cleaning"},
+    // lifts
+    heiser:    {cadence:{type:"weekly"},                                              area:"heis",                      service:"cleaning",  rateKey:"cleaning.per_heis_week"},
+    liftctrl:  {                                                                       area:"heis",                      service:"technical"},
+    // common indoor / svalganger / bod
+    svalg:     {cadence:{type:"seasonal", windows:[[[4,1],[4,30]]]},                   area:"oppgang",                   service:"cleaning"},
+    bodarea:   {                                                                       area:"oppgang",                   service:"cleaning"},
+    // basement / teknisk rom
+    pipes:     {                                                                       area:"teknisk",                   service:"technical"},
+    water:     {                                                                       area:"teknisk",                   service:"technical"},
+    sprinkler: {                                                                       area:"teknisk",                   service:"technical"},
+    vent:      {                                                                       area:"ute",                       service:"other"},
+    firepanel: {                                                                       area:"teknisk",                   service:"technical"},
+    pumpekum:  {                                                                       area:"teknisk",                   service:"technical"},
+    // garage
+    garage:    {cadence:{type:"dateAnchored", anchor:"beforeSthans"},                  area:"garasje", method:"maskin",  service:"technical"},
+    // doors & access
+    doors:     {                                                                       area:"dorer",                     service:"technical"},
+    access:    {                                                                       area:"ute",                       service:"technical"},
+    // roof
+    roof:      {cadence:{type:"dateAnchored", anchor:"autumn"},                        area:"tak",     method:"stige",   service:"technical"},
+    // stakeholders & admin
+    round:     {cadence:{type:"weekly"},                                              area:"ute",                       service:"technical"},
+    approver:  {                                                                       area:"ute",                       service:"technical"},
+    manager:   {                                                                       area:"ute",                       service:"technical"},
+    vakttlf:   {                                                                       area:"ute",                       service:"technical"},
+    pest:      {                                                                       area:"ute",                       service:"other"},
+    playground:{                                                                       area:"ute",                       service:"technical"},
+    painting:  {                                                                       area:"ute",                       service:"technical"}
   };
+  function catEntry(id){ return SERVICE_CATALOGUE[id] || null; }
+  function catCadence(id){ var e=SERVICE_CATALOGUE[id]; return e?e.cadence:null; }   // was SCHEDULE_MAP[id]
+  function catArea(id){ var e=SERVICE_CATALOGUE[id]; return e&&e.area?e.area:"ute"; } // was AREA_OF_ITEM[id]||"ute"
+  function catMethod(id){ var e=SERVICE_CATALOGUE[id]; return e&&e.method?e.method:null; } // was METHOD_OF_ITEM[id]
+  function catService(id){ var e=SERVICE_CATALOGUE[id]; return e&&e.service?e.service:null; } // was serviceOfTask byCat
   var COMPLIANCE_DUE = {
     "Heiskontroll (2-årlig)":  {month:9,  day:15, type:"intervalYears", years:2},
     "Sprinkler — årskontroll": {month:5,  day:5,  type:"annual"},
@@ -1368,8 +1421,8 @@
   function scheduleLines(client){
     var out=[], bld=client.name;
     if(client.checklist&&client.checklist.length){
-      client.checklist.filter(function(it){return it.scope==="in" && SCHEDULE_MAP[it.id];}).forEach(function(it){
-        out.push({ lineId:client.id+":"+it.id, building:bld, title:it.subtype||it.label, category:catKeyLabel(it.category), zone:it.zone, schedule:SCHEDULE_MAP[it.id], partner:(it.deliveredBy==="partner"?it.partnerName:null) });
+      client.checklist.filter(function(it){return it.scope==="in" && catCadence(it.id);}).forEach(function(it){
+        out.push({ lineId:client.id+":"+it.id, building:bld, title:it.subtype||it.label, category:catKeyLabel(it.category), zone:it.zone, schedule:catCadence(it.id), partner:(it.deliveredBy==="partner"?it.partnerName:null) });
       });
     } else {
       (client.markers||[]).filter(function(m){return m.inScope && !LAYERS[m.layer].recordOnly;}).forEach(function(m){
@@ -1414,11 +1467,8 @@
     var key=(lineId||"").split(":").slice(1).join(":");
     if(/^comp/.test(key)) return "compliance";
     if(key==="snow"||key==="gritting") return "snow";   // explicit winter items
-    // accurate path: use the checklist item's own PHM category key
-    var it=(c&&c.checklist)?c.checklist.filter(function(x){return x.id===key;})[0]:null;
-    var byCat={ vinter:"snow", hage:"grass", renhold:"cleaning", drift:"technical", anlegg:"technical" };
-    if(it && byCat[it.category]) return byCat[it.category];
-    // marker/compliance fallback by id
+    var cs=catService(key); if(cs) return cs;           // SERVICE_CATALOGUE (was byCat on the checklist item's category)
+    // marker/legacy fallback by id (markers aren't in the catalogue)
     var idMap={ lawn:"grass", grass:"grass", hedges:"grass", beds:"grass", greenery:"grass", trees:"grass",
                 stairwell:"cleaning", laundry:"cleaning", facade:"cleaning", mats:"cleaning",
                 tech:"technical", fire:"compliance", lift:"compliance", playground:"compliance" };
@@ -1745,16 +1795,12 @@
   var AREA_LABEL={ ute:"Grunn / ute", tak:"Tak", garasje:"Garasje", teknisk:"Teknisk rom", oppgang:"Oppganger", heis:"Heis", fasade:"Fasade", avfall:"Avfall", dorer:"Dører" };
   function areaLabel(a){ return AREA_LABEL[a]||cap(a||"ute"); }
   // area derived from the doc-38 walkaround taxonomy via the checklist/line item id
-  var AREA_OF_ITEM={ round:"ute", lawn:"ute", hedges:"ute", beds:"ute", weeds:"ute", trees:"ute", gravel:"ute", greenwaste:"ute", paths:"ute", snow:"ute",
-    oppganger:"oppgang", mats:"oppgang", svalg:"oppgang", bodarea:"oppgang", glass:"fasade", doors:"dorer", heiser:"heis", liftctrl:"heis",
-    roof:"tak", garage:"garasje", bulky:"avfall",
-    taps:"teknisk", water:"teknisk", pipes:"teknisk", wells:"teknisk", pumpekum:"teknisk", firepanel:"teknisk", sprinkler:"teknisk", lighting:"teknisk", bootscr:"teknisk" };
-  var METHOD_OF_ITEM={ roof:"stige", lawn:"maskin", paths:"maskin", garage:"maskin", snow:"maskin", hedges:"manuell" };
+  // area + method now live in SERVICE_CATALOGUE (read via catArea/catMethod) — Phase 8 consolidation
   var METHOD_LABEL={ maskin:"Maskin", manuell:"Manuell", lift:"Lift", stige:"Stige", traktor:"Traktor" };
   function methodLabelOf(m){ return METHOD_LABEL[m]||cap(m||""); }
   function itemKeyOf(lineId){ return (lineId||"").split(":").slice(1).join(":"); }
-  function areaOfLineId(lineId){ var k=itemKeyOf(lineId); if(/^comp/.test(k)) return "teknisk"; return AREA_OF_ITEM[k]||"ute"; }
-  function methodOfLineId(lineId){ return METHOD_OF_ITEM[itemKeyOf(lineId)]||null; }
+  function areaOfLineId(lineId){ var k=itemKeyOf(lineId); if(/^comp/.test(k)) return "teknisk"; return catArea(k); }
+  function methodOfLineId(lineId){ return catMethod(itemKeyOf(lineId)); }
   function areaOfComplianceTitle(t){ t=(t||"").toLowerCase(); if(/heis/.test(t)) return "heis"; if(/lekeplass/.test(t)) return "ute"; return "teknisk"; }
   function candService(c,s){
     if(s.kind==="sched") return serviceOfTask(c, s.lineId);
