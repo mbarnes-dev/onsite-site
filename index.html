@@ -533,6 +533,9 @@
 <!-- Leaflet (vendored, no CDN) + the sales→onboarding module. Order matters:
      Leaflet defines L; the day-app IIFE above defines window.OnSite; then onboarding.js binds to both. -->
 <script src="vendor/leaflet/leaflet.js"></script>
-<script src="onboarding.js"></script>
+<!-- @onsite/core (doc-55 step 1): the pure engines as a committed static ESM bundle. Module defers
+     (runs before DOMContentLoaded); onboarding.js delegates to window.OnSiteCore lazily (post-load). -->
+<script type="module">import * as Core from "./core.bundle.js?v=15"; window.OnSiteCore = Core;</script>
+<script src="onboarding.js?v=15"></script>
 </body>
 </html>

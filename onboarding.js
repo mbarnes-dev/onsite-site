@@ -2554,7 +2554,7 @@
   }
   var RADAR_BADGE={ repeat:"🔁 Gjentatt", seasonal:"📅 Sesong", upsell:"⬆ Uutnyttet", winloss:"♻️ Tapt tilbud" };
   function radarHTML(c){
-    var opps=recurringRadar(c); if(!opps.length) return "";
+    var opps=(CORE("recurringRadar")?CORE("recurringRadar")(c,{now:refDate()}):recurringRadar(c)); if(!opps.length) return "";   // Phase 15: radar from @onsite/core
     var rows=opps.map(function(o){
       return '<div class="ob-opprow"><div class="ob-oppmain"><div class="ob-opptitle">'+esc(o.label)+' <span class="ob-oppbadge '+o.type+'">'+RADAR_BADGE[o.type]+'</span></div>'
         +'<div class="ob-oppevid">'+esc(o.evidence)+'</div>'
@@ -2570,7 +2570,8 @@
   // one tap → standing offer line (folds through computeOffer into the tiered, severable, board-approvable offer)
   function radarPropose(custId, oppId){
     var c=cust(custId); if(!c) return;
-    var opp=recurringRadar(c).filter(function(o){return o.id===oppId;})[0]; if(!opp){ toast("Muligheten finnes ikke lenger"); return; }
+    var __rd=CORE("recurringRadar"); var __opps=__rd?__rd(c,{now:refDate()}):recurringRadar(c);   // Phase 15: radar from @onsite/core
+    var opp=__opps.filter(function(o){return o.id===oppId;})[0]; if(!opp){ toast("Muligheten finnes ikke lenger"); return; }
     if(!c.offer){ toast("Generer tilbudet først"); return; }
     var per=c.offer.period||"mnd";
     var monthly=opp.estValueYr ? (per==="mnd"?Math.round(opp.estValueYr/12):opp.estValueYr) : 0;
@@ -2703,7 +2704,9 @@
   function intakeDoParse(){
     intakeSyncCompose();
     if(!pendingIntake||!(pendingIntake.text||"").trim()){ toast("Lim inn en melding først"); return; }
-    pendingIntake.parsed=parseIntake(pendingIntake.text, { buildingId:pendingIntake.ctxBuildingId, photoIds:pendingIntake.photoIds });
+    var __pi=CORE("parseIntake");   // Phase 15: intake parse from @onsite/core
+    pendingIntake.parsed = __pi ? __pi(pendingIntake.text, { buildingId:pendingIntake.ctxBuildingId, photoIds:pendingIntake.photoIds, customers:customers() })
+                                : parseIntake(pendingIntake.text, { buildingId:pendingIntake.ctxBuildingId, photoIds:pendingIntake.photoIds });
     if(pendingIntake.parsed.buildingId) pendingIntake.buildingId=pendingIntake.parsed.buildingId;
     intakeReRender();
   }
@@ -2808,7 +2811,7 @@
   }
   var SCOPE_CLASS_LABEL={ "i-avtale":"✓ I avtalen", "utenfor-avtale":"⬆ Utenfor (tillegg)", "borderline":"≈ Borderline" };
   function scopeChip(c, request){
-    var v=classifyAgainstScope(c, request);
+    var v=(CORE("classifyAgainstScope")||classifyAgainstScope)(c, request);   // Phase 15: scope classify from @onsite/core
     return '<span class="ob-scopechip '+v.cls+'" title="'+esc(v.reason)+'">'+SCOPE_CLASS_LABEL[v.cls]+'</span>'
       +((v.safety&&v.cls==="i-avtale")?'<span class="ob-scopechip safety" title="Sikkerhet/lovpålagt — gjør nå">⚠️ Gjør nå</span>':'');
   }
@@ -2820,9 +2823,9 @@
     return out;
   }
   function scopeCardHTML(c){
-    if(!c) return ""; var scope=deriveScope(c); if(!scope||!scope.services.length) return "";
+    if(!c) return ""; var scope=(CORE("deriveScope")||deriveScope)(c); if(!scope||!scope.services.length) return "";   // Phase 15: scope from @onsite/core
     var rows=scope.services.map(function(s){ return '<div class="ob-scoperow"><span class="ob-scopedom">'+esc(scopeDomLabel(s.serviceId))+'</span><span class="ob-scopelbl">'+esc(s.label)+(s.cadence?' · '+esc(s.cadence):'')+'</span>'+(s.trig?'<span class="ob-scopetrig">'+esc(s.trig)+'</span>':'')+'</div>'; }).join("");
-    var mm=scopeMismatch(c);
+    var mm=(CORE("scopeMismatch")||scopeMismatch)(c);   // Phase 15: from @onsite/core
     var mmHTML=mm.length?'<div class="ob-scopemm"><div class="ob-scopemm-h">Til stede, ikke i avtalen ('+mm.length+') → upsell</div>'+mm.map(function(x){return '<div class="ob-scopemm-row">⬆ '+esc(x.label)+' <span class="muted">· '+esc(x.why)+'</span></div>';}).join("")+'</div>':'';
     var explicit=!!(c.contractScope&&c.contractScope.services&&c.contractScope.services.length);
     return '<div class="card ob-scopecard"><div class="ct">📄 Avtale-scope — '+esc(c.name)+' <span class="muted" style="font-weight:600;font-size:11px">· '+esc(scope.parsedFrom)+'</span></div>'
@@ -2980,6 +2983,18 @@
       +'<div class="ob-stepbar" style="margin-top:8px"><span style="flex:1"></span><button class="ob-mini" data-ob="yearStep" data-arg="-1">◀ '+(year-1)+'</button><button class="ob-mini" data-ob="yearStep" data-arg="1">'+(year+1)+' ▶</button></div></div>';
   }
 
+  /* ===========================================================================
+     PHASE 15 (doc-55 step 1) — consume @onsite/core in the live prototype.
+     FINDING: reassigning the IIFE's function-declaration bindings (a one-point strangler
+     swap) does NOT propagate to call sites in this 4200-line closure — verified: the
+     swap executes but callers keep the inline impl (a real measure of the internal
+     coupling; see CORE-EXTRACTION.md). What DOES route through the bundle is reading
+     window.OnSiteCore.X at the CALL SITE. CORE() resolves the extracted engine (bundle)
+     with an inline fallback if the deferred module hasn't loaded. The contract-scope
+     engine (Phase 14) is routed through it here as the proof; the remaining engines are
+     extracted + tested in core (anchors green standalone) and follow the same per-call-
+     site pattern — the honest next increment. // PROD: full swap once a build step lands. */
+  function CORE(fn){ return (typeof window!=="undefined" && window.OnSiteCore && window.OnSiteCore[fn]) || null; }
   function renderExtras(view, cols){
     seedIfNeeded();
     destroyMap();
