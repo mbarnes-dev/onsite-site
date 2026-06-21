@@ -482,3 +482,20 @@
   .ob-ckzone .ob-mini{min-height:42px;padding:0 14px}
   #ob-cockmap .ob-opmap{height:52vh}
 }
+
+/* ---- while-here suggestion engine (doc 01 §4.1, Phase 7) ---- */
+.ob-sugcard{border:1.5px solid #f0d68a;background:linear-gradient(180deg,#fffdf5,#fff)}
+.ob-sugcard .ct{display:flex;align-items:center;gap:8px}
+.ob-sugrow{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid #f3f1ea}
+.ob-sugrow:last-child{border-bottom:none}
+.ob-sugmain{flex:1 1 auto;min-width:0}
+.ob-sugtitle{font-weight:650;font-size:13.5px;color:#1c2421;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.ob-sugarea{font-size:11px;font-weight:700;color:#6b5a16;background:#fbf0c8;border:1px solid #f0dd97;border-radius:6px;padding:1px 7px}
+.ob-sugwhy{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px}
+.ob-whyc{font-size:11px;font-weight:600;border-radius:999px;padding:2px 8px;white-space:nowrap;border:1px solid transparent}
+.ob-whyc-loc{background:#e7f6ec;color:#1c6b3a;border-color:#c5e7d2}
+.ob-whyc-time{background:#fcefdb;color:#9a5a12;border-color:#f1d6ac}
+.ob-whyc-equip{background:#e8eefc;color:#2f4fa3;border-color:#d3defb}
+.ob-whyc-comp{background:#f3ecfb;color:#6b3aa0;border-color:#e0d0f3}
+.ob-sugrow .ob-mini{flex:0 0 auto;align-self:center}
+@media (pointer:coarse){ .ob-sugrow .ob-mini{min-height:42px;padding:0 14px} }

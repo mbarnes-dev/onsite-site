@@ -302,10 +302,23 @@
       markers:markers,
       zones:holtetZones(),
       checklist:holtetChecklist(),
+      upcoming:holtetUpcoming(),  // Phase 7: known upcoming maintenance (data; the while-here engine recomputes suggestions from it)
       offer:null, offerHistory:[], changeRequests:[], buildingId:null, handover:null, enrichment:false,
       log:[{ts:"16 Jun 2026", text:"Step 0 ferdig fra registre — USBL + styret hentet, 7 oppganger pinnet, sjekkliste forhåndsutfylt"},
            {ts:"15 Jun 2026", text:"Prospect opprettet fra Bygårdsservice-kontrakt (Kongsveien 82 A–G)"}]
     };
+  }
+  // Phase 7 demo seed — known upcoming maintenance with co-located/co-timed/co-equipment hooks.
+  // offsetDays = days from "today" (evergreen demo; a real task would carry an absolute due date — same engine).
+  function holtetUpcoming(){
+    return [
+      {id:"u-roof-today",   title:"Tak – visuell inspeksjon etter vind",          area:"tak",     method:"stige",   service:"other",      offsetDays:0},
+      {id:"u-facade-today", title:"Fasade sokkel – spotvask svertesopp",          area:"fasade",  method:"lift",    service:"cleaning",   offsetDays:0},
+      {id:"u-gutter",       title:"Takrennerens (løv + nedløp)",                  area:"tak",     method:"stige",   service:"other",      offsetDays:9},
+      {id:"u-vannbord",     title:"Vannbord + beslag – sjekk og fest",            area:"tak",     method:"stige",   service:"other",      offsetDays:17},
+      {id:"u-hedge",        title:"Beskjæring høy hekk + tre (>3 m)",             area:"ute",     method:"lift",    service:"greenery",   offsetDays:13},
+      {id:"u-brann",        title:"Brannvern: slokkere + røykvarslere (kvartal)", area:"teknisk", method:"manuell", service:"compliance", statutory:true, offsetDays:6}
+    ];
   }
   function seedSolbakken(){
     var cy=59.12880, cx=11.38730;
@@ -1676,8 +1689,9 @@
       var zN=teamZones(c, ctx.team).length;
       if(!rows.length && !zN) return null;
       var mapBtn=(teamHasMap(ctx.team) && zN) ? '<button class="ob-mini ok on" data-ob="openCockMap" data-arg="'+c.id+'">🗺️ Åpne kart · '+zN+' soner</button>' : '';
-      return '<div class="card ob-routeblock"><div class="ob-routehead"><div><div class="ob-routebldg">📍 '+esc(c.name)+'</div><div class="ob-routeaddr">'+esc(c.addr||"")+'</div></div>'+mapBtn+'</div>'
+      var block='<div class="card ob-routeblock"><div class="ob-routehead"><div><div class="ob-routebldg">📍 '+esc(c.name)+'</div><div class="ob-routeaddr">'+esc(c.addr||"")+'</div></div>'+mapBtn+'</div>'
         +(rows.length? '<div class="ob-routerows">'+rows.join("")+'</div>' : '<div class="empty" style="margin-top:6px">Ingen planlagte oppgaver i dag — kartet er klart ved behov.</div>')+'</div>';
+      return block + whileHereHTML(c, {team:ctx.team, teamServices:td.services}); // Phase 7: suggestions scoped to this team's services
     }).filter(Boolean);
     var head='<div class="card ob-routeintro"><div class="ct">🧭 Min rute i dag · '+td.icon+' '+esc(td.label)+' <span class="chip grey">'+blocks.length+' bygg</span></div>'
       +'<p class="muted" style="font-size:12px;margin:-2px 0 0">Dagens oppgaver for laget ditt, samlet per bygg. Åpne kartet som kjøreguide og marker utført rett fra sonen. <span style="opacity:.6">// later: ruterekkefølge/nav</span></p></div>';
@@ -1722,6 +1736,84 @@
     setTimeout(function(){ hydratePhotos(document.getElementById("sheet")); }, 20);
   }
 
+  /* ===========================================================================
+     WHILE-HERE SUGGESTION ENGINE (doc 01 §4.1, Phase 7) — rule-based, explainable.
+     "You're on the roof anyway; gutter clean is due in 9 days — do it now."
+     Batches work by place (area) / timing (due-soon) / equipment (method).
+     =========================================================================== */
+  var WHILE_WINDOW=21; // co-timing pull-forward window (days)
+  var AREA_LABEL={ ute:"Grunn / ute", tak:"Tak", garasje:"Garasje", teknisk:"Teknisk rom", oppgang:"Oppganger", heis:"Heis", fasade:"Fasade", avfall:"Avfall", dorer:"Dører" };
+  function areaLabel(a){ return AREA_LABEL[a]||cap(a||"ute"); }
+  // area derived from the doc-38 walkaround taxonomy via the checklist/line item id
+  var AREA_OF_ITEM={ round:"ute", lawn:"ute", hedges:"ute", beds:"ute", weeds:"ute", trees:"ute", gravel:"ute", greenwaste:"ute", paths:"ute", snow:"ute",
+    oppganger:"oppgang", mats:"oppgang", svalg:"oppgang", bodarea:"oppgang", glass:"fasade", doors:"dorer", heiser:"heis", liftctrl:"heis",
+    roof:"tak", garage:"garasje", bulky:"avfall",
+    taps:"teknisk", water:"teknisk", pipes:"teknisk", wells:"teknisk", pumpekum:"teknisk", firepanel:"teknisk", sprinkler:"teknisk", lighting:"teknisk", bootscr:"teknisk" };
+  var METHOD_OF_ITEM={ roof:"stige", lawn:"maskin", paths:"maskin", garage:"maskin", snow:"maskin", hedges:"manuell" };
+  var METHOD_LABEL={ maskin:"Maskin", manuell:"Manuell", lift:"Lift", stige:"Stige", traktor:"Traktor" };
+  function methodLabelOf(m){ return METHOD_LABEL[m]||cap(m||""); }
+  function itemKeyOf(lineId){ return (lineId||"").split(":").slice(1).join(":"); }
+  function areaOfLineId(lineId){ var k=itemKeyOf(lineId); if(/^comp/.test(k)) return "teknisk"; return AREA_OF_ITEM[k]||"ute"; }
+  function methodOfLineId(lineId){ return METHOD_OF_ITEM[itemKeyOf(lineId)]||null; }
+  function areaOfComplianceTitle(t){ t=(t||"").toLowerCase(); if(/heis/.test(t)) return "heis"; if(/lekeplass/.test(t)) return "ute"; return "teknisk"; }
+  function candService(c,s){
+    if(s.kind==="sched") return serviceOfTask(c, s.lineId);
+    return ({greenery:"grass", grass:"grass", snow:"snow", cleaning:"cleaning", compliance:"compliance", technical:"technical", other:"other"})[s.service]||"other";
+  }
+  // the heart: ranked, explainable suggestions for a building right now
+  function suggestWhileHere(c, ctx){
+    ctx=ctx||{};
+    var today=refDate(), tIso=iso(today);
+    // 1) what's being worked HERE today → in-use areas + methods (co-location / co-equipment context)
+    var hereAreas={}, hereMethods={};
+    generateInstances(scheduleLines(c), today, today).filter(function(i){return i.date===tIso && !isDone(i);}).forEach(function(i){
+      hereAreas[i.statutory?areaOfComplianceTitle(i.title):areaOfLineId(i.lineId)]=1; var m=methodOfLineId(i.lineId); if(m) hereMethods[m]=1; });
+    (c.upcoming||[]).filter(function(u){return (u.offsetDays||0)===0 && !isDone({lineId:c.id+":up:"+u.id, date:tIso});}).forEach(function(u){ if(u.area) hereAreas[u.area]=1; if(u.method) hereMethods[u.method]=1; });
+    if(ctx.area) hereAreas[ctx.area]=1;
+    if(ctx.method) hereMethods[ctx.method]=1;
+    // 2) candidates within the pull-forward window (not today, not done)
+    var cand=[];
+    (c.upcoming||[]).forEach(function(u){ var d=(u.offsetDays==null?99:u.offsetDays);
+      if(d<=0 || d>WHILE_WINDOW) return; if(isDone({lineId:c.id+":up:"+u.id, date:tIso})) return;
+      cand.push({ key:"up:"+u.id, kind:"upcoming", upId:u.id, title:u.title, area:u.area||"ute", method:u.method||null, statutory:!!u.statutory, service:u.service||"other", daysUntil:d, dueIso:tIso }); });
+    generateInstances(scheduleLines(c), addDays(today,1), addDays(today,WHILE_WINDOW)).forEach(function(i){
+      if(isDone(i)) return; var d=Math.round((new Date(i.date+"T00:00:00")-new Date(tIso+"T00:00:00"))/86400000);
+      if(d<=0 || d>WHILE_WINDOW) return;
+      cand.push({ key:"sc:"+instKey(i), kind:"sched", lineId:i.lineId, title:i.title, area:i.statutory?areaOfComplianceTitle(i.title):areaOfLineId(i.lineId), method:methodOfLineId(i.lineId), statutory:!!i.statutory, freq:i.freq, daysUntil:d, dueIso:i.date }); });
+    // dedupe by title+area
+    var seen={}, uniq=[]; cand.forEach(function(s){ var k=s.title+"|"+s.area; if(!seen[k]){ seen[k]=1; uniq.push(s); } });
+    // optional team scope (cockpit)
+    if(ctx.teamServices){ uniq=uniq.filter(function(s){ return ctx.teamServices.indexOf(candService(c,s))>=0; }); }
+    // 3) reasons + score (co-located+due-soon highest; then equipment; then compliance; nearer-due wins ties)
+    uniq.forEach(function(s){
+      var coLoc=!!hereAreas[s.area], coEq=!!(s.method && hereMethods[s.method]);
+      s.reasons=[];
+      if(coLoc) s.reasons.push({k:"loc", icon:"📍", text:"Samme område — "+areaLabel(s.area)});
+      s.reasons.push({k:"time", icon:"⏰", text:"Forfaller om "+s.daysUntil+" dag"+(s.daysUntil===1?"":"er")});
+      if(coEq) s.reasons.push({k:"equip", icon:"🔧", text:"Samme utstyr ("+methodLabelOf(s.method)+") er på stedet"});
+      if(s.statutory) s.reasons.push({k:"comp", icon:"✅", text:"Lovpålagt — forfaller nå"});
+      var score=300; if(coLoc) score+=200; if(coEq) score+=60; if(s.statutory) score+=40; score+=Math.max(0,(WHILE_WINDOW-s.daysUntil));
+      s.score=score; s.coLoc=coLoc;
+    });
+    uniq.sort(function(a,b){ return b.score-a.score; });
+    return uniq;
+  }
+  function whileHereHTML(c, ctx){
+    var sugs=suggestWhileHere(c, ctx); if(!sugs.length) return "";
+    var top=sugs.slice(0,5);
+    var rows=top.map(function(s){
+      var chips=s.reasons.map(function(r){ return '<span class="ob-whyc ob-whyc-'+r.k+'">'+r.icon+' '+esc(r.text)+'</span>'; }).join("");
+      var lineId=s.kind==="sched"?s.lineId:(c.id+":up:"+s.upId), date=s.dueIso, freq=s.kind==="sched"?(s.freq||"plan"):"vedlikehold";
+      return '<div class="ob-sugrow"><div class="ob-sugmain"><div class="ob-sugtitle">'+esc(s.title)+' <span class="ob-sugarea">'+esc(areaLabel(s.area))+'</span></div>'
+        +'<div class="ob-sugwhy">'+chips+'</div></div>'
+        +'<button class="ob-mini ok on" data-ob="planDone" data-arg="'+lineId+'|'+date+'|'+encodeURIComponent(s.title)+'|'+encodeURIComponent(freq)+'|'+encodeURIComponent(c.name)+'">⚡ Gjør nå</button></div>';
+    }).join("");
+    return '<div class="card ob-sugcard"><div class="ct">💡 Mens du er her · '+esc(c.name)+' <span class="chip grey">'+top.length+'</span></div>'
+      +'<p class="muted" style="font-size:12px;margin:-2px 0 9px">Smart å ta nå — samme sted, samme tur, samme utstyr. Hver én spart utrykning teller.</p>'
+      + rows +'</div>';
+  }
+  function whileHereCards(ctx){ return liveClients().map(function(c){ return whileHereHTML(c, ctx||{}); }).filter(Boolean).join(""); }
+
   function renderFieldExtras(cols){
     if(!liveClients().length) return;
     var ctx=cockpit();
@@ -1743,6 +1835,7 @@
       + weekStepperHTML(today)
       + planSection("I dag · "+dateLabel(today), todayL, true)
       + planSection("Denne uka", weekL, true)
+      + whileHereCards({})   // doc-01 ordering: dagens oppgaver → 💡 Mens du er her → kommende
       + (komL.length? planCondensed("Kommende (4 uker)", komL) : "")
       + beredskapHTML(month);
     cols.insertBefore(host, cols.firstChild);

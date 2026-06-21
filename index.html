@@ -187,7 +187,7 @@
   "use strict";
   var LS_KEY = "onsite_day_v1";
 
-  var SCHEMA_VERSION = 1;
+  var SCHEMA_VERSION = 2;
   function demo(){
     return {
       schemaVersion: SCHEMA_VERSION,
@@ -233,6 +233,7 @@
       if(!Array.isArray(c.zones)) c.zones = [];
       if(!Array.isArray(c.completionLog)) c.completionLog = [];
       if(!Array.isArray(c.contacts)) c.contacts = [];
+      if(!Array.isArray(c.upcoming)) c.upcoming = [];   // v2: Phase 7 while-here maintenance list
       c.zones.forEach(function(z){ if(!Array.isArray(z.completionLog)) z.completionLog = []; if(!Array.isArray(z.photoIds)) z.photoIds = []; });
       if(c.offer && typeof c.offer==="object"){
         if(Array.isArray(c.offer.modules)) c.offer.modules.forEach(function(m){ if(Array.isArray(m.lines)) m.lines.forEach(fixLine); });
