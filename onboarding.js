@@ -365,6 +365,7 @@
     if(!st.customers) st.customers=[];
     if(!st.completedInstances) st.completedInstances={};   // schedule-engine completion set (lineId|isoDate)
     seedEquipmentIfNeeded();   // Phase 9: equipment/storage registry (also backfills migrated users)
+    seedIntakeIfNeeded();      // Phase 13: omnichannel intake inbox (simulated channels)
     if(!st.obSeeded){
       if(!cust("holtet-cust")) st.customers.push(seedHoltet());      // featured real client
       if(!cust("solbakken-cust")) st.customers.push(seedSolbakken()); // demo client
@@ -872,7 +873,9 @@
     (c.completionLog||[]).forEach(function(e){ (e.photoIds||[]).forEach(function(p){live[p]=1;}); });
     (c.assets||[]).forEach(function(a){ (a.photoIds||[]).forEach(function(p){live[p]=1;}); });  // Phase 10: keep asset photos
     (c.requests||[]).forEach(function(r){ (r.photoIds||[]).forEach(function(p){live[p]=1;}); });  // Phase 11: keep request photos
-  }); return live; }
+  });
+  (S().intake||[]).forEach(function(m){ (m.photoIds||[]).forEach(function(p){live[p]=1;}); });  // Phase 13: keep intake-inbox photos
+  return live; }
   function photoGC(){   // delete IndexedDB + LS blobs no longer referenced by any record (reconcile after bulk removals)
     var live=collectLivePhotoIds();
     try{ var m=lsAll(), changed=false; Object.keys(m).forEach(function(k){ if(!live[k]){ delete m[k]; delete photoCache[k]; changed=true; } }); if(changed) localStorage.setItem(PHOTO_LS, JSON.stringify(m)); }catch(e){}
@@ -920,7 +923,7 @@
     var kind=input.getAttribute("data-photocap"), id=input.getAttribute("data-id");
     var files=input.files; if(!files||!files.length) return;
     var c=cur();
-    var t = (kind==="proof") ? pendingProof : (kind==="asset") ? pendingAsset : (kind==="request") ? pendingRequest : (c&&photoTarget(c,kind,id));
+    var t = (kind==="proof") ? pendingProof : (kind==="asset") ? pendingAsset : (kind==="request") ? pendingRequest : (kind==="intake") ? pendingIntake : (c&&photoTarget(c,kind,id));
     if(!t){ input.value=""; return; }
     var n=files.length, done=0, totalKb=0;
     toast("Komprimerer "+n+" bilde"+(n>1?"r":"")+"…");
@@ -931,6 +934,7 @@
           if(kind==="proof"){ syncProofFromDOM(); reRenderProofSheet(); }   // photo blob already in IndexedDB; draft holds the id until confirm
           else if(kind==="asset"){ syncAssetFromDOM(); reRenderAssetSheet(); }  // Phase 10: draft holds the id until confirm
           else if(kind==="request"){ syncRequestFromDOM(); reRenderRequestSheet(); }  // Phase 11: request draft holds the id until submit
+          else if(kind==="intake"){ intakeSyncCompose(); intakeReRender(); }  // Phase 13: intake draft holds the id until create
           else { save(); afterPhotoChange(c); }
           toast("📷 "+n+" bilde"+(n>1?"r":"")+" lagret (~"+totalKb+" KB)");
         }
@@ -948,6 +952,7 @@
     var p=(arg||"").split("|"); var kind=p[0], id=p[1], pid=p[2];
     if(kind==="asset"){ if(pendingAsset){ pendingAsset.photoIds=(pendingAsset.photoIds||[]).filter(function(x){return x!==pid;}); photoDel(pid); reRenderAssetSheet(); } return; }
     if(kind==="request"){ if(pendingRequest){ pendingRequest.photoIds=(pendingRequest.photoIds||[]).filter(function(x){return x!==pid;}); photoDel(pid); reRenderRequestSheet(); } return; }
+    if(kind==="intake"){ if(pendingIntake){ pendingIntake.photoIds=(pendingIntake.photoIds||[]).filter(function(x){return x!==pid;}); photoDel(pid); intakeReRender(); } return; }
     var c=cur(); var t=c&&photoTarget(c,kind,id); if(!t) return;
     t.photoIds=(t.photoIds||[]).filter(function(x){return x!==pid;}); photoDel(pid); save(); afterPhotoChange(c); toast("Bilde slettet");
   }
@@ -2574,6 +2579,148 @@
     if(!save()){ c.addedLines.pop(); c.radarActioned.pop(); computeOffer(c); return; }   // gated rollback
     render(); toast("💡 Lagt til som fast plan i tilbudet ("+(monthly?kr(monthly)+"/"+per:"")+") — klar for styregodkjenning");
   }
+
+  /* ===========================================================================
+     PHASE 13 — AI omnichannel intake (doc 01 #2) — RULES SIMULATION, LLM-hooked.
+     ARCHITECTURE: this prototype is keyless client-side static, so a real LLM CANNOT
+     run here (keys-in-client is exactly the hole the hardening pass closed). This is an
+     honest KEYWORD/RULES parser behind a clean parseIntake() seam an LLM replaces in
+     PROD. A message (SMS/e-post/WhatsApp/QR/tale — all simulated text) → parse → ONE
+     clarifying question → a structured Phase-11 request in the money loop. Nothing here
+     pretends to be a real model. // PROD: replace parseIntake with a backend LLM call.
+     =========================================================================== */
+  var INTAKE_CHANNELS=[["sms","✉️ SMS"],["epost","📧 E-post"],["whatsapp","💬 WhatsApp"],["qr","🔳 Beboer-QR"],["tale","🎙️ Tale→tekst"]];
+  function channelLabel(ch){ var m=INTAKE_CHANNELS.filter(function(x){return x[0]===ch;})[0]; return m?m[1]:ch; }
+  function intakeList(){ var st=S(); return (st&&st.intake)?st.intake:[]; }
+  function intakeById(id){ return intakeList().filter(function(m){return m.id===id;})[0]||null; }
+  function intBldName(id){ var c=cust(id); return c?c.name:"?"; }
+  function seedIntake(){
+    return [
+      { id:"in1", channel:"sms",   from:"+47 480 12 345",                  text:"Det lekker vann i garasjen ved plass 14, har holdt på et par dager", ts:"2026-06-21T07:12:00.000Z", photoIds:[], buildingId:null,          status:"ny", requestId:null },
+      { id:"in2", channel:"epost", from:"beboer@holtet-horisont-1.no",     text:"Hekken mot veien er blitt veldig høy, kan dere ta den når det passer?", ts:"2026-06-20T19:40:00.000Z", photoIds:[], buildingId:"holtet-cust", status:"ny", requestId:null }
+    ];
+  }
+  function seedIntakeIfNeeded(){ var st=S(); if(!Array.isArray(st.intake)||!st.intake.length) st.intake=seedIntake(); }
+  // the parser — keyword rules, EXPLAINABLE (every field carries its trigger). // PROD: LLM, multi-turn.
+  function parseIntake(text, ctx){
+    ctx=ctx||{}; text=text||""; var low=text.toLowerCase();
+    function first(rules){ for(var i=0;i<rules.length;i++){ if(rules[i][0].test(low)) return {val:rules[i][1], trig:rules[i][2]}; } return null; }
+    var cat=first([
+      [/lekkasje|lekker|\bvann\b|rør|ror|sluk|avløp|kran|sanitær|tett|kloakk/, "service", "«vann/rør»"],
+      [/lys|lampe|strøm|stikk|sikring|elektr|kabel/, "drift", "«elektrisk»"],
+      [/brann|røyk|slukker|alarm/, "drift", "«brann/HMS»"],
+      [/snø|brøyt|\bis\b|glatt|strø/, "vinter", "«vinter»"],
+      [/hekk|gress|plen|\btre\b|busk|beskjær|grønt|ugras/, "hage", "«grønt»"],
+      [/søppel|avfall|dunk|container/, "service", "«avfall»"],
+      [/heis/, "drift", "«heis»"],
+      [/vindu|glass/, "renhold", "«vindu/glass»"],
+      [/\bmal|råte|puss|\bmur|sprekk|asfalt/, "anlegg", "«bygg/anlegg»"],
+      [/skadedyr|\bmus\b|rotte|veps|insekt|maur/, "service", "«skadedyr»"]
+    ]);
+    var area=first([
+      [/garasje|p-?plass|parkering|plass \d/, "garasje", "«garasje»"],
+      [/\btak\b|renne|nedløp|pipe|loft/, "tak", "«tak»"],
+      [/kjeller|\bbod\b|fellesvask/, "kjeller", "«kjeller»"],
+      [/heis/, "heis", "«heis»"],
+      [/oppgang|trapp|inngang|\bgang\b|korridor/, "oppgang", "«oppgang»"],
+      [/fasade|yttervegg|kledning/, "fasade", "«fasade»"],
+      [/hage|plen|hekk|\bute\b|\bvei\b|gård|uteareal|busk/, "ute", "«uteareal»"]
+    ]);
+    var urg, urgTrig;
+    if(/lekkasje|lekker|brann|røyk|innbrudd|\bgass\b|strømbrudd|heis står|heisen står|akutt|farlig|\bfare\b|sperret|nødutgang|kloakk/.test(low)){ urg="høy"; urgTrig="akutt-ord i meldingen"; }
+    else if(/når det passer|ikke hast|ikke akutt|kosmetisk|etter hvert|på sikt/.test(low)){ urg="low"; urgTrig="«når det passer» o.l."; }
+    else { urg="med"; urgTrig="ingen hast-/lav-ord → standard"; }
+    var buildingId=ctx.buildingId||null, bTrig=buildingId?"oppgitt kanal-/QR-kontekst":null;
+    if(!buildingId){ customers().forEach(function(c){ if(buildingId) return;
+      var toks=(c.name+" "+(c.addr||"")).toLowerCase().split(/[ ,]+/).filter(function(w){return w.length>=4 && !/borettslag|sameiet|horisont/.test(w);});
+      for(var i=0;i<toks.length;i++){ if(low.indexOf(toks[i])>=0){ buildingId=c.id; bTrig="navn nevnt: «"+toks[i]+"»"; break; } } }); }
+    var visual=/lekkasje|lekker|skade|sprekk|råte|svertesopp|knust|ødelagt|\bhull\b|rust|brann|søl/.test(low);
+    var needsPhoto=visual && !(ctx.photoIds&&ctx.photoIds.length);
+    return {
+      category: cat?cat.val:null, categoryTrig: cat?cat.trig:"fant ikke kategori-ord",
+      area: area?area.val:(cat?"teknisk":null), areaTrig: area?area.trig:(cat?"ingen stedord → teknisk":"fant ikke stedord"),
+      urgency: urg, urgencyTrig: urgTrig, buildingId: buildingId, buildingTrig: bTrig,
+      needsPhoto: needsPhoto, needsPhotoTrig: visual?"visuelt problem, ingen bilde":null };
+  }
+  function intakeTitle(text){ var t=(text||"").trim().replace(/\s+/g," "); if(t.length>56) t=t.slice(0,54).replace(/\s\S*$/,"")+"…"; return cap(t)||"Innmelding"; }
+
+  /* ---- intake inbox (Office/Field) + the parse → clarify → create sheet ---- */
+  var pendingIntake=null;
+  function intakeInboxHTML(){
+    var ny=intakeList().filter(function(m){return m.status==="ny";});
+    var rows=ny.map(function(m){
+      return '<button class="ob-intakerow" data-ob="intakeOpen" data-arg="'+m.id+'"><span class="ob-intch">'+channelLabel(m.channel)+'</span>'
+        +'<span class="ob-intmain"><span class="ob-inttext">'+esc(m.text)+'</span><span class="ob-intmeta">'+esc(m.from||"")+' · '+tsLabel(m.ts)+'</span></span><span class="ob-asset-go">tolk ›</span></button>';
+    }).join("");
+    return '<div class="card ob-intakecard"><div class="ct">📨 Innmelding <span class="chip grey">'+ny.length+'</span> <span class="muted" style="font-weight:600;font-size:11px">· simulerte kanaler</span></div>'
+      +'<p class="muted" style="font-size:12px;margin:-2px 0 8px">Innkommende meldinger (SMS / e-post / WhatsApp / QR / tale) → tolket til en strukturert, triagert sak. <b>Regelbasert nå — LLM i produksjon.</b></p>'
+      +(rows||'<div class="empty" style="margin:4px 0">Innboks tom.</div>')
+      +'<button class="ob-newbtn" data-ob="intakeNew">＋ Ny innmelding (lim inn melding)</button></div>';
+  }
+  function openIntakeSheet(msg){
+    pendingIntake = msg
+      ? { id:msg.id, channel:msg.channel, from:msg.from||"", text:msg.text||"", photoIds:(msg.photoIds||[]).slice(), _orig:(msg.photoIds||[]).slice(), ctxBuildingId:msg.buildingId||null, buildingId:msg.buildingId||null, parsed:null, fromInbox:true }
+      : { id:"in"+uid(), channel:"sms", from:"", text:"", photoIds:[], _orig:[], ctxBuildingId:null, buildingId:null, parsed:null, fromInbox:false };
+    obSheet(intakeSheetHTML()); hydratePhotos(document.getElementById("sheet"));
+  }
+  function intakeSheetHTML(){
+    var p=pendingIntake; if(!p) return "";
+    if(!p.parsed){
+      var chTabs=INTAKE_CHANNELS.map(function(ch){ return '<label class="ob-chopt'+(p.channel===ch[0]?' on':'')+'"><input type="radio" name="in_ch" value="'+ch[0]+'"'+(p.channel===ch[0]?' checked':'')+' data-obf="intChannel" hidden>'+ch[1]+'</label>'; }).join("");
+      return '<h3>📨 Ny innmelding</h3>'
+        +'<div class="muted" style="font-size:12px;margin:-4px 0 10px">Lim inn meldingen — tolkes regelbasert (// PROD: LLM).</div>'
+        +'<label>Kanal</label><div class="ob-chrow">'+chTabs+'</div>'
+        +'<label>Melding</label><textarea id="in_text" data-obf="intText" rows="4" placeholder="f.eks. Det lekker vann i garasjen ved plass 14">'+esc(p.text)+'</textarea>'
+        +'<label>Bilde (valgfritt)</label>'+photoStripHTML("intake", p.id, p.photoIds)
+        +'<button class="save" data-ob="intakeParse">🔎 Tolk melding</button>'
+        +'<button class="cancel" data-ob="intakeCancel">Avbryt</button>';
+    }
+    var r=p.parsed;
+    function field(label, val, trig, cls){ return '<div class="ob-pfield"><div class="ob-pflabel">'+label+'</div><div class="ob-pfval '+(cls||"")+'">'+esc(val||"—")+'</div>'+(trig?'<div class="ob-pftrig">'+esc(trig)+'</div>':'')+'</div>'; }
+    var buildingKnown=!!r.buildingId;
+    var bldBlock = buildingKnown
+      ? field("Bygg", intBldName(r.buildingId), r.buildingTrig, "")
+      : '<div class="ob-clarify"><div class="ob-clq">❓ Hvilket bygg/adresse gjelder det?</div><select id="in_bld" data-obf="intBuilding"><option value="">— velg bygg —</option>'
+          + customers().map(function(c){ return '<option value="'+c.id+'"'+(p.buildingId===c.id?' selected':'')+'>'+esc(c.name)+'</option>'; }).join("")+'</select></div>';
+    var photoBlock = (r.needsPhoto && !(p.photoIds&&p.photoIds.length)) ? '<div class="ob-clarify soft"><div class="ob-clq">📷 '+esc(r.needsPhotoTrig||"Anbefalt: bilde")+' — be om / legg ved</div>'+photoStripHTML("intake", p.id, p.photoIds)+'</div>' : '';
+    var canCreate=buildingKnown||p.buildingId;
+    return '<h3>📨 Tolket innmelding</h3>'
+      +'<div class="ob-intquote">'+channelLabel(p.channel)+' · «'+esc(p.text)+'»</div>'
+      +'<div class="muted" style="font-size:11px;margin:6px 0 4px">Regelbasert uttrekk — hvert felt viser hva som utløste det:</div>'
+      +'<div class="ob-pgrid">'+field("Kategori", r.category?catKeyLabel(r.category):"ukjent", r.categoryTrig, "")+field("Område", r.area?areaLabel(r.area):"ukjent", r.areaTrig, "")+field("Hastegrad", reqUrgLabel(r.urgency), r.urgencyTrig, "u-"+r.urgency)+'</div>'
+      + bldBlock + photoBlock
+      + (r.urgency==="høy"?'<div class="ob-callout" style="background:#fdecea;border-color:#f3c9c5;color:#9c241c;font-size:12px">⚠️ Høy hastegrad (sikkerhet/akutt) — havner øverst i godkjenningskøen.</div>':'')
+      +'<button class="save" data-ob="intakeCreate"'+(canCreate?'':' disabled style="opacity:.5"')+'>Opprett strukturert sak →</button>'
+      +'<button class="ob-mini" data-ob="intakeReparse">← endre melding</button>'
+      +'<button class="cancel" data-ob="intakeCancel">Avbryt</button>';
+  }
+  function intakeReRender(){ obSheet(intakeSheetHTML()); hydratePhotos(document.getElementById("sheet")); }
+  function intakeSyncCompose(){ if(!pendingIntake) return; var t=document.getElementById("in_text"); if(t) pendingIntake.text=t.value; var ch=document.querySelector('input[name="in_ch"]:checked'); if(ch) pendingIntake.channel=ch.value; }
+  function intakeDoParse(){
+    intakeSyncCompose();
+    if(!pendingIntake||!(pendingIntake.text||"").trim()){ toast("Lim inn en melding først"); return; }
+    pendingIntake.parsed=parseIntake(pendingIntake.text, { buildingId:pendingIntake.ctxBuildingId, photoIds:pendingIntake.photoIds });
+    if(pendingIntake.parsed.buildingId) pendingIntake.buildingId=pendingIntake.parsed.buildingId;
+    intakeReRender();
+  }
+  function intakeCreate(){
+    var p=pendingIntake; if(!p||!p.parsed) return;
+    var bid=p.buildingId||p.parsed.buildingId, c=bid?cust(bid):null;
+    if(!c){ toast("Velg bygg først"); return; }
+    var r=p.parsed;
+    var req={ id:"rq"+uid(), buildingId:c.id, building:c.name, ts:new Date().toISOString(), by:"Innmelding ("+channelLabel(p.channel)+")",
+      title:intakeTitle(p.text), desc:p.text, category:r.category||"service", area:r.area||"teknisk", urgency:r.urgency,
+      photoIds:(p.photoIds||[]).slice(), estCost:null, type:"be-om-pris", status:"ny",
+      approvedBy:null, approvedTs:null, jobLineId:null, done:false, completedTs:null, proofId:null, invoiced:false, invoicedTs:null,
+      assetId:null, fromUpsell:false, source:"intake", channel:p.channel };
+    c.requests=c.requests||[]; c.requests.push(req);
+    var st=S(), inbox=p.fromInbox?(st.intake||[]).filter(function(m){return m.id===p.id;})[0]:null;
+    var prevS=inbox?inbox.status:null, prevR=inbox?inbox.requestId:null;
+    if(inbox){ inbox.status="behandlet"; inbox.requestId=req.id; inbox.buildingId=c.id; inbox.photoIds=(p.photoIds||[]).slice(); }
+    if(!save()){ c.requests.pop(); if(inbox){ inbox.status=prevS; inbox.requestId=prevR; } return; }  // C1 gated rollback
+    pendingIntake=null; obCloseSheet(); render(); toast("📨→🛠 Strukturert sak opprettet"+(r.urgency==="høy"?" · ⚠️ HØY":"")+" — i godkjenningskøen");
+  }
+  function intakeCleanup(){ if(pendingIntake){ var o=pendingIntake._orig||[]; (pendingIntake.photoIds||[]).forEach(function(pid){ if(o.indexOf(pid)<0) photoDel(pid); }); } pendingIntake=null; }
   // area derived from the doc-38 walkaround taxonomy via the checklist/line item id
   // area + method now live in SERVICE_CATALOGUE (read via catArea/catMethod) — Phase 8 consolidation
   var METHOD_LABEL={ maskin:"Maskin", manuell:"Manuell", lift:"Lift", stige:"Stige", traktor:"Traktor" };
@@ -2666,6 +2813,7 @@
       + whileHereCards({})   // doc-01 ordering: dagens oppgaver → 💡 Mens du er her → kommende
       + (komL.length? planCondensed("Kommende (4 uker)", komL) : "")
       + beredskapHTML(month)
+      + intakeInboxHTML()  // Phase 13: omnichannel intake — the front door
       + liveClients().map(function(c){return requestsCardHTML(c);}).join("")  // Phase 11: behov & godkjente jobber (the money loop)
       + liveClients().map(function(c){return byggInfoHTML(c);}).join("");  // Phase 10: building-asset registry per live bygg
     cols.insertBefore(host, cols.firstChild);
@@ -3379,6 +3527,7 @@
     var ars=liveClients().map(function(c){return arsplanHTML(c);}).join("");
     host.innerHTML='<div class="card"><div class="ct">Sales pipeline — new customers</div>'+rows
       +'<button class="ob-newbtn" data-ob="new">＋ Set up a new client (sales → onboarding)</button></div>'
+      +intakeInboxHTML()  // Phase 13: omnichannel intake — the front door
       +liveClients().map(function(c){return radarHTML(c);}).join("")  // Phase 12: recurring-revenue Muligheter radar
       +invoiceReadyHTML()+noticesHTML()  // Phase 11: money loop close + generated comms
       +fleetHTML()+ars
@@ -3728,6 +3877,12 @@
       case "noticeCancel": pendingNotice=null; obCloseSheet(); break;
       case "noticeSend": { var nsp=(arg||"").split("|"); noticeSend(nsp[0], nsp[1]); break; }
       case "radarPropose": { var rpp=(arg||"").split("|"); radarPropose(rpp[0], rpp[1]); break; }
+      case "intakeNew": openIntakeSheet(null); break;
+      case "intakeOpen": { var iom=intakeById(arg); if(iom) openIntakeSheet(iom); break; }
+      case "intakeParse": intakeDoParse(); break;
+      case "intakeReparse": { if(pendingIntake){ pendingIntake.parsed=null; intakeReRender(); } break; }
+      case "intakeCreate": intakeCreate(); break;
+      case "intakeCancel": intakeCleanup(); obCloseSheet(); break;
       case "spawnEvt": spawnEvent(decodeURIComponent(arg||"")); break;
       case "back": ui.openId=null; ui.draftNew=false; repaintSales(); break;
       case "step": { var n=parseInt(id,10); if(c && n<=maxStep(c)){ ui.step=n; ui.activeLayer=null; repaintSales(); } break; }
@@ -3759,7 +3914,7 @@
       case "saveZone": saveZoneFromSheet(); break;
       case "editZone": editZone(id); break;
       case "delZone": delZone(id); break;
-      case "closeObSheet": obCloseSheet(); pendingZone=null; if(pendingProof) proofCleanup(); if(pendingAsset) assetCleanup(); if(pendingRequest) requestCleanup(); pendingNotice=null; if(geoMini){ try{geoMini.remove();}catch(e){} geoMini=null; } break;
+      case "closeObSheet": obCloseSheet(); pendingZone=null; if(pendingProof) proofCleanup(); if(pendingAsset) assetCleanup(); if(pendingRequest) requestCleanup(); if(pendingIntake) intakeCleanup(); pendingNotice=null; if(geoMini){ try{geoMini.remove();}catch(e){} geoMini=null; } break;
       case "printMap": printMapCard(arg); break;
       case "genOffer": if(c){ if(!c.offer) generateOffer(c); if(c.stage==="Prospect"||c.stage==="Surveyed") setStage(c,"Surveyed"); ui.step=2; repaintSales(); } break;
       case "sendOffer": if(c) sendOffer(c); break;
@@ -3781,7 +3936,7 @@
       case "photo": togglePhoto(id); break;
       case "delMarker": deleteMarker(id); break;
       case "clearCustomers": if(window.confirm("Clear all sales customers? (the day app is unaffected)")){ S().customers=[]; S().obSeeded=true; save(); photoGC(); ui.openId=null; repaintSales(); toast("Customers cleared — add a real one with ＋ New customer"); } break;
-      case "reseed": { var rst=S(); rst.customers=(rst.customers||[]).filter(function(x){return x.id!=="holtet-cust"&&x.id!=="solbakken-cust";}); rst.customers.unshift(seedSolbakken()); rst.customers.unshift(seedHoltet()); rst.obSeeded=true; rst.storage=seedStorage(); rst.equipment=seedEquipment(); save(); photoGC(); ui.openId=null; repaintSales(); toast("Seed-klienter + utstyr tilbakestilt"); break; }
+      case "reseed": { var rst=S(); rst.customers=(rst.customers||[]).filter(function(x){return x.id!=="holtet-cust"&&x.id!=="solbakken-cust";}); rst.customers.unshift(seedSolbakken()); rst.customers.unshift(seedHoltet()); rst.obSeeded=true; rst.storage=seedStorage(); rst.equipment=seedEquipment(); rst.intake=seedIntake(); save(); photoGC(); ui.openId=null; repaintSales(); toast("Seed-klienter + utstyr tilbakestilt"); break; }
     }
   });
 
@@ -3817,6 +3972,8 @@
     if(name==="ntTo"){ if(pendingNotice){ pendingNotice.to=val; regenNotice(); } return; }
     if(name==="ntSupp"){ if(pendingNotice){ var sp=supplierById(val); pendingNotice.supplierId=val||null; pendingNotice.supplier=sp?sp.name:null; regenNotice(); } return; }
     if(name==="ntText"){ if(pendingNotice) pendingNotice.text=val; return; }
+    if(name==="intChannel"){ if(pendingIntake){ pendingIntake.channel=val; [].forEach.call(document.querySelectorAll('.ob-chopt'),function(l){ var i=l.querySelector('input'); l.classList.toggle('on', !!i&&i.value===val); }); } return; }
+    if(name==="intBuilding"){ if(pendingIntake){ pendingIntake.buildingId=val||null; intakeReRender(); } return; }
     if(!c) return;
     if(name==="cover"){ if(c.offer){ c.offer.coverNote=val; save(); } return; }
     if(name==="modIncl"){ if(c.offer){ var mm=c.offer.modules.filter(function(x){return x.service===id;})[0]; if(mm){ mm.included=f.checked; rebuildOfferFlat(c); save(); refreshTiered(c); toast(mm.included?(mm.title+" inkludert"):(mm.title+" valgt bort — kan sies opp separat")); } } return; }
