@@ -2278,7 +2278,10 @@
       R({title:"Hekklipp + beskjæring høy hekk", desc:"Tujahekk sør + hekk mot vei, klipp og bortkjøring.", category:"hage", area:"ute", urgency:"low", estCost:4500, type:"gjør-nå", status:"godkjent", done:true, invoiced:true, approvedBy:"Egil Svoren", ts:"2025-09-18T08:00:00.000Z", completedTs:"2025-09-18T12:00:00.000Z"}),
       R({title:"Hekklipp + beskjæring høy hekk", desc:"Vårklipp tujahekk + oppstamming.", category:"hage", area:"ute", urgency:"low", estCost:4500, type:"gjør-nå", status:"godkjent", done:true, invoiced:true, approvedBy:"Egil Svoren", ts:"2026-05-22T08:00:00.000Z", completedTs:"2026-05-22T12:00:00.000Z"}),
       // Phase 12 radar history — a declined offer worth re-engaging (win/loss)
-      R({title:"Vårvask av fasade (svertesopp nordvegg)", desc:"Algevask av nordfasade — tilbud sendt, styret utsatte i fjor.", category:"renhold", area:"fasade", urgency:"med", estCost:38000, type:"be-om-pris", status:"avslått", ts:"2025-11-20T08:00:00.000Z"})
+      R({title:"Vårvask av fasade (svertesopp nordvegg)", desc:"Algevask av nordfasade — tilbud sendt, styret utsatte i fjor.", category:"renhold", area:"fasade", urgency:"med", estCost:38000, type:"be-om-pris", status:"avslått", ts:"2025-11-20T08:00:00.000Z"}),
+      // Phase 14 scope-classification demo — utenfor-avtale + borderline
+      R({title:"Skadedyr — mus i kjellerbod", desc:"Beboer melder mus i fellesbod, oppgang B. Ønsker skadedyrkontroll.", category:"service", area:"kjeller", urgency:"med", estCost:null, type:"be-om-pris"}),
+      R({title:"Ventilasjonen bråker i oppgang B", desc:"Aggregatet lager mye lyd, lurer på om filter må byttes / service.", category:"drift", area:"teknisk", urgency:"low", estCost:null, type:"be-om-pris"})
     ];
   }
 
@@ -2344,13 +2347,13 @@
     var jobs=approvedJobs(c), open=customerRequests(c).filter(function(r){return r.status==="ny"||r.status==="pris-bedt";});
     var jobRows=jobs.map(function(r){
       var imp=residentImpact(r);
-      return '<div class="ob-jobrow"><div class="ob-jobmain"><div class="ob-jobtitle">✅ '+esc(r.title)+' <span class="ob-asset-area">'+esc(areaLabel(r.area))+'</span></div>'
+      return '<div class="ob-jobrow"><div class="ob-jobmain"><div class="ob-jobtitle">✅ '+esc(r.title)+' <span class="ob-asset-area">'+esc(areaLabel(r.area))+'</span> '+scopeChip(c, r)+'</div>'
         +'<div class="ob-jobmeta">Godkjent'+(r.approvedBy?' av '+esc(r.approvedBy):'')+(r.estCost!=null?' · '+kr(r.estCost):'')+'</div></div>'
         +'<div class="ob-jobacts"><button class="ob-mini ok on" data-ob="reqDoJob" data-arg="'+c.id+'|'+r.id+'">✓ Gjør + dokumentér</button>'
         +(imp?'<button class="ob-mini" data-ob="reqResident" data-arg="'+c.id+'|'+r.id+'">📢 Beboervarsel</button>':'')+'</div></div>';
     }).join("");
     var openRows=open.map(function(r){
-      return '<div class="ob-jobrow muted-row"><div class="ob-jobmain"><div class="ob-jobtitle">'+esc(r.title)+' <span class="ob-asset-area">'+esc(areaLabel(r.area))+'</span></div>'
+      return '<div class="ob-jobrow muted-row"><div class="ob-jobmain"><div class="ob-jobtitle">'+esc(r.title)+' <span class="ob-asset-area">'+esc(areaLabel(r.area))+'</span> '+scopeChip(c, r)+'</div>'
         +'<div class="ob-jobmeta">'+reqStatusLabel(r.status)+' · venter på styret</div></div></div>';
     }).join("");
     return '<div class="card ob-reqcard"><div class="ct">🛠 Behov & godkjente jobber — '+esc(c.name)+'</div>'
@@ -2363,7 +2366,7 @@
     var ps=pendingApprovals(); if(!ps.length) return "";
     var rows=ps.map(function(x){ var c=x.c, r=x.r;
       var cost=r.estCost!=null?kr(r.estCost):(r.type==="be-om-pris"?'pris etterspørres':'—');
-      return '<div class="ob-approw"><div class="ob-appmain"><div class="ob-apptitle">'+esc(r.title)+' <span class="ob-urg '+r.urgency+'">'+reqUrgLabel(r.urgency)+'</span></div>'
+      return '<div class="ob-approw"><div class="ob-appmain"><div class="ob-apptitle">'+esc(r.title)+' <span class="ob-urg '+r.urgency+'">'+reqUrgLabel(r.urgency)+'</span> '+scopeChip(c, r)+'</div>'
         +'<div class="ob-appmeta">'+esc(c.name)+' · '+esc(areaLabel(r.area))+' · '+esc(r.by)+' · '+tsLabel(r.ts)+'</div>'
         +'<div class="ob-appdesc">'+esc(r.desc||"")+'</div>'+(r.photoIds&&r.photoIds.length?'<div class="ob-reqphotos">'+reqThumbs(r)+'</div>':'')
         +'<div class="ob-appcost">'+cost+'</div></div>'
@@ -2690,6 +2693,7 @@
       +'<div class="ob-pgrid">'+field("Kategori", r.category?catKeyLabel(r.category):"ukjent", r.categoryTrig, "")+field("Område", r.area?areaLabel(r.area):"ukjent", r.areaTrig, "")+field("Hastegrad", reqUrgLabel(r.urgency), r.urgencyTrig, "u-"+r.urgency)+'</div>'
       + bldBlock + photoBlock
       + (r.urgency==="høy"?'<div class="ob-callout" style="background:#fdecea;border-color:#f3c9c5;color:#9c241c;font-size:12px">⚠️ Høy hastegrad (sikkerhet/akutt) — havner øverst i godkjenningskøen.</div>':'')
+      + (p.buildingId?'<div class="ob-scopepreview">📄 Mot avtalen: '+scopeChip(cust(p.buildingId), {title:p.text, desc:p.text, category:r.category, area:r.area})+'</div>':'')   // Phase 14: live scope classification
       +'<button class="save" data-ob="intakeCreate"'+(canCreate?'':' disabled style="opacity:.5"')+'>Opprett strukturert sak →</button>'
       +'<button class="ob-mini" data-ob="intakeReparse">← endre melding</button>'
       +'<button class="cancel" data-ob="intakeCancel">Avbryt</button>';
@@ -2721,6 +2725,134 @@
     pendingIntake=null; obCloseSheet(); render(); toast("📨→🛠 Strukturert sak opprettet"+(r.urgency==="høy"?" · ⚠️ HØY":"")+" — i godkjenningskøen");
   }
   function intakeCleanup(){ if(pendingIntake){ var o=pendingIntake._orig||[]; (pendingIntake.photoIds||[]).forEach(function(pid){ if(o.indexOf(pid)<0) photoDel(pid); }); } pendingIntake=null; }
+
+  /* ===========================================================================
+     PHASE 14 — contract-reading → scope (doc 01 #7) — RULES SIMULATION, LLM-hooked.
+     Same architecture honesty as Phase 13: keyless static client → no real LLM; this
+     is a keyword/line rules parser behind clean parseContract()/classifyAgainstScope()
+     seams. Ground truth = our manual contract library (docs 37–44): Holtet's real scope
+     IS its offer/catalogue lines (kr 16 530). Contract → structured per-building scope →
+     every request auto-classified i-avtale / utenfor-avtale / borderline + reason; in-
+     scope safety flagged "gjør nå"; out-of-scope → approval/upsell (radar). Nothing
+     pretends to be a real model. // PROD: replace parseContract with a backend LLM call.
+     =========================================================================== */
+  // collapse any line/message to a coarse service DOMAIN (problem wins over place)
+  function scopeKeyword(text){ text=(text||"").toLowerCase();
+    if(/lekkasje|lekker|\bvann\b|rør|sluk|avløp|sanitær|kloakk/.test(text)) return "vann";
+    if(/sprinkler/.test(text)) return "sprinkler";
+    if(/brann|røyk|slukke|røykvarsler|\bhms\b/.test(text)) return "brann";
+    if(/lys|lampe|strøm|sikring|elektr|kabel|stikk/.test(text)) return "el";
+    if(/snø|brøyt|\bis\b|strø|glatt|vinter/.test(text)) return "snø";
+    if(/hekk|beskjær|busk/.test(text)) return "hekk";
+    if(/gress|plen|gressklipp/.test(text)) return "gress";
+    if(/grønt|\bbed\b|ugras|sprøyt|plant/.test(text)) return "grønt";
+    if(/trappe?vask|renhold|fellesareal/.test(text)) return "renhold";
+    if(/matter|matte/.test(text)) return "matter";
+    if(/takrenn|nedløp|løv/.test(text)) return "takrenner";
+    if(/\btak\b|takstein|taksten|beslag|vannbord/.test(text)) return "tak";
+    if(/fasade|svertesopp|kledning/.test(text)) return "fasade";
+    if(/vindu|glass/.test(text)) return "vindu";
+    if(/garasje|\bport\b/.test(text)) return "garasje";
+    if(/skadedyr|\bmus\b|rotte|veps|insekt|maur/.test(text)) return "skadedyr";
+    if(/ventilasjon|filter|aggregat|vifte/.test(text)) return "ventilasjon";
+    if(/heis/.test(text)) return "heis";
+    if(/søppel|avfall|dunk|container/.test(text)) return "avfall";
+    if(/lekeplass/.test(text)) return "lekeplass";
+    if(/vaktmester|tilsyn|\bdrift\b|runde|rundering/.test(text)) return "drift";
+    return "annet"; }
+  var SCOPE_DOM_LABEL={ vann:"Vann/rør", el:"Elektrisk", brann:"Brannvern", sprinkler:"Sprinkler", snø:"Vinter", hekk:"Hekk/beskjæring", gress:"Gressklipp", grønt:"Grøntskjøtsel", renhold:"Renhold", matter:"Matter", takrenner:"Takrenner", tak:"Tak", fasade:"Fasade", vindu:"Vindu", garasje:"Garasje", skadedyr:"Skadedyr", ventilasjon:"Ventilasjon", heis:"Heis", avfall:"Avfall", lekeplass:"Lekeplass", drift:"Drift/vaktmester", annet:"Annet" };
+  function scopeDomLabel(k){ return SCOPE_DOM_LABEL[k]||cap(k); }
+  // derive a structured scope from the offer + checklist-in + compliance (the ground truth)
+  function scopeFromOffer(c){
+    var services=[], seen={};
+    function add(label, cadence, source, compliance, trig){ var k=scopeKeyword(label); if(seen[k]) return; seen[k]=1;
+      services.push({serviceId:k, label:label, cadence:cadence||"", source:source, keywords:[k], compliance:!!compliance, trig:trig}); }
+    // scope = the PRICED agreement (offer module lines) + statutory compliance — NOT walkaround
+    // inspection items (those inflate scope + would mis-classify ad-hoc work the radar treats as off-plan)
+    if(c.offer&&c.offer.modules) c.offer.modules.filter(function(m){return m.included;}).forEach(function(m){ m.lines.forEach(function(l){ if(!lineRemoved(l)) add(l.label, l.cadence||l.frequency, "tilbud", l.compliance, "tilbudslinje"); }); });
+    (c.compliance||[]).forEach(function(r){ add(r.label, "lovpålagt", "tilbud", true, "compliance-pakke"); });
+    return { services:services, standards:(c.terms?["KPI/SSB-regulering","3 mnd oppsigelse"]:[]), parsedFrom:"gjeldende tilbud (auto)", ts:null };
+  }
+  function deriveScope(c){ return (c&&c.contractScope&&c.contractScope.services&&c.contractScope.services.length) ? c.contractScope : (c?scopeFromOffer(c):null); }
+  function scopeDomains(scope){ var d={}; (scope&&scope.services||[]).forEach(function(s){ (s.keywords||[]).forEach(function(k){ if(!d[k]) d[k]=s; }); }); return d; }
+  // the parser — keyword/line rules over pasted contract text, EXPLAINABLE. // PROD: LLM.
+  function parseContract(text){
+    text=text||""; var low=text.toLowerCase(), services=[], seen={};
+    var rules=[
+      [/vaktmester|tilsyn|ukentlig runde|rundering|driftsavtale/, "drift", "Vaktmester / drift", "Ukentlig", "«vaktmester/tilsyn»"],
+      [/trappe?vask|renhold|fellesareal/, "renhold", "Trappevask / renhold", "Ukentlig", "«renhold»"],
+      [/brøyt|snørydding|strø|vintervedlikehold|måking/, "snø", "Brøyting + strøing", "Beredskap", "«brøyting/strø»"],
+      [/gress|plen|gressklipp/, "gress", "Gressklipping", "Vekstsesong", "«gress»"],
+      [/hekk|beskjær|grøntanlegg|busk/, "grønt", "Grøntskjøtsel", "Sesong", "«grønt»"],
+      [/matter|inngangsmatte/, "matter", "Inngangsmatter", "Månedlig", "«matter»"],
+      [/brann|\bhms\b|slukke|røykvarsler/, "brann", "Brannvern / HMS", "Årlig", "«brann/HMS»"],
+      [/sprinkler/, "sprinkler", "Sprinklerkontroll", "Årlig", "«sprinkler»"],
+      [/heis/, "heis", "Heiskontroll", "2-årlig", "«heis»"]
+    ];
+    rules.forEach(function(r){ if(r[0].test(low) && !seen[r[1]]){ seen[r[1]]=1; services.push({serviceId:r[1], label:r[2], cadence:r[3], source:"kontrakt", keywords:[r[1]], compliance:(r[1]==="brann"||r[1]==="sprinkler"||r[1]==="heis"), trig:r[4]}); } });
+    var standards=[]; if(/kpi|indeks|ssb/.test(low)) standards.push("KPI/SSB-regulering"); if(/oppsigelse|måneders/.test(low)) standards.push("Oppsigelsestid");
+    return { services:services, standards:standards, parsedFrom:"kontrakt (limt inn)", ts:null };
+  }
+  // classify a request against the scope → {cls, reason, safety}
+  var SCOPE_SAFETY=/vann|lekkasje|lekker|brann|røyk|strøm|\bel\b|gass|innbrudd|kloakk|sprinkler|\bfare\b|farlig/;
+  var SCOPE_BORDERLINE={ ventilasjon:1, heis:1, fasade:1, tak:1, vindu:1 };
+  function classifyAgainstScope(c, request){
+    var scope=deriveScope(c);
+    if(!scope || !scope.services.length) return {cls:"borderline", reason:"Ingen avtale-scope definert ennå", safety:false};
+    var doms=scopeDomains(scope), hay=((request.title||"")+" "+(request.desc||"")).toLowerCase();
+    var kw=scopeKeyword(hay), safety=SCOPE_SAFETY.test(hay), baseCovered=!!doms["drift"];
+    if(doms[kw]) return {cls:"i-avtale", reason:"Dekket av avtalen: "+doms[kw].label, safety:safety};
+    if(safety && baseCovered) return {cls:"i-avtale", reason:"Akutt sikkerhet — strakstiltak under vaktmesteravtalen", safety:true};
+    if(SCOPE_BORDERLINE[kw]) return {cls:"borderline", reason:scopeDomLabel(kw)+": avhenger av avtalt omfang — sjekk avtalen", safety:safety};
+    return {cls:"utenfor-avtale", reason:scopeDomLabel(kw)+" er ikke i avtalen → tillegg/godkjenning", safety:safety};
+  }
+  var SCOPE_CLASS_LABEL={ "i-avtale":"✓ I avtalen", "utenfor-avtale":"⬆ Utenfor (tillegg)", "borderline":"≈ Borderline" };
+  function scopeChip(c, request){
+    var v=classifyAgainstScope(c, request);
+    return '<span class="ob-scopechip '+v.cls+'" title="'+esc(v.reason)+'">'+SCOPE_CLASS_LABEL[v.cls]+'</span>'
+      +((v.safety&&v.cls==="i-avtale")?'<span class="ob-scopechip safety" title="Sikkerhet/lovpålagt — gjør nå">⚠️ Gjør nå</span>':'');
+  }
+  // present-but-not-in-scope (light, ties to the radar)
+  function scopeMismatch(c){
+    var doms=scopeDomains(deriveScope(c)||{services:[]}), out=[];
+    (c.checklist||[]).filter(function(it){return it.scope==="upsell" && (it.price||0)>0;}).forEach(function(it){
+      var k=scopeKeyword(it.subtype||it.label); if(!doms[k]) out.push({label:it.subtype||it.label, why:it.compliance?"lovpålagt kontroll":"registrert, ikke i avtalen"}); });
+    return out;
+  }
+  function scopeCardHTML(c){
+    if(!c) return ""; var scope=deriveScope(c); if(!scope||!scope.services.length) return "";
+    var rows=scope.services.map(function(s){ return '<div class="ob-scoperow"><span class="ob-scopedom">'+esc(scopeDomLabel(s.serviceId))+'</span><span class="ob-scopelbl">'+esc(s.label)+(s.cadence?' · '+esc(s.cadence):'')+'</span>'+(s.trig?'<span class="ob-scopetrig">'+esc(s.trig)+'</span>':'')+'</div>'; }).join("");
+    var mm=scopeMismatch(c);
+    var mmHTML=mm.length?'<div class="ob-scopemm"><div class="ob-scopemm-h">Til stede, ikke i avtalen ('+mm.length+') → upsell</div>'+mm.map(function(x){return '<div class="ob-scopemm-row">⬆ '+esc(x.label)+' <span class="muted">· '+esc(x.why)+'</span></div>';}).join("")+'</div>':'';
+    var explicit=!!(c.contractScope&&c.contractScope.services&&c.contractScope.services.length);
+    return '<div class="card ob-scopecard"><div class="ct">📄 Avtale-scope — '+esc(c.name)+' <span class="muted" style="font-weight:600;font-size:11px">· '+esc(scope.parsedFrom)+'</span></div>'
+      +'<p class="muted" style="font-size:12px;margin:-2px 0 8px">Avtalen som strukturert omfang — hver innmelding klassifiseres mot denne (i-avtale / utenfor / borderline). <b>Regelbasert nå — LLM i produksjon.</b></p>'
+      +'<div class="ob-scopelist">'+rows+'</div>'+mmHTML
+      +'<div class="ob-scopeacts"><button class="ob-mini" data-ob="lesAvtale" data-arg="'+c.id+'">📄 Les avtale (lim inn)</button>'
+      +'<button class="ob-mini" data-ob="scopeUseOffer" data-arg="'+c.id+'">Bruk gjeldende tilbud</button>'
+      +(explicit?'<button class="ob-mini" data-ob="scopeClear" data-arg="'+c.id+'">Nullstill</button>':'')+'</div></div>';
+  }
+  var pendingContract=null;
+  function lesAvtaleSheet(custId){
+    pendingContract={custId:custId};
+    obSheet('<h3>📄 Les avtale</h3><div class="muted" style="font-size:12px;margin:-4px 0 10px">Lim inn avtaleteksten — regelbasert uttrekk til strukturert omfang (// PROD: LLM-kontraktlesing).</div>'
+      +'<label>Avtaletekst</label><textarea id="ct_text" rows="7" placeholder="Lim inn serviceavtalen (vaktmester, renhold, brøyting, brann, heis …)"></textarea>'
+      +'<button class="save" data-ob="scopeParse">🔎 Les til omfang</button>'
+      +'<button class="cancel" data-ob="closeObSheet">Avbryt</button>');
+  }
+  function scopeParseDo(){
+    var t=document.getElementById("ct_text"), text=t?t.value:"";
+    if(!(text||"").trim()){ toast("Lim inn avtaleteksten først"); return; }
+    var c=pendingContract&&cust(pendingContract.custId); if(!c){ obCloseSheet(); return; }
+    var scope=parseContract(text);
+    if(!scope.services.length){ toast("Fant ingen gjenkjente tjenester — prøv «Bruk gjeldende tilbud»"); return; }
+    var prev=c.contractScope; c.contractScope=scope;
+    if(!save()){ c.contractScope=prev; return; }
+    pendingContract=null; obCloseSheet(); render(); toast("📄 Avtale lest → "+scope.services.length+" tjenester i omfang");
+  }
+  function scopeUseOffer(custId){ var c=cust(custId); if(!c) return; var prev=c.contractScope; c.contractScope=scopeFromOffer(c); c.contractScope.parsedFrom="gjeldende tilbud";
+    if(!save()){ c.contractScope=prev; return; } render(); toast("📄 Omfang satt fra tilbudet ("+c.contractScope.services.length+" tjenester)"); }
+  function scopeClear(custId){ var c=cust(custId); if(!c) return; var prev=c.contractScope; c.contractScope=null; if(!save()){ c.contractScope=prev; return; } render(); toast("Omfang nullstilt (auto fra tilbud)"); }
   // area derived from the doc-38 walkaround taxonomy via the checklist/line item id
   // area + method now live in SERVICE_CATALOGUE (read via catArea/catMethod) — Phase 8 consolidation
   var METHOD_LABEL={ maskin:"Maskin", manuell:"Manuell", lift:"Lift", stige:"Stige", traktor:"Traktor" };
@@ -3528,6 +3660,7 @@
     host.innerHTML='<div class="card"><div class="ct">Sales pipeline — new customers</div>'+rows
       +'<button class="ob-newbtn" data-ob="new">＋ Set up a new client (sales → onboarding)</button></div>'
       +intakeInboxHTML()  // Phase 13: omnichannel intake — the front door
+      +liveClients().map(function(c){return scopeCardHTML(c);}).join("")  // Phase 14: contract → scope
       +liveClients().map(function(c){return radarHTML(c);}).join("")  // Phase 12: recurring-revenue Muligheter radar
       +invoiceReadyHTML()+noticesHTML()  // Phase 11: money loop close + generated comms
       +fleetHTML()+ars
@@ -3883,6 +4016,10 @@
       case "intakeReparse": { if(pendingIntake){ pendingIntake.parsed=null; intakeReRender(); } break; }
       case "intakeCreate": intakeCreate(); break;
       case "intakeCancel": intakeCleanup(); obCloseSheet(); break;
+      case "lesAvtale": lesAvtaleSheet(arg); break;
+      case "scopeParse": scopeParseDo(); break;
+      case "scopeUseOffer": scopeUseOffer(arg); break;
+      case "scopeClear": scopeClear(arg); break;
       case "spawnEvt": spawnEvent(decodeURIComponent(arg||"")); break;
       case "back": ui.openId=null; ui.draftNew=false; repaintSales(); break;
       case "step": { var n=parseInt(id,10); if(c && n<=maxStep(c)){ ui.step=n; ui.activeLayer=null; repaintSales(); } break; }
