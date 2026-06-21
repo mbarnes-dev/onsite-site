@@ -162,12 +162,14 @@
     ]
   };
   function instantiateChecklist(profile){
-    var tpl = CHECKLIST_TEMPLATE[profile] || CHECKLIST_TEMPLATE["Residential — association"];
-    return tpl.map(function(it){
-      return { id:it.id, zone:it.zone, label:it.label, category:it.category, captureType:it.captureType,
-        emoji:it.emoji, freq:it.freq||"", upsell:!!it.upsell, compliance:!!it.compliance,
-        value:null, scope:"unknown", deliveredBy:"in-house", partnerName:null, price:0, subtype:it.label };
-    });
+    // derived from SERVICE_CATALOGUE (checklist:true entries, in catalogue order) — Phase 8 single source.
+    var out=[];
+    for(var id in SERVICE_CATALOGUE){ var e=SERVICE_CATALOGUE[id]; if(!e.checklist) continue;
+      out.push({ id:id, zone:e.zone, label:e.label, category:e.cat, captureType:e.captureType, emoji:e.emoji,
+        freq:e.freq||"", upsell:!!e.upsell, compliance:!!e.compliance,
+        value:null, scope:"unknown", deliveredBy:"in-house", partnerName:null, price:0, subtype:e.label });
+    }
+    return out;
   }
   function scopeIcon(s){ return {"in":"✅","upsell":"⬆","out":"✖","unknown":"⬜"}[s]||"⬜"; }
 
@@ -1370,6 +1372,15 @@
   function catArea(id){ var e=SERVICE_CATALOGUE[id]; return e&&e.area?e.area:"ute"; } // was AREA_OF_ITEM[id]||"ute"
   function catMethod(id){ var e=SERVICE_CATALOGUE[id]; return e&&e.method?e.method:null; } // was METHOD_OF_ITEM[id]
   function catService(id){ var e=SERVICE_CATALOGUE[id]; return e&&e.service?e.service:null; } // was serviceOfTask byCat
+  // fold the checklist template's display facets into the catalogue → it becomes the single RUNTIME source for the
+  // walkaround too. Adding one catalogue entry (with checklist facets) makes it appear in the walkaround (acceptance #1).
+  (function foldChecklistIntoCatalogue(){
+    (CHECKLIST_TEMPLATE["Residential — association"]||[]).forEach(function(it){
+      var e=SERVICE_CATALOGUE[it.id] || (SERVICE_CATALOGUE[it.id]={area:"ute", service:"other"});
+      e.checklist=true; e.label=it.label; e.zone=it.zone; e.cat=it.category; e.captureType=it.captureType;
+      e.emoji=it.emoji; e.freq=it.freq||""; e.upsell=!!it.upsell; e.compliance=!!it.compliance;
+    });
+  })();
   var COMPLIANCE_DUE = {
     "Heiskontroll (2-årlig)":  {month:9,  day:15, type:"intervalYears", years:2},
     "Sprinkler — årskontroll": {month:5,  day:5,  type:"annual"},
