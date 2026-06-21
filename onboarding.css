@@ -627,3 +627,23 @@
 .ob-urgopt,.ob-typopt{flex:1 1 auto;text-align:center;font-size:12.5px;font-weight:650;color:#5d6973;background:#eef1f4;border:1.5px solid #dde3e9;border-radius:9px;padding:9px 6px;cursor:pointer}
 .ob-urgopt.on,.ob-typopt.on{background:#33414d;color:#fff;border-color:#33414d}
 @media (pointer:coarse){ .ob-jobrow,.ob-approw,.ob-invrow{padding:13px 0} .ob-appacts .ob-mini{min-height:40px} .ob-urgopt,.ob-typopt{padding:12px 6px} }
+
+/* ---- recurring-revenue radar / Muligheter (doc 01 #10, Phase 12) ---- */
+.ob-radarcard{border:1.5px solid #cdc7ef;background:linear-gradient(180deg,#f8f6fe,#fff)}
+.ob-radarcard .ct{display:flex;align-items:center;gap:8px}
+.ob-opprow{display:flex;gap:12px;justify-content:space-between;align-items:flex-start;padding:11px 0;border-bottom:1px solid #efecf8}
+.ob-opprow:last-of-type{border-bottom:none}
+.ob-oppmain{flex:1 1 auto;min-width:0}
+.ob-opptitle{font-weight:700;font-size:14px;color:#1c2421;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ob-oppbadge{font-size:10.5px;font-weight:800;border-radius:6px;padding:1px 7px;white-space:nowrap}
+.ob-oppbadge.repeat{background:#e7f6ec;color:#1c6b3a}
+.ob-oppbadge.seasonal{background:#fcefdb;color:#9a5a12}
+.ob-oppbadge.upsell{background:#e8eefc;color:#2f4fa3}
+.ob-oppbadge.winloss{background:#f3ecfb;color:#6b3aa0}
+.ob-oppevid{font-size:12px;color:#4a4470;margin:4px 0;line-height:1.45}
+.ob-oppmeta{font-size:11.5px;color:#6b7670}
+.ob-oppright{flex:0 0 auto;text-align:right;display:flex;flex-direction:column;gap:6px;align-items:flex-end;min-width:118px}
+.ob-oppval{font-weight:800;font-size:16px;color:#4b2fb3;line-height:1}
+.ob-oppval span{font-size:11px;font-weight:600;color:#8a82b5}
+.ob-oppsum{margin-top:9px;padding-top:8px;border-top:1px dashed #cdc7ef;font-weight:750;font-size:13.5px;color:#4b2fb3}
+@media (pointer:coarse){ .ob-opprow{padding:13px 0} .ob-oppright .ob-mini{min-height:40px} }

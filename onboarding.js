@@ -1086,6 +1086,9 @@
       });
     }
 
+    // Phase 12: fold radar-accepted standing lines into the recurring offer (survive rebuilds; group by service)
+    (c.addedLines||[]).forEach(function(a){ lines.push(withPrev(oLine(a))); });
+
     // group into modules
     var modules=MOD_ORDER.map(function(svc){
       var ml=lines.filter(function(l){return l.service===svc;}); if(!ml.length) return null;
@@ -2261,11 +2264,16 @@
   function holtetRequests(){
     function R(o){ o.id="rq"+(holtetRequests._n=(holtetRequests._n||0)+1); o.buildingId="holtet-cust"; o.building="Sameiet Holtet Horisont I";
       o.ts=o.ts||"2026-06-20T08:00:00.000Z"; o.by=o.by||"Martin"; o.photoIds=o.photoIds||[]; o.status=o.status||"ny";
-      o.approvedBy=null; o.approvedTs=null; o.jobLineId=null; o.done=false; o.completedTs=null; o.proofId=null; o.invoiced=false; o.invoicedTs=null; o.assetId=o.assetId||null; o.fromUpsell=!!o.fromUpsell; return o; }
+      o.approvedBy=o.approvedBy||null; o.approvedTs=o.approvedTs||null; o.jobLineId=o.jobLineId||null; o.done=!!o.done; o.completedTs=o.completedTs||null; o.proofId=o.proofId||null; o.invoiced=!!o.invoiced; o.invoicedTs=o.invoicedTs||null; o.assetId=o.assetId||null; o.fromUpsell=!!o.fromUpsell; return o; }
     holtetRequests._n=0;
     return [
       R({title:"Løs takstein over inngang C", desc:"To takstein har løsnet etter vinden — fare for fall ned på inngangspartiet. Bør sikres straks.", category:"drift", area:"tak", urgency:"høy", estCost:4500, type:"gjør-nå"}),
-      R({title:"Vannlekkasje under kjøkkenbenk fellesvaskeri", desc:"Dryppende kobling under benken i fellesvaskeriet, oppgang B. Trenger rørlegger.", category:"service", area:"kjeller", urgency:"med", estCost:null, type:"be-om-pris"})
+      R({title:"Vannlekkasje under kjøkkenbenk fellesvaskeri", desc:"Dryppende kobling under benken i fellesvaskeriet, oppgang B. Trenger rørlegger.", category:"service", area:"kjeller", urgency:"med", estCost:null, type:"be-om-pris"}),
+      // Phase 12 radar history — the same hekklipp bought ad-hoc twice (off-plan) → the headline "foreslå fast plan"
+      R({title:"Hekklipp + beskjæring høy hekk", desc:"Tujahekk sør + hekk mot vei, klipp og bortkjøring.", category:"hage", area:"ute", urgency:"low", estCost:4500, type:"gjør-nå", status:"godkjent", done:true, invoiced:true, approvedBy:"Egil Svoren", ts:"2025-09-18T08:00:00.000Z", completedTs:"2025-09-18T12:00:00.000Z"}),
+      R({title:"Hekklipp + beskjæring høy hekk", desc:"Vårklipp tujahekk + oppstamming.", category:"hage", area:"ute", urgency:"low", estCost:4500, type:"gjør-nå", status:"godkjent", done:true, invoiced:true, approvedBy:"Egil Svoren", ts:"2026-05-22T08:00:00.000Z", completedTs:"2026-05-22T12:00:00.000Z"}),
+      // Phase 12 radar history — a declined offer worth re-engaging (win/loss)
+      R({title:"Vårvask av fasade (svertesopp nordvegg)", desc:"Algevask av nordfasade — tilbud sendt, styret utsatte i fjor.", category:"renhold", area:"fasade", urgency:"med", estCost:38000, type:"be-om-pris", status:"avslått", ts:"2025-11-20T08:00:00.000Z"})
     ];
   }
 
@@ -2471,6 +2479,100 @@
     var supplier=pendingNotice.supplierId?supplierById(pendingNotice.supplierId):null;
     pendingNotice.text = pendingNotice.kind==="beboer" ? genResidentNotice(c, r, residentImpact(r)) : genMessage(c, r, contact, supplier);
     var ta=document.getElementById("nt_text"); if(ta) ta.value=pendingNotice.text;
+  }
+
+  /* ===========================================================================
+     PHASE 12 — recurring-revenue radar (doc 01 #10, the selling side of doc 19).
+     Mines history (Phase-11 requests/jobs, 6a completionLog, walkaround upsell flags)
+     and proposes turning reactive, re-sold-every-time work into STANDING plans —
+     "Hekklipp kjøpt 2× i år utenom avtalen → foreslå fast plan?". One tap drops it
+     into the existing tiered/severable offer (Phase 2) → board approval (Phase 3).
+     Rules + counting, NO ML. The planning side (schedule/Årsplan) is already built.
+     =========================================================================== */
+  function radarSeasonOf(isoStr){ var m=parseInt((isoStr||"").split("-")[1],10)||0; return (m<=2||m===12)?"vinter":(m<=5)?"vår":(m<=8)?"sommer":"høst"; }
+  function monthsBetween(d1, d2){ return Math.max(0, Math.round((d2.getTime()-d1.getTime())/(30.4*86400000))); }
+  // collapse a free-text title to a coarse service keyword (grouping + dedupe vs the standing plan)
+  function radarKeyword(s){ s=(s||"").toLowerCase();
+    if(/hekk|beskjær/.test(s)) return "hekk";
+    if(/gress|plen|klipp/.test(s)) return "gressklipp";
+    if(/takrenn|nedløp/.test(s)) return "takrenner";
+    if(/fasade|svertesopp|spotvask/.test(s)) return "fasade";
+    if(/vindu|glass/.test(s)) return "vindu";
+    if(/garasje|spyl/.test(s)) return "garasje";
+    if(/skadedyr|mus|insekt/.test(s)) return "skadedyr";
+    if(/ventilasjon|filter|aggregat/.test(s)) return "ventilasjon";
+    if(/lekeplass/.test(s)) return "lekeplass";
+    if(/mal|råte|puss/.test(s)) return "maling";
+    return (s.split(/[ (–-]/)[0]||"annet"); }
+  function radarServiceFromCategory(cat){ return ({hage:"greenery", renhold:"cleaning", vinter:"snow", drift:"base", service:"other", anlegg:"other"})[cat]||"other"; }
+  function standingLineLabels(c){ var out=[]; if(c.offer&&c.offer.modules) c.offer.modules.forEach(function(m){ if(m.included) m.lines.forEach(function(l){ out.push((l.label||"").toLowerCase()); }); }); return out; }
+  var RADAR_TYPEW={ repeat:3, seasonal:3, upsell:2, winloss:1 };
+  // the heart — ranked, explainable opportunities from real history, deduped vs the standing plan
+  function recurringRadar(c){
+    if(!c) return [];
+    var actioned=c.radarActioned||[], standing=standingLineLabels(c), opps=[];
+    function covered(kw){ return standing.some(function(l){ return l.indexOf(kw)>=0; }); }
+    // 1 + 2. repeated ad-hoc (and seasonal) — same service bought ≥2× off-plan
+    var hist=(c.requests||[]).filter(function(r){ return r.status!=="avslått" && (r.done || r.status==="godkjent"); });
+    var groups={}; hist.forEach(function(r){ var k=radarKeyword(r.title); (groups[k]=groups[k]||[]).push(r); });
+    Object.keys(groups).forEach(function(k){ var g=groups[k]; if(g.length<2 || covered(k)) return;
+      var total=g.reduce(function(s,r){return s+(r.estCost||0);},0);
+      var seasons={}; g.forEach(function(r){ seasons[radarSeasonOf(r.ts)]=1; });
+      var sk=Object.keys(seasons), sameSeason=sk.length===1;
+      var type=sameSeason?"seasonal":"repeat";
+      var cadence=sameSeason?("fast hver "+sk[0]):(g.length+"×/år");
+      var evid="Kjøpt "+g.length+"× "+(sameSeason?("hver "+sk[0]):(sk.join(" + ")))+" utenom avtalen: "+g.map(function(r){return tsLabel(r.ts)+(r.estCost?(" "+kr(r.estCost)):"");}).join(" + ");
+      opps.push({ id:"rad:"+type+":"+k, type:type, key:k, label:cap(g[0].title), evidence:evid,
+        estValueYr:total||null, suggestedCadence:cadence, service:radarServiceFromCategory(g[0].category),
+        sourceIds:g.map(function(r){return r.id;}), confidence:g.length });
+    });
+    // 3. upsell present-but-unquoted — flagged on the walkaround, recurring, not on the plan
+    (c.checklist||[]).filter(function(it){ return it.scope==="upsell" && (it.price||0)>0 && !it.oneOff; }).forEach(function(it){
+      var kw=radarKeyword(it.subtype||it.label); if(covered(kw)) return;
+      opps.push({ id:"rad:upsell:"+it.id, type:"upsell", key:it.id, label:cap(it.subtype||it.label),
+        evidence:"Registrert på befaring, men ikke på fast plan"+(it.compliance?" — lovpålagt kontroll":""),
+        estValueYr:it.price||null, suggestedCadence:"løpende", service:radarServiceFromCategory(it.category), sourceIds:[it.id], confidence:1 });
+    });
+    // 4. win/loss — a declined request worth re-engaging (doc 26)
+    var now=refDate();
+    (c.requests||[]).filter(function(r){ return r.status==="avslått"; }).forEach(function(r){
+      var mo=monthsBetween(new Date(r.ts), now); if(mo<3) return;
+      opps.push({ id:"rad:winloss:"+r.id, type:"winloss", key:r.id, label:cap(r.title),
+        evidence:"Avslått for "+mo+" mnd siden — verdt å ta opp igjen?",
+        estValueYr:r.estCost||null, suggestedCadence:"ny vurdering", service:radarServiceFromCategory(r.category), sourceIds:[r.id], confidence:1 });
+    });
+    return opps.filter(function(o){ return actioned.indexOf(o.id)<0; })
+      .sort(function(a,b){ return ((b.estValueYr||0)*b.confidence*RADAR_TYPEW[b.type]) - ((a.estValueYr||0)*a.confidence*RADAR_TYPEW[a.type]); });
+  }
+  var RADAR_BADGE={ repeat:"🔁 Gjentatt", seasonal:"📅 Sesong", upsell:"⬆ Uutnyttet", winloss:"♻️ Tapt tilbud" };
+  function radarHTML(c){
+    var opps=recurringRadar(c); if(!opps.length) return "";
+    var rows=opps.map(function(o){
+      return '<div class="ob-opprow"><div class="ob-oppmain"><div class="ob-opptitle">'+esc(o.label)+' <span class="ob-oppbadge '+o.type+'">'+RADAR_BADGE[o.type]+'</span></div>'
+        +'<div class="ob-oppevid">'+esc(o.evidence)+'</div>'
+        +'<div class="ob-oppmeta">Foreslått: '+esc(o.suggestedCadence)+'</div></div>'
+        +'<div class="ob-oppright">'+(o.estValueYr?'<div class="ob-oppval">'+kr(o.estValueYr)+'<span>/år</span></div>':'')
+        +'<button class="ob-mini ok on" data-ob="radarPropose" data-arg="'+c.id+'|'+o.id+'">Foreslå fast plan</button></div></div>';
+    }).join("");
+    var sum=opps.reduce(function(s,o){return s+(o.estValueYr||0);},0);
+    return '<div class="card ob-radarcard"><div class="ct">💡 Muligheter — '+esc(c.name)+' <span class="chip grey">'+opps.length+'</span></div>'
+      +'<p class="muted" style="font-size:12px;margin:-2px 0 9px">Mønstre fra historikken — gjentatt arbeid kjøpt utenom avtalen, uutnyttede tillegg, tapte tilbud. Gjør reaktivt om til fast inntekt.</p>'
+      +rows+'<div class="ob-oppsum">Samlet mulighet: '+kr(sum)+'/år <span class="muted">· hvis alt blir fast plan</span></div></div>';
+  }
+  // one tap → standing offer line (folds through computeOffer into the tiered, severable, board-approvable offer)
+  function radarPropose(custId, oppId){
+    var c=cust(custId); if(!c) return;
+    var opp=recurringRadar(c).filter(function(o){return o.id===oppId;})[0]; if(!opp){ toast("Muligheten finnes ikke lenger"); return; }
+    if(!c.offer){ toast("Generer tilbudet først"); return; }
+    var per=c.offer.period||"mnd";
+    var monthly=opp.estValueYr ? (per==="mnd"?Math.round(opp.estValueYr/12):opp.estValueYr) : 0;
+    c.addedLines=c.addedLines||[]; c.radarActioned=c.radarActioned||[];
+    c.addedLines.push({ id:c.id+":radar:"+opp.key, src:"radar", service:opp.service||"other", role:"recurring",
+      label:opp.label+" (fast plan)", emoji:"🔁", qty:null, unit:"", rate:null, cadence:opp.suggestedCadence, computed:monthly, category:MOD_TITLES[opp.service||"other"]||"Annet" });
+    c.radarActioned.push(opp.id);
+    computeOffer(c);   // folds the new line in, regroups modules, recomputes totals
+    if(!save()){ c.addedLines.pop(); c.radarActioned.pop(); computeOffer(c); return; }   // gated rollback
+    render(); toast("💡 Lagt til som fast plan i tilbudet ("+(monthly?kr(monthly)+"/"+per:"")+") — klar for styregodkjenning");
   }
   // area derived from the doc-38 walkaround taxonomy via the checklist/line item id
   // area + method now live in SERVICE_CATALOGUE (read via catArea/catMethod) — Phase 8 consolidation
@@ -3277,6 +3379,7 @@
     var ars=liveClients().map(function(c){return arsplanHTML(c);}).join("");
     host.innerHTML='<div class="card"><div class="ct">Sales pipeline — new customers</div>'+rows
       +'<button class="ob-newbtn" data-ob="new">＋ Set up a new client (sales → onboarding)</button></div>'
+      +liveClients().map(function(c){return radarHTML(c);}).join("")  // Phase 12: recurring-revenue Muligheter radar
       +invoiceReadyHTML()+noticesHTML()  // Phase 11: money loop close + generated comms
       +fleetHTML()+ars
       +liveClients().map(function(c){return byggInfoHTML(c);}).join("");  // Phase 10: Bygg-info visible in Office too
@@ -3624,6 +3727,7 @@
       case "noticeSaveDraft": noticeCommit(false); break;
       case "noticeCancel": pendingNotice=null; obCloseSheet(); break;
       case "noticeSend": { var nsp=(arg||"").split("|"); noticeSend(nsp[0], nsp[1]); break; }
+      case "radarPropose": { var rpp=(arg||"").split("|"); radarPropose(rpp[0], rpp[1]); break; }
       case "spawnEvt": spawnEvent(decodeURIComponent(arg||"")); break;
       case "back": ui.openId=null; ui.draftNew=false; repaintSales(); break;
       case "step": { var n=parseInt(id,10); if(c && n<=maxStep(c)){ ui.step=n; ui.activeLayer=null; repaintSales(); } break; }

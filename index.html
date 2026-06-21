@@ -187,7 +187,7 @@
   "use strict";
   var LS_KEY = "onsite_day_v1";
 
-  var SCHEMA_VERSION = 5;
+  var SCHEMA_VERSION = 6;
   function demo(){
     return {
       schemaVersion: SCHEMA_VERSION,
@@ -239,6 +239,8 @@
       if(!Array.isArray(c.assets)) c.assets = [];       // v4: Phase 10 building-asset registry (onboarding.js seeds Holtet)
       if(!Array.isArray(c.requests)) c.requests = [];   // v5: Phase 11 ad-hoc approval/money loop (field request → board approve → job → invoice)
       if(!Array.isArray(c.notices)) c.notices = [];     // v5: Phase 11 generated comms (varsle ansvarlig + resident notices)
+      if(!Array.isArray(c.addedLines)) c.addedLines = [];   // v6: Phase 12 radar-accepted standing lines (computeOffer folds them in)
+      if(!Array.isArray(c.radarActioned)) c.radarActioned = [];  // v6: Phase 12 opportunity ids already actioned (don't re-surface)
       c.zones.forEach(function(z){ if(!Array.isArray(z.completionLog)) z.completionLog = []; if(!Array.isArray(z.photoIds)) z.photoIds = []; });
       if(c.offer && typeof c.offer==="object"){
         if(Array.isArray(c.offer.modules)) c.offer.modules.forEach(function(m){ if(Array.isArray(m.lines)) m.lines.forEach(fixLine); });
