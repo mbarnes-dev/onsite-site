@@ -187,7 +187,7 @@
   "use strict";
   var LS_KEY = "onsite_day_v1";
 
-  var SCHEMA_VERSION = 8;
+  var SCHEMA_VERSION = 9;
   function demo(){
     return {
       schemaVersion: SCHEMA_VERSION,
@@ -244,6 +244,12 @@
       if(!Array.isArray(c.notices)) c.notices = [];     // v5: Phase 11 generated comms (varsle ansvarlig + resident notices)
       if(!Array.isArray(c.addedLines)) c.addedLines = [];   // v6: Phase 12 radar-accepted standing lines (computeOffer folds them in)
       if(!Array.isArray(c.radarActioned)) c.radarActioned = [];  // v6: Phase 12 opportunity ids already actioned (don't re-surface)
+      if(!Array.isArray(c.entrances)) c.entrances = [];   // v9: Step-0 enrichment v2 — borettslag oppganger (multi-address aggregate)
+      if(!Array.isArray(c.properties)) c.properties = []; // v9: Matrikkel teig polygons + per-property grounds area
+      if(c.unitsTotal===undefined) c.unitsTotal = (typeof c.units==="number"?c.units:(parseInt(c.units,10)||0));
+      if(c.groundsM2===undefined) c.groundsM2 = null;     // v9: total tomt m² (Σ teig)
+      if(c.buildings===undefined) c.buildings = 1;        // v9: rep-confirmed building count (not fabricated)
+      if(c.enrichment===undefined) c.enrichment = false;  // v9: whole-BRL aggregation ran
       c.zones.forEach(function(z){ if(!Array.isArray(z.completionLog)) z.completionLog = []; if(!Array.isArray(z.photoIds)) z.photoIds = []; });
       if(c.offer && typeof c.offer==="object"){
         if(Array.isArray(c.offer.modules)) c.offer.modules.forEach(function(m){ if(Array.isArray(m.lines)) m.lines.forEach(fixLine); });
@@ -535,7 +541,7 @@
 <script src="vendor/leaflet/leaflet.js"></script>
 <!-- @onsite/core (doc-55 step 1): the pure engines as a committed static ESM bundle. Module defers
      (runs before DOMContentLoaded); onboarding.js delegates to window.OnSiteCore lazily (post-load). -->
-<script type="module">import * as Core from "./core.bundle.js?v=16e"; window.OnSiteCore = Core;</script>
-<script src="onboarding.js?v=16e"></script>
+<script type="module">import * as Core from "./core.bundle.js?v=17a"; window.OnSiteCore = Core;</script>
+<script src="onboarding.js?v=17a"></script>
 </body>
 </html>

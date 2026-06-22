@@ -699,3 +699,15 @@
 .ob-scopechip.safety{background:#fdecea;color:#9c241c;border:1px solid #f3c9c5;margin-left:4px}
 .ob-scopepreview{font-size:12.5px;color:#3a443f;background:#f7f8fc;border:1px solid #e3e6f1;border-radius:9px;padding:8px 10px;margin:8px 0}
 @media (pointer:coarse){ .ob-scoperow{padding:9px 0} }
+
+/* ---- Step-0 enrichment v2 (doc 57): whole-borettslag sweep + teig boundaries ---- */
+.ob-enrcard{margin:10px 0 6px;padding:10px 12px;border:1px solid #d8e0ee;border-radius:12px;background:#f6f9fe}
+.ob-enrcard .ct{margin:0 0 2px}
+.ob-enr-summary{font-size:13px;color:#22302a;background:#eaf1fb;border:1px solid #cfe0f6;border-radius:9px;padding:8px 10px;margin:2px 0 8px}
+.ob-teigmap{height:240px;border-radius:10px;border:1px solid var(--line);background:#dfe6e2;overflow:hidden;z-index:1;margin:6px 0}
+.ob-enr-props{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 4px}
+.ob-enr-prop{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:600;color:#33403a;background:#fff;border:1px solid #e2e7ee;border-radius:999px;padding:3px 9px}
+.ob-enr-sw{width:11px;height:11px;border-radius:3px;display:inline-block;flex:0 0 auto}
+.ob-enr-ents{display:flex;flex-wrap:wrap;gap:5px;margin:2px 0}
+.ob-enr-ent{font-size:11px;color:#52606a;background:#eef1f5;border-radius:6px;padding:2px 7px}
+.ob-enpin{font-size:11px;font-weight:800;color:#fff;background:#1f2937;border:2px solid #fff;border-radius:50%;width:26px;height:26px;line-height:22px;text-align:center;box-shadow:0 1px 4px rgba(0,0,0,.4)}
