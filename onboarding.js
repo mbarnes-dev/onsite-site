@@ -2362,64 +2362,14 @@
      into the existing tiered/severable offer (Phase 2) → board approval (Phase 3).
      Rules + counting, NO ML. The planning side (schedule/Årsplan) is already built.
      =========================================================================== */
-  function radarSeasonOf(isoStr){ var m=parseInt((isoStr||"").split("-")[1],10)||0; return (m<=2||m===12)?"vinter":(m<=5)?"vår":(m<=8)?"sommer":"høst"; }
-  function monthsBetween(d1, d2){ return Math.max(0, Math.round((d2.getTime()-d1.getTime())/(30.4*86400000))); }
-  // collapse a free-text title to a coarse service keyword (grouping + dedupe vs the standing plan)
-  function radarKeyword(s){ s=(s||"").toLowerCase();
-    if(/hekk|beskjær/.test(s)) return "hekk";
-    if(/gress|plen|klipp/.test(s)) return "gressklipp";
-    if(/takrenn|nedløp/.test(s)) return "takrenner";
-    if(/fasade|svertesopp|spotvask/.test(s)) return "fasade";
-    if(/vindu|glass/.test(s)) return "vindu";
-    if(/garasje|spyl/.test(s)) return "garasje";
-    if(/skadedyr|mus|insekt/.test(s)) return "skadedyr";
-    if(/ventilasjon|filter|aggregat/.test(s)) return "ventilasjon";
-    if(/lekeplass/.test(s)) return "lekeplass";
-    if(/mal|råte|puss/.test(s)) return "maling";
-    return (s.split(/[ (–-]/)[0]||"annet"); }
-  function radarServiceFromCategory(cat){ return ({hage:"greenery", renhold:"cleaning", vinter:"snow", drift:"base", service:"other", anlegg:"other"})[cat]||"other"; }
-  function standingLineLabels(c){ var out=[]; if(c.offer&&c.offer.modules) c.offer.modules.forEach(function(m){ if(m.included) m.lines.forEach(function(l){ out.push((l.label||"").toLowerCase()); }); }); return out; }
-  var RADAR_TYPEW={ repeat:3, seasonal:3, upsell:2, winloss:1 };
-  // the heart — ranked, explainable opportunities from real history, deduped vs the standing plan
-  function recurringRadar(c){
-    if(!c) return [];
-    var actioned=c.radarActioned||[], standing=standingLineLabels(c), opps=[];
-    function covered(kw){ return standing.some(function(l){ return l.indexOf(kw)>=0; }); }
-    // 1 + 2. repeated ad-hoc (and seasonal) — same service bought ≥2× off-plan
-    var hist=(c.requests||[]).filter(function(r){ return r.status!=="avslått" && (r.done || r.status==="godkjent"); });
-    var groups={}; hist.forEach(function(r){ var k=radarKeyword(r.title); (groups[k]=groups[k]||[]).push(r); });
-    Object.keys(groups).forEach(function(k){ var g=groups[k]; if(g.length<2 || covered(k)) return;
-      var total=g.reduce(function(s,r){return s+(r.estCost||0);},0);
-      var seasons={}; g.forEach(function(r){ seasons[radarSeasonOf(r.ts)]=1; });
-      var sk=Object.keys(seasons), sameSeason=sk.length===1;
-      var type=sameSeason?"seasonal":"repeat";
-      var cadence=sameSeason?("fast hver "+sk[0]):(g.length+"×/år");
-      var evid="Kjøpt "+g.length+"× "+(sameSeason?("hver "+sk[0]):(sk.join(" + ")))+" utenom avtalen: "+g.map(function(r){return tsLabel(r.ts)+(r.estCost?(" "+kr(r.estCost)):"");}).join(" + ");
-      opps.push({ id:"rad:"+type+":"+k, type:type, key:k, label:cap(g[0].title), evidence:evid,
-        estValueYr:total||null, suggestedCadence:cadence, service:radarServiceFromCategory(g[0].category),
-        sourceIds:g.map(function(r){return r.id;}), confidence:g.length });
-    });
-    // 3. upsell present-but-unquoted — flagged on the walkaround, recurring, not on the plan
-    (c.checklist||[]).filter(function(it){ return it.scope==="upsell" && (it.price||0)>0 && !it.oneOff; }).forEach(function(it){
-      var kw=radarKeyword(it.subtype||it.label); if(covered(kw)) return;
-      opps.push({ id:"rad:upsell:"+it.id, type:"upsell", key:it.id, label:cap(it.subtype||it.label),
-        evidence:"Registrert på befaring, men ikke på fast plan"+(it.compliance?" — lovpålagt kontroll":""),
-        estValueYr:it.price||null, suggestedCadence:"løpende", service:radarServiceFromCategory(it.category), sourceIds:[it.id], confidence:1 });
-    });
-    // 4. win/loss — a declined request worth re-engaging (doc 26)
-    var now=refDate();
-    (c.requests||[]).filter(function(r){ return r.status==="avslått"; }).forEach(function(r){
-      var mo=monthsBetween(new Date(r.ts), now); if(mo<3) return;
-      opps.push({ id:"rad:winloss:"+r.id, type:"winloss", key:r.id, label:cap(r.title),
-        evidence:"Avslått for "+mo+" mnd siden — verdt å ta opp igjen?",
-        estValueYr:r.estCost||null, suggestedCadence:"ny vurdering", service:radarServiceFromCategory(r.category), sourceIds:[r.id], confidence:1 });
-    });
-    return opps.filter(function(o){ return actioned.indexOf(o.id)<0; })
-      .sort(function(a,b){ return ((b.estValueYr||0)*b.confidence*RADAR_TYPEW[b.type]) - ((a.estValueYr||0)*a.confidence*RADAR_TYPEW[a.type]); });
-  }
+  // Radar engine + its helpers (radarSeasonOf / monthsBetween / radarKeyword /
+  // radarServiceFromCategory / standingLineLabels / RADAR_TYPEW) → @onsite/core.
+  // Definition-delegates; pass {now:refDate()} so the simulated reference date (ui.refMs
+  // time-travel) flows in — core reads opts.now, else falls back to real wall-clock now.
+  function recurringRadar(c, opts){ return window.OnSiteCore.recurringRadar(c, opts); }
   var RADAR_BADGE={ repeat:"🔁 Gjentatt", seasonal:"📅 Sesong", upsell:"⬆ Uutnyttet", winloss:"♻️ Tapt tilbud" };
   function radarHTML(c){
-    var opps=(CORE("recurringRadar")?CORE("recurringRadar")(c,{now:refDate()}):recurringRadar(c)); if(!opps.length) return "";   // Phase 15: radar from @onsite/core
+    var opps=recurringRadar(c,{now:refDate()}); if(!opps.length) return "";   // radar from @onsite/core (definition-delegated)
     var rows=opps.map(function(o){
       return '<div class="ob-opprow"><div class="ob-oppmain"><div class="ob-opptitle">'+esc(o.label)+' <span class="ob-oppbadge '+o.type+'">'+RADAR_BADGE[o.type]+'</span></div>'
         +'<div class="ob-oppevid">'+esc(o.evidence)+'</div>'
@@ -2435,7 +2385,7 @@
   // one tap → standing offer line (folds through computeOffer into the tiered, severable, board-approvable offer)
   function radarPropose(custId, oppId){
     var c=cust(custId); if(!c) return;
-    var __rd=CORE("recurringRadar"); var __opps=__rd?__rd(c,{now:refDate()}):recurringRadar(c);   // Phase 15: radar from @onsite/core
+    var __opps=recurringRadar(c,{now:refDate()});   // radar from @onsite/core (definition-delegated)
     var opp=__opps.filter(function(o){return o.id===oppId;})[0]; if(!opp){ toast("Muligheten finnes ikke lenger"); return; }
     if(!c.offer){ toast("Generer tilbudet først"); return; }
     var per=c.offer.period||"mnd";
@@ -2470,47 +2420,10 @@
     ];
   }
   function seedIntakeIfNeeded(){ var st=S(); if(!Array.isArray(st.intake)||!st.intake.length) st.intake=seedIntake(); }
-  // the parser — keyword rules, EXPLAINABLE (every field carries its trigger). // PROD: LLM, multi-turn.
-  function parseIntake(text, ctx){
-    ctx=ctx||{}; text=text||""; var low=text.toLowerCase();
-    function first(rules){ for(var i=0;i<rules.length;i++){ if(rules[i][0].test(low)) return {val:rules[i][1], trig:rules[i][2]}; } return null; }
-    var cat=first([
-      [/lekkasje|lekker|\bvann\b|rør|ror|sluk|avløp|kran|sanitær|tett|kloakk/, "service", "«vann/rør»"],
-      [/lys|lampe|strøm|stikk|sikring|elektr|kabel/, "drift", "«elektrisk»"],
-      [/brann|røyk|slukker|alarm/, "drift", "«brann/HMS»"],
-      [/snø|brøyt|\bis\b|glatt|strø/, "vinter", "«vinter»"],
-      [/hekk|gress|plen|\btre\b|busk|beskjær|grønt|ugras/, "hage", "«grønt»"],
-      [/søppel|avfall|dunk|container/, "service", "«avfall»"],
-      [/heis/, "drift", "«heis»"],
-      [/vindu|glass/, "renhold", "«vindu/glass»"],
-      [/\bmal|råte|puss|\bmur|sprekk|asfalt/, "anlegg", "«bygg/anlegg»"],
-      [/skadedyr|\bmus\b|rotte|veps|insekt|maur/, "service", "«skadedyr»"]
-    ]);
-    var area=first([
-      [/garasje|p-?plass|parkering|plass \d/, "garasje", "«garasje»"],
-      [/\btak\b|renne|nedløp|pipe|loft/, "tak", "«tak»"],
-      [/kjeller|\bbod\b|fellesvask/, "kjeller", "«kjeller»"],
-      [/heis/, "heis", "«heis»"],
-      [/oppgang|trapp|inngang|\bgang\b|korridor/, "oppgang", "«oppgang»"],
-      [/fasade|yttervegg|kledning/, "fasade", "«fasade»"],
-      [/hage|plen|hekk|\bute\b|\bvei\b|gård|uteareal|busk/, "ute", "«uteareal»"]
-    ]);
-    var urg, urgTrig;
-    if(/lekkasje|lekker|brann|røyk|innbrudd|\bgass\b|strømbrudd|heis står|heisen står|akutt|farlig|\bfare\b|sperret|nødutgang|kloakk/.test(low)){ urg="høy"; urgTrig="akutt-ord i meldingen"; }
-    else if(/når det passer|ikke hast|ikke akutt|kosmetisk|etter hvert|på sikt/.test(low)){ urg="low"; urgTrig="«når det passer» o.l."; }
-    else { urg="med"; urgTrig="ingen hast-/lav-ord → standard"; }
-    var buildingId=ctx.buildingId||null, bTrig=buildingId?"oppgitt kanal-/QR-kontekst":null;
-    if(!buildingId){ customers().forEach(function(c){ if(buildingId) return;
-      var toks=(c.name+" "+(c.addr||"")).toLowerCase().split(/[ ,]+/).filter(function(w){return w.length>=4 && !/borettslag|sameiet|horisont/.test(w);});
-      for(var i=0;i<toks.length;i++){ if(low.indexOf(toks[i])>=0){ buildingId=c.id; bTrig="navn nevnt: «"+toks[i]+"»"; break; } } }); }
-    var visual=/lekkasje|lekker|skade|sprekk|råte|svertesopp|knust|ødelagt|\bhull\b|rust|brann|søl/.test(low);
-    var needsPhoto=visual && !(ctx.photoIds&&ctx.photoIds.length);
-    return {
-      category: cat?cat.val:null, categoryTrig: cat?cat.trig:"fant ikke kategori-ord",
-      area: area?area.val:(cat?"teknisk":null), areaTrig: area?area.trig:(cat?"ingen stedord → teknisk":"fant ikke stedord"),
-      urgency: urg, urgencyTrig: urgTrig, buildingId: buildingId, buildingTrig: bTrig,
-      needsPhoto: needsPhoto, needsPhotoTrig: visual?"visuelt problem, ingen bilde":null };
-  }
+  // the parser → @onsite/core (keyword rules, explainable; // PROD: LLM, multi-turn).
+  // Definition-delegates; the call site passes {buildingId, photoIds, customers:customers()}
+  // so core's name-based building auto-detect can run.
+  function parseIntake(text, ctx){ return window.OnSiteCore.parseIntake(text, ctx); }
   function intakeTitle(text){ var t=(text||"").trim().replace(/\s+/g," "); if(t.length>56) t=t.slice(0,54).replace(/\s\S*$/,"")+"…"; return cap(t)||"Innmelding"; }
 
   /* ---- intake inbox (Office/Field) + the parse → clarify → create sheet ---- */
@@ -2569,9 +2482,7 @@
   function intakeDoParse(){
     intakeSyncCompose();
     if(!pendingIntake||!(pendingIntake.text||"").trim()){ toast("Lim inn en melding først"); return; }
-    var __pi=CORE("parseIntake");   // Phase 15: intake parse from @onsite/core
-    pendingIntake.parsed = __pi ? __pi(pendingIntake.text, { buildingId:pendingIntake.ctxBuildingId, photoIds:pendingIntake.photoIds, customers:customers() })
-                                : parseIntake(pendingIntake.text, { buildingId:pendingIntake.ctxBuildingId, photoIds:pendingIntake.photoIds });
+    pendingIntake.parsed = parseIntake(pendingIntake.text, { buildingId:pendingIntake.ctxBuildingId, photoIds:pendingIntake.photoIds, customers:customers() });   // intake parse from @onsite/core (definition-delegated)
     if(pendingIntake.parsed.buildingId) pendingIntake.buildingId=pendingIntake.parsed.buildingId;
     intakeReRender();
   }
@@ -2604,93 +2515,32 @@
      scope safety flagged "gjør nå"; out-of-scope → approval/upsell (radar). Nothing
      pretends to be a real model. // PROD: replace parseContract with a backend LLM call.
      =========================================================================== */
-  // collapse any line/message to a coarse service DOMAIN (problem wins over place)
-  function scopeKeyword(text){ text=(text||"").toLowerCase();
-    if(/lekkasje|lekker|\bvann\b|rør|sluk|avløp|sanitær|kloakk/.test(text)) return "vann";
-    if(/sprinkler/.test(text)) return "sprinkler";
-    if(/brann|røyk|slukke|røykvarsler|\bhms\b/.test(text)) return "brann";
-    if(/lys|lampe|strøm|sikring|elektr|kabel|stikk/.test(text)) return "el";
-    if(/snø|brøyt|\bis\b|strø|glatt|vinter/.test(text)) return "snø";
-    if(/hekk|beskjær|busk/.test(text)) return "hekk";
-    if(/gress|plen|gressklipp/.test(text)) return "gress";
-    if(/grønt|\bbed\b|ugras|sprøyt|plant/.test(text)) return "grønt";
-    if(/trappe?vask|renhold|fellesareal/.test(text)) return "renhold";
-    if(/matter|matte/.test(text)) return "matter";
-    if(/takrenn|nedløp|løv/.test(text)) return "takrenner";
-    if(/\btak\b|takstein|taksten|beslag|vannbord/.test(text)) return "tak";
-    if(/fasade|svertesopp|kledning/.test(text)) return "fasade";
-    if(/vindu|glass/.test(text)) return "vindu";
-    if(/garasje|\bport\b/.test(text)) return "garasje";
-    if(/skadedyr|\bmus\b|rotte|veps|insekt|maur/.test(text)) return "skadedyr";
-    if(/ventilasjon|filter|aggregat|vifte/.test(text)) return "ventilasjon";
-    if(/heis/.test(text)) return "heis";
-    if(/søppel|avfall|dunk|container/.test(text)) return "avfall";
-    if(/lekeplass/.test(text)) return "lekeplass";
-    if(/vaktmester|tilsyn|\bdrift\b|runde|rundering/.test(text)) return "drift";
-    return "annet"; }
+  // scopeKeyword (coarse service DOMAIN) → @onsite/core; only the display helper
+  // scopeDomLabel + its SCOPE_DOM_LABEL table stay inline below (used by scopeCardHTML).
   var SCOPE_DOM_LABEL={ vann:"Vann/rør", el:"Elektrisk", brann:"Brannvern", sprinkler:"Sprinkler", snø:"Vinter", hekk:"Hekk/beskjæring", gress:"Gressklipp", grønt:"Grøntskjøtsel", renhold:"Renhold", matter:"Matter", takrenner:"Takrenner", tak:"Tak", fasade:"Fasade", vindu:"Vindu", garasje:"Garasje", skadedyr:"Skadedyr", ventilasjon:"Ventilasjon", heis:"Heis", avfall:"Avfall", lekeplass:"Lekeplass", drift:"Drift/vaktmester", annet:"Annet" };
   function scopeDomLabel(k){ return SCOPE_DOM_LABEL[k]||cap(k); }
-  // derive a structured scope from the offer + checklist-in + compliance (the ground truth)
-  function scopeFromOffer(c){
-    var services=[], seen={};
-    function add(label, cadence, source, compliance, trig){ var k=scopeKeyword(label); if(seen[k]) return; seen[k]=1;
-      services.push({serviceId:k, label:label, cadence:cadence||"", source:source, keywords:[k], compliance:!!compliance, trig:trig}); }
-    // scope = the PRICED agreement (offer module lines) + statutory compliance — NOT walkaround
-    // inspection items (those inflate scope + would mis-classify ad-hoc work the radar treats as off-plan)
-    if(c.offer&&c.offer.modules) c.offer.modules.filter(function(m){return m.included;}).forEach(function(m){ m.lines.forEach(function(l){ if(!lineRemoved(l)) add(l.label, l.cadence||l.frequency, "tilbud", l.compliance, "tilbudslinje"); }); });
-    (c.compliance||[]).forEach(function(r){ add(r.label, "lovpålagt", "tilbud", true, "compliance-pakke"); });
-    return { services:services, standards:(c.terms?["KPI/SSB-regulering","3 mnd oppsigelse"]:[]), parsedFrom:"gjeldende tilbud (auto)", ts:null };
-  }
-  function deriveScope(c){ return (c&&c.contractScope&&c.contractScope.services&&c.contractScope.services.length) ? c.contractScope : (c?scopeFromOffer(c):null); }
-  function scopeDomains(scope){ var d={}; (scope&&scope.services||[]).forEach(function(s){ (s.keywords||[]).forEach(function(k){ if(!d[k]) d[k]=s; }); }); return d; }
-  // the parser — keyword/line rules over pasted contract text, EXPLAINABLE. // PROD: LLM.
-  function parseContract(text){
-    text=text||""; var low=text.toLowerCase(), services=[], seen={};
-    var rules=[
-      [/vaktmester|tilsyn|ukentlig runde|rundering|driftsavtale/, "drift", "Vaktmester / drift", "Ukentlig", "«vaktmester/tilsyn»"],
-      [/trappe?vask|renhold|fellesareal/, "renhold", "Trappevask / renhold", "Ukentlig", "«renhold»"],
-      [/brøyt|snørydding|strø|vintervedlikehold|måking/, "snø", "Brøyting + strøing", "Beredskap", "«brøyting/strø»"],
-      [/gress|plen|gressklipp/, "gress", "Gressklipping", "Vekstsesong", "«gress»"],
-      [/hekk|beskjær|grøntanlegg|busk/, "grønt", "Grøntskjøtsel", "Sesong", "«grønt»"],
-      [/matter|inngangsmatte/, "matter", "Inngangsmatter", "Månedlig", "«matter»"],
-      [/brann|\bhms\b|slukke|røykvarsler/, "brann", "Brannvern / HMS", "Årlig", "«brann/HMS»"],
-      [/sprinkler/, "sprinkler", "Sprinklerkontroll", "Årlig", "«sprinkler»"],
-      [/heis/, "heis", "Heiskontroll", "2-årlig", "«heis»"]
-    ];
-    rules.forEach(function(r){ if(r[0].test(low) && !seen[r[1]]){ seen[r[1]]=1; services.push({serviceId:r[1], label:r[2], cadence:r[3], source:"kontrakt", keywords:[r[1]], compliance:(r[1]==="brann"||r[1]==="sprinkler"||r[1]==="heis"), trig:r[4]}); } });
-    var standards=[]; if(/kpi|indeks|ssb/.test(low)) standards.push("KPI/SSB-regulering"); if(/oppsigelse|måneders/.test(low)) standards.push("Oppsigelsestid");
-    return { services:services, standards:standards, parsedFrom:"kontrakt (limt inn)", ts:null };
-  }
-  // classify a request against the scope → {cls, reason, safety}
-  var SCOPE_SAFETY=/vann|lekkasje|lekker|brann|røyk|strøm|\bel\b|gass|innbrudd|kloakk|sprinkler|\bfare\b|farlig/;
-  var SCOPE_BORDERLINE={ ventilasjon:1, heis:1, fasade:1, tak:1, vindu:1 };
-  function classifyAgainstScope(c, request){
-    var scope=deriveScope(c);
-    if(!scope || !scope.services.length) return {cls:"borderline", reason:"Ingen avtale-scope definert ennå", safety:false};
-    var doms=scopeDomains(scope), hay=((request.title||"")+" "+(request.desc||"")).toLowerCase();
-    var kw=scopeKeyword(hay), safety=SCOPE_SAFETY.test(hay), baseCovered=!!doms["drift"];
-    if(doms[kw]) return {cls:"i-avtale", reason:"Dekket av avtalen: "+doms[kw].label, safety:safety};
-    if(safety && baseCovered) return {cls:"i-avtale", reason:"Akutt sikkerhet — strakstiltak under vaktmesteravtalen", safety:true};
-    if(SCOPE_BORDERLINE[kw]) return {cls:"borderline", reason:scopeDomLabel(kw)+": avhenger av avtalt omfang — sjekk avtalen", safety:safety};
-    return {cls:"utenfor-avtale", reason:scopeDomLabel(kw)+" er ikke i avtalen → tillegg/godkjenning", safety:safety};
-  }
+  // scope derivation → @onsite/core: scopeFromOffer (priced offer + compliance → ground-truth
+  // scope), deriveScope (explicit contractScope else scopeFromOffer), and the core-internal
+  // scopeDomains lookup all move. Definition-delegate.
+  function scopeFromOffer(c){ return window.OnSiteCore.scopeFromOffer(c); }
+  function deriveScope(c){ return window.OnSiteCore.deriveScope(c); }
+  // the contract parser → @onsite/core (keyword/line rules over pasted text; // PROD: LLM).
+  function parseContract(text){ return window.OnSiteCore.parseContract(text); }
+  // classify a request against the scope → {cls, reason, safety} → @onsite/core (with its
+  // SCOPE_SAFETY / SCOPE_BORDERLINE tables + scopeKeyword / scopeDomains). Definition-delegates.
+  function classifyAgainstScope(c, request){ return window.OnSiteCore.classifyAgainstScope(c, request); }
   var SCOPE_CLASS_LABEL={ "i-avtale":"✓ I avtalen", "utenfor-avtale":"⬆ Utenfor (tillegg)", "borderline":"≈ Borderline" };
   function scopeChip(c, request){
-    var v=(CORE("classifyAgainstScope")||classifyAgainstScope)(c, request);   // Phase 15: scope classify from @onsite/core
+    var v=classifyAgainstScope(c, request);   // scope classify from @onsite/core (definition-delegated)
     return '<span class="ob-scopechip '+v.cls+'" title="'+esc(v.reason)+'">'+SCOPE_CLASS_LABEL[v.cls]+'</span>'
       +((v.safety&&v.cls==="i-avtale")?'<span class="ob-scopechip safety" title="Sikkerhet/lovpålagt — gjør nå">⚠️ Gjør nå</span>':'');
   }
-  // present-but-not-in-scope (light, ties to the radar)
-  function scopeMismatch(c){
-    var doms=scopeDomains(deriveScope(c)||{services:[]}), out=[];
-    (c.checklist||[]).filter(function(it){return it.scope==="upsell" && (it.price||0)>0;}).forEach(function(it){
-      var k=scopeKeyword(it.subtype||it.label); if(!doms[k]) out.push({label:it.subtype||it.label, why:it.compliance?"lovpålagt kontroll":"registrert, ikke i avtalen"}); });
-    return out;
-  }
+  // present-but-not-in-scope (light, ties to the radar) → @onsite/core. Definition-delegates.
+  function scopeMismatch(c){ return window.OnSiteCore.scopeMismatch(c); }
   function scopeCardHTML(c){
-    if(!c) return ""; var scope=(CORE("deriveScope")||deriveScope)(c); if(!scope||!scope.services.length) return "";   // Phase 15: scope from @onsite/core
+    if(!c) return ""; var scope=deriveScope(c); if(!scope||!scope.services.length) return "";   // scope from @onsite/core (definition-delegated)
     var rows=scope.services.map(function(s){ return '<div class="ob-scoperow"><span class="ob-scopedom">'+esc(scopeDomLabel(s.serviceId))+'</span><span class="ob-scopelbl">'+esc(s.label)+(s.cadence?' · '+esc(s.cadence):'')+'</span>'+(s.trig?'<span class="ob-scopetrig">'+esc(s.trig)+'</span>':'')+'</div>'; }).join("");
-    var mm=(CORE("scopeMismatch")||scopeMismatch)(c);   // Phase 15: from @onsite/core
+    var mm=scopeMismatch(c);   // from @onsite/core (definition-delegated)
     var mmHTML=mm.length?'<div class="ob-scopemm"><div class="ob-scopemm-h">Til stede, ikke i avtalen ('+mm.length+') → upsell</div>'+mm.map(function(x){return '<div class="ob-scopemm-row">⬆ '+esc(x.label)+' <span class="muted">· '+esc(x.why)+'</span></div>';}).join("")+'</div>':'';
     var explicit=!!(c.contractScope&&c.contractScope.services&&c.contractScope.services.length);
     return '<div class="card ob-scopecard"><div class="ct">📄 Avtale-scope — '+esc(c.name)+' <span class="muted" style="font-weight:600;font-size:11px">· '+esc(scope.parsedFrom)+'</span></div>'
@@ -2838,20 +2688,14 @@
   }
 
   /* ===========================================================================
-     PHASE 15 (doc-55 step 1) — consume @onsite/core in the live prototype.
-     FINDING: reassigning the IIFE's function-declaration bindings (a one-point strangler
-     swap) does NOT propagate to call sites in this 4200-line closure — verified: the
-     swap executes but callers keep the inline impl (a real measure of the internal
-     coupling; see CORE-EXTRACTION.md). What DOES route through the bundle is reading
-     window.OnSiteCore.X at the CALL SITE. CORE() resolves the extracted engine (bundle)
-     with an inline fallback if the deferred module hasn't loaded. The contract-scope
-     engine (Phase 14) is routed through it here as the proof; the remaining engines are
-     extracted + tested in core (anchors green standalone) and follow the same per-call-
-     site pattern — the honest next increment. // PROD: full swap once a build step lands. */
-  function CORE(fn){ return (typeof window!=="undefined" && window.OnSiteCore && window.OnSiteCore[fn]) || null; }
-  // Phase 16: the offer/schedule/geodesic engines are definition-delegated to @onsite/core directly in
-  // their declarations above (the binding IS the delegate — no swap needed). radar/intake/scope route via
-  // CORE("fn") at the call site (see below). All calls are post-load, so window.OnSiteCore is always defined.
+     PHASE 15→16 (doc-55 step 1) — @onsite/core is the single runtime source.
+     Every extracted engine DEFINITION-DELEGATES: the app keeps the function name as a thin
+     shell whose body is `return window.OnSiteCore.X(...)` (the binding IS the delegate — no
+     swap, no fallback). Offer/schedule/geodesic landed in Phase 16; radar (Phase 12), intake
+     (Phase 13) and contract-scope (Phase 14) follow the same shape here, so the per-call-site
+     CORE() router is retired. All calls are post-load (render / user-action paths), so
+     window.OnSiteCore is always defined. Display-only helpers (radar badges, channel/scope
+     labels) stay app-side by design. */
   function renderExtras(view, cols){
     seedIfNeeded();
     destroyMap();
