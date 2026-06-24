@@ -3031,7 +3031,7 @@
     return '<div class="card"><div class="ct">Bekreft & rediger <span class="muted" style="font-weight:600">· '+esc(p.source||"register")+'</span></div>'
       + f("nb_name","Navn",p.name)
       + '<div class="row2" style="display:flex;gap:8px"><div style="flex:1">'+f("nb_orgnr","Org.nr",p.orgnr)+'</div><div style="flex:1.4">'+f("nb_orgform","Org.form",p.orgform)+'</div></div>'
-      + '<div class="row2" style="display:flex;gap:8px"><div style="flex:2">'+f("nb_addr","Adresse",p.addr,"gate + husnr")+'</div><button class="ob-btn ghost" data-ob="nbGeocode" style="align-self:flex-end">📍 Geokod</button></div>'
+      + '<div class="row2" style="display:flex;gap:8px"><div style="flex:2">'+f("nb_addr","Adresse (enkeltbygg)",p.addr,"borettslag: bruk Kartlegg ↓")+'</div><button class="ob-btn ghost" data-ob="nbGeocode" style="align-self:flex-end" title="Geokod én adresse (enkeltbygg). Borettslag med flere oppganger: bruk Kartlegg nedenfor.">📍 Geokod</button></div>'
       + '<div class="row2" style="display:flex;gap:8px"><div style="flex:1">'+f("nb_postnr","Postnr",p.postnummer)+'</div><div style="flex:1.6">'+f("nb_poststed","Poststed",p.poststed)+'</div></div>'
       + '<div class="row2" style="display:flex;gap:8px"><div style="flex:1.6">'+f("nb_kommune","Kommune",p.kommunenavn)+'</div><div style="flex:1">'+f("nb_gnr","gnr",p.gnr)+'</div><div style="flex:1">'+f("nb_bnr","bnr",p.bnr)+'</div></div>'
       + '<div class="row2" style="display:flex;gap:8px"><div style="flex:1">'+f("nb_lat","Lat",p.lat!=null?(+p.lat).toFixed(5):"")+'</div><div style="flex:1">'+f("nb_lon","Lon",p.lon!=null?(+p.lon).toFixed(5):"")+'</div><div style="flex:1">'+f("nb_units","Enheter (ca.)",p.units||"")+'</div></div>'
@@ -3045,10 +3045,12 @@
   }
   /* ---- Step-0 enrichment v2 UI: sweep the whole borettslag + draw the property ---- */
   function teigColor(bnr){ var pal=["#1d4ed8","#15803d","#b5790b","#9333ea","#0369a1","#0f766e"]; var n=parseInt(bnr,10)||0; return pal[n%pal.length]; }
-  function nbStreetOf(p){ if(p._street) return p._street.replace(/,.*$/,"").replace(/\s*\d.*$/,"").trim(); return (p.addr||"").replace(/,.*$/,"").replace(/\s*\d.*$/,"").trim(); }
+  function nbStreetOf(p){ return (p.addr||"").replace(/,.*$/,"").replace(/\s*\d.*$/,"").trim(); }   // building street only — never the forvalter address
   function nbEnrichHTML(p){
     var street=(p._streetInput!=null&&p._streetInput!=="")?p._streetInput:nbStreetOf(p);
+    var brregHint = (p.source==="Brønnøysund" && !p.enrichment) ? '<div class="ob-callout" style="font-size:11px;margin:2px 0 7px;background:#fff8ec;border-color:#f2d9a8;color:#8a5a12">📍 Brreg ga <b>forvalters</b> adresse, ikke byggets. Skriv <b>byggets</b> gate + husnumre her og trykk <b>Kartlegg</b> — så henter vi oppganger, boenheter, matrikkel og kart automatisk.</div>' : '';
     var head='<div class="ct" style="font-size:13px;margin-top:4px">🗺️ Kartlegg hele borettslaget <span class="muted" style="font-weight:600">· flere oppganger</span></div>'
+      +brregHint
       +'<p class="muted" style="font-size:11.5px;margin:0 0 7px">Ett borettslag = ofte flere adresser/oppganger og flere matrikkelenheter. Skriv gata + husnumrene (liste «20,22,24» eller serie «20–39») → vi summerer boenheter, henter eiendomsgrensene og tomtearealet fra Matrikkelen.</p>';
     var form='<div class="row2" style="display:flex;gap:8px;align-items:flex-end">'
       +'<div style="flex:1.3"><label>Gate</label><input id="nb_street" value="'+esc(street)+'" placeholder="Rødtvetveien"></div>'
@@ -3095,8 +3097,21 @@
         });
       });
     }
-    if(p.kommunenummer){ go(p.kommunenummer, p.poststed); }
-    else { geoLookup(street+(p.poststed?(" "+p.poststed):"")+" "+nums[0], function(res){ if(res&&res.kommunenummer){ go(res.kommunenummer, res.poststed); } else { stop("Mangler kommune — bruk 📍 Geokod på adressen først"); } }); }
+    if(p.kommunenummer){ go(p.kommunenummer, p.poststed); return; }
+    // SELF-SUFFICIENT: derive kommune + building coords from the building's OWN street + first husnr (no Geokod
+    // prerequisite). Try WITHOUT poststed first (a forvalter poststed would mismatch); retry WITH it only if present.
+    function tryGeo(q, next){ geoLookup(q, function(res){
+      if(res===null){ stop("geonorge utilgjengelig — sjekk nettet og prøv igjen, eller opprett bygget og plasser det på kartet i befaringen"); return; }
+      if(res && res.kommunenummer){
+        if(res.lat!=null){ p.lat=res.lat; p.lon=res.lon; }   // building location (the sweep refines to the entrance centroid next)
+        if(res.kommunenavn) p.kommunenavn=res.kommunenavn;
+        if(res.poststed && !p.poststed) p.poststed=res.poststed;
+        go(res.kommunenummer, res.poststed); return;
+      }
+      if(next){ next(); return; }
+      stop("Fant ikke «"+street+" "+nums[0]+"» — sjekk gatenavn/husnr, eller opprett bygget og juster plasseringen i befaringen");
+    }); }
+    tryGeo(street+" "+nums[0], p.poststed ? function(){ tryGeo(street+" "+nums[0]+" "+p.poststed, null); } : null);
   }
   // teig preview map: property polygons (distinct colour per bnr) + numbered entrance pins, fit to bounds.
   function buildTeigMap(p){
@@ -3130,11 +3145,14 @@
   function prefillFromGeo(a){ var p=parseAddr(a); return { source:"geonorge", name:"", orgnr:"", orgform:"Eierseksjonssameie",
     addr:p.adressetekst, postnummer:p.postnummer, poststed:p.poststed, kommunenavn:p.kommunenavn, kommunenummer:p.kommunenummer,
     gnr:p.gnr, bnr:p.bnr, lat:p.lat, lon:p.lon, units:p.units, forvalter:"", styreleder:"", styremedlemmer:[], revisor:"", naering:"", buildYear:"" }; }
-  function prefillFromBrreg(e){ var of=(e.organisasjonsform||{}), fa=e.forretningsadresse||{};
+  function prefillFromBrreg(e){ var of=(e.organisasjonsform||{});
+    // brreg forretningsadresse is the FORVALTER's c/o office, NOT the building — do NOT seed the building's
+    // address / kommune / poststed / coords from it (that put the map on the forvalter and dead-ended Kartlegg).
+    // Org + roles (forvalter/styre/revisor) are correct; the building's gate+husnr come from the rep via Kartlegg.
     return { source:"Brønnøysund", name:titleCase(e.navn), orgnr:e.organisasjonsnummer, orgform:(of.beskrivelse||of.kode||""),
-      naering:(e.naeringskode1||{}).kode||"", addr:"", postnummer:fa.postnummer||"", poststed:fa.poststed||"",
-      kommunenavn:fa.kommune||"", kommunenummer:fa.kommunenummer||"", gnr:"", bnr:"", lat:null, lon:null, units:0,
-      forvalter:"", styreleder:"", styremedlemmer:[], revisor:"", buildYear:"", _street:brregStreet(fa) }; }
+      naering:(e.naeringskode1||{}).kode||"", addr:"", postnummer:"", poststed:"",
+      kommunenavn:"", kommunenummer:"", gnr:"", bnr:"", lat:null, lon:null, units:0,
+      forvalter:"", styreleder:"", styremedlemmer:[], revisor:"", buildYear:"" }; }
   function applyAddr(p,res){ p.addr=res.adressetekst; p.postnummer=res.postnummer; p.poststed=res.poststed; p.kommunenavn=res.kommunenavn||p.kommunenavn; p.kommunenummer=res.kommunenummer||p.kommunenummer; p.gnr=res.gnr; p.bnr=res.bnr; p.lat=res.lat; p.lon=res.lon; p.units=res.units; }
   function nbPick(idx){
     var nb=ui.newBuilding; if(!nb||!nb.results) return; var it=(nb.results.items||[])[idx]; if(!it) return;
@@ -3142,7 +3160,7 @@
     var p=prefillFromBrreg(it); nb.prefill=p; nb.loading=false; nbRender();
     brregRoles(it.organisasjonsnummer, function(roles){
       if(roles){ p.forvalter=roles.forvalter||""; p.styreleder=roles.styreleder||""; p.styremedlemmer=roles.styremedlemmer||[]; p.revisor=roles.revisor||""; }
-      if(p._street){ geoLookup(p._street, function(res){ if(res) applyAddr(p,res); nbRender(); }); } else nbRender();
+      nbRender();   // do NOT geocode the forvalter address as the building — the rep gives the building's gate+husnr in Kartlegg
     });
   }
   function syncPrefillFromForm(){
