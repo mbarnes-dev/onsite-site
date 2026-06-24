@@ -711,3 +711,19 @@
 .ob-enr-ents{display:flex;flex-wrap:wrap;gap:5px;margin:2px 0}
 .ob-enr-ent{font-size:11px;color:#52606a;background:#eef1f5;border-radius:6px;padding:2px 7px}
 .ob-enpin{font-size:11px;font-weight:800;color:#fff;background:#1f2937;border:2px solid #fff;border-radius:50%;width:26px;height:26px;line-height:22px;text-align:center;box-shadow:0 1px 4px rgba(0,0,0,.4)}
+
+/* ---- doc-63 capture-as-byproduct chips (proof sheet) + knowledge payback + operability score ---- */
+.ob-capture{margin:12px 0 4px;padding:10px 11px;border:1px dashed #c9d4cf;border-radius:11px;background:#f6faf8}
+.ob-capture-h{font-size:12px;font-weight:800;color:#2f4039;margin-bottom:8px}
+.ob-capchips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:9px}
+.ob-capchip{font-size:13px;font-weight:700;padding:9px 13px;border-radius:999px;border:1px solid #bcd3c9;background:#fff;color:#16604f;cursor:pointer;min-height:40px}
+.ob-capchip:hover{background:#eaf6f1}
+.ob-capchip.done{background:#e7f6ee;color:#15803d;border-color:#bfe6cf;cursor:default}
+.ob-capmat{width:100%;font-size:13px;padding:9px 11px;border:1px solid #d6ddd9;border-radius:9px;box-sizing:border-box}
+.ob-payback{margin:0 0 12px;padding:10px 12px;border:1px solid #f2d9a8;border-radius:12px;background:#fff8ec}
+.ob-payback-h{font-size:13px;font-weight:800;color:#8a5a12;margin-bottom:4px}
+.ob-payback-row{font-size:12.5px;color:#3a443f;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.ob-payback-chip{background:#fff;border:1px solid #ecd8b3;border-radius:999px;padding:3px 9px;font-weight:600;cursor:pointer}
+.ob-opscore{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;font-weight:700;color:#2f4039}
+.ob-opscore-bar{width:120px;height:8px;border-radius:5px;background:#e6ebe8;overflow:hidden;display:inline-block}
+.ob-opscore-fill{height:100%;background:linear-gradient(90deg,#34d399,#0f9d6b)}

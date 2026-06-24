@@ -1547,7 +1547,7 @@
   function openProofSheet(inst){
     var c=clientOf(inst.lineId); if(!c){ completeInstance(inst); return; }
     pendingProof={ id:"cl"+uid(), ts:null, by:cockpitWho(), team:cockpitTeam(), service:serviceOfTask(c, inst.lineId),
-      title:inst.title, building:inst.building, taskInstanceId:instKey(inst), zoneId:"", geo:null, photoIds:[], note:"", _inst:inst };
+      title:inst.title, building:inst.building, taskInstanceId:instKey(inst), zoneId:"", geo:null, photoIds:[], note:"", materials:"", captured:{}, _inst:inst };
     obSheet(proofSheetHTML(c));
     setTimeout(function(){ hydratePhotos(document.getElementById("sheet")); }, 20);
   }
@@ -1566,6 +1566,7 @@
       +'<label style="margin-top:10px">Bilde (valgfritt)</label>'+photoStripHTML("proof", p.id, p.photoIds)
       +'<label>Notat (valgfritt)</label><textarea id="pf_note" data-obf="proofNote" rows="2" placeholder="kort beskrivelse">'+esc(p.note)+'</textarea>'
       + zonePick
+      + captureSectionHTML(c, p)
       +'<button class="save" data-ob="proofConfirm">✓ Bekreft utført</button>'
       +'<button class="cancel" data-ob="proofCancel">Avbryt</button>';
   }
@@ -1574,6 +1575,7 @@
     var by=document.getElementById("pf_by"); if(by) pendingProof.by=by.value.trim()||currentUser();
     var note=document.getElementById("pf_note"); if(note) pendingProof.note=note.value;
     var z=document.getElementById("pf_zone"); if(z) pendingProof.zoneId=z.value;
+    var mt=document.getElementById("pf_mat"); if(mt) pendingProof.materials=mt.value;
   }
   function reRenderProofSheet(){
     if(!pendingProof) return;
@@ -1596,13 +1598,64 @@
   function proofClearGeo(){ if(pendingProof){ pendingProof.geo=null; reRenderProofSheet(); } }
   function proofCleanup(){ if(pendingProof){ (pendingProof.photoIds||[]).forEach(function(pid){ photoDel(pid); }); pendingProof=null; } }
   function proofCancel(){ proofCleanup(); obCloseSheet(); }
+  /* ---- doc-63: capture-as-byproduct — one-tap, contextual, skippable chips in the proof sheet ---- */
+  // doc-63 operability score: weighted % "dokumentert / driftsklar" (assets / zones / op-maps / proof history).
+  function operabilityPct(c){
+    if(!c) return 0;
+    var zns=c.zones||[];
+    var sAsset=Math.min(1, (c.assets||[]).length/8);
+    var sZone=Math.min(1, zns.length/6);
+    var sOp=(zns.some(function(z){return z.service==="snow";})?0.5:0)+(zns.some(function(z){return z.service==="grass"||z.service==="greenery";})?0.5:0);
+    var sProof=Math.min(1, (c.completionLog||[]).length/6);
+    return Math.max(0, Math.min(100, Math.round(100*(0.40*sAsset + 0.25*sZone + 0.15*sOp + 0.20*sProof))));
+  }
+  function captureContext(p){
+    var t=((p&&p.title)||"").toLowerCase();
+    if(/utelys|\blys\b|belysning|armatur|lyspære|\bpære\b|lampe|lyktestolpe/.test(t)) return "lighting";
+    return "generic";
+  }
+  // contextual capture targets, pre-filled from the task — no required typing
+  function captureSuggestions(p){
+    if(captureContext(p)==="lighting") return { mat:"f.eks. E27 9 W LED × 3",
+      assets:[ {key:"lager",  type:"materiallager", label:"Lager — pærer/materiell",       area:"kjeller"},
+               {key:"bryter", type:"lysstyring",    label:"Manuell bryter / tidsur utelys", area:"teknisk"} ] };
+    var area=areaOfLineId(p._inst.lineId)||"teknisk";
+    return { mat:"materiell brukt (valgfritt)", assets:[ {key:"gen", type:"annet", label:"Anlegg her ("+areaLabel(area)+")", area:area} ] };
+  }
+  function captureSectionHTML(c, p){
+    var sug=captureSuggestions(p);
+    var chips=sug.assets.map(function(a){ var done=p.captured&&p.captured[a.key];
+      return '<button class="ob-capchip'+(done?' done':'')+'" data-ob="proofCaptureAsset" data-arg="'+a.key+'"'+(done?' disabled':'')+'>'+(done?'✓ ':'📍 ')+esc(a.label)+'</button>'; }).join("");
+    return '<div class="ob-capture"><div class="ob-capture-h">📋 Fang opp mens du er her <span class="muted" style="font-weight:600">· valgfritt · ett trykk</span></div>'
+      +'<div class="ob-capchips">'+chips+'</div>'
+      +'<input id="pf_mat" class="ob-capmat" data-obf="proofMaterials" value="'+esc(p.materials||"")+'" placeholder="🔧 '+esc(sug.mat)+'">'
+      +'</div>';
+  }
+  // ONE tap → live asset in Bygg-info (geo = proof position, else building centre; refine later). Never blocks completion.
+  function proofCaptureAsset(key){
+    var p=pendingProof; if(!p) return; syncProofFromDOM();
+    var c=clientOf(p._inst.lineId); if(!c) return;
+    var def=captureSuggestions(p).assets.filter(function(a){return a.key===key;})[0]; if(!def) return;
+    p.captured=p.captured||{}; if(p.captured[key]){ toast("Allerede lagret"); return; }
+    var before=operabilityPct(c);
+    var geo=p.geo?{lat:p.geo.lat, lon:p.geo.lon}:(c.center?{lat:c.center.lat, lon:c.center.lon}:null);
+    var asset={ id:"as"+uid(), buildingId:(c.buildingId||c.id), type:def.type, label:def.label, area:def.area, geo:geo,
+      photoIds:[], notes:"Fanget ved «"+p.title+"» "+nowStr()+(p.materials?(" · "+p.materials):""),
+      access:"", complianceLink:null, materials:p.materials||"", capturedAt:new Date().toISOString() };
+    c.assets=c.assets||[]; c.assets.push(asset);
+    if(!save()){ c.assets.pop(); toast("⚠️ Ikke lagret — lagringen er full"); return; }
+    p.captured[key]=asset.id;
+    reRenderProofSheet();
+    var d=operabilityPct(c)-before;
+    toast("📍 Lagret i Bygg-info — "+def.label+(d>0?(" · +"+d+" % dokumentert"):""));   // doc-63 Field nudge (progress, not points)
+  }
   function proofConfirm(){
     var p=pendingProof; if(!p) return;
     syncProofFromDOM();
     var inst=p._inst, c=clientOf(inst.lineId); if(!c){ proofCleanup(); obCloseSheet(); return; }
     p.ts=new Date().toISOString();
     var entry={ id:p.id, ts:p.ts, by:p.by||cockpitWho(), team:p.team||cockpitTeam()||null, service:p.service, title:p.title, building:p.building,
-      taskInstanceId:p.taskInstanceId, zoneId:p.zoneId||null, geo:p.geo||null, photoIds:p.photoIds||[], note:p.note||"" };
+      taskInstanceId:p.taskInstanceId, zoneId:p.zoneId||null, geo:p.geo||null, photoIds:p.photoIds||[], note:p.note||"", materials:p.materials||"" };
     // C1: mutate, then persist ONCE and only confirm if the write succeeded (no false "dokumentert" on quota failure)
     var st=S(), prevUser=st.currentUser, itemsLen=(st.items||[]).length, instK=instKey(inst),
         hadInst=!!(st.completedInstances&&st.completedInstances[instK]);
@@ -1957,10 +2010,12 @@
     "heismaskinrom":   {label:"Heismaskinrom",          emoji:"🛗", area:"heis",     complianceHint:"Heiskontroll (2-årlig)"},
     "nøkkelboks":      {label:"Nøkkelboks",             emoji:"🔑", area:"oppgang"},
     "kum/pumpe":       {label:"Kum / pumpe",            emoji:"🕳️", area:"ute"},
+    "lysstyring":      {label:"Utelys — bryter / tidsur", emoji:"💡", area:"teknisk"},
+    "materiallager":   {label:"Materiallager (pærer/forbruk)", emoji:"📦", area:"kjeller"},
     "annet":           {label:"Annet anlegg",           emoji:"🔧", area:"teknisk"}
   };
   // ordered for the type picker — emergency-critical first
-  var ASSET_TYPE_ORDER = ["hovedstoppekran","el-skap","sikringsskap","brannsentral","avstengning-gass","sprinkler-sentral","ventilasjon","varmekilde","heismaskinrom","nøkkelboks","kum/pumpe","annet"];
+  var ASSET_TYPE_ORDER = ["hovedstoppekran","el-skap","sikringsskap","brannsentral","avstengning-gass","sprinkler-sentral","ventilasjon","varmekilde","heismaskinrom","nøkkelboks","kum/pumpe","lysstyring","materiallager","annet"];
   function assetTypeDef(t){ return ASSET_TYPE[t]||ASSET_TYPE["annet"]; }
   function assetTypeLabel(t){ return assetTypeDef(t).label; }
   function assetTypeEmoji(t){ return assetTypeDef(t).emoji; }
@@ -1999,7 +2054,12 @@
       A({type:"ventilasjon", label:"Ventilasjonsaggregat", area:"tak",
          access:"Takhus mot nord — luke fra loft oppgang D", notes:"Balansert vent. m/varmegjenvinning. Filterbytte 2×/år (vår + høst).", complianceLink:null}),
       A({type:"nøkkelboks", label:"Nøkkelboks (felles)", area:"oppgang",
-         access:"Hovedinngang A — kode hos forvalter USBL", notes:"Master + sylindernøkler til fellesdører, teknisk rom og tak.", complianceLink:null})
+         access:"Hovedinngang A — kode hos forvalter USBL", notes:"Master + sylindernøkler til fellesdører, teknisk rom og tak.", complianceLink:null}),
+      // doc-63: knowledge captured at a PRIOR utelys job → handed back the next time "utelys ute" comes in
+      A({type:"materiallager", label:"Lager — pærer / forbruk", area:"kjeller", geo:{lat:cy-0.00018, lon:cx-0.00006},
+         access:"Kjeller oppgang B, rom B3 — nøkkel B3", notes:"Reservepærer utelys + sikringer. Fanget ved utelysbytte.", complianceLink:null, materials:"E27 9 W LED × 3", capturedAt:"2026-06-21T10:00:00.000Z"}),
+      A({type:"lysstyring", label:"Manuell bryter / tidsur utelys", area:"teknisk", geo:{lat:cy+0.00010, lon:cx+0.00010},
+         access:"Teknisk rom K1 — tavle ved siden av hovedtavle", notes:"Astrour utelys + manuell overstyring. Fanget ved utelysbytte.", complianceLink:null, materials:"", capturedAt:"2026-06-21T10:00:00.000Z"})
     ];
   }
 
@@ -2226,6 +2286,8 @@
     holtetRequests._n=0;
     return [
       R({title:"Løs takstein over inngang C", desc:"To takstein har løsnet etter vinden — fare for fall ned på inngangspartiet. Bør sikres straks.", category:"drift", area:"tak", urgency:"høy", estCost:4500, type:"gjør-nå"}),
+      // doc-63 demo: resident reports ONE outdoor light out → the "inspiser alt utelys?" good-practice prompt + capture-as-byproduct
+      R({title:"Utelys ved inngang C / gangvei er mørkt", desc:"Beboer melder at utelyset utenfor inngang C og langs gangveien har sluttet å virke. Mørkt og utrygt om kvelden.", category:"drift", area:"ute", urgency:"med", estCost:null, type:"be-om-pris"}),
       R({title:"Vannlekkasje under kjøkkenbenk fellesvaskeri", desc:"Dryppende kobling under benken i fellesvaskeriet, oppgang B. Trenger rørlegger.", category:"service", area:"kjeller", urgency:"med", estCost:null, type:"be-om-pris"}),
       // Phase 12 radar history — the same hekklipp bought ad-hoc twice (off-plan) → the headline "foreslå fast plan"
       R({title:"Hekklipp + beskjæring høy hekk", desc:"Tujahekk sør + hekk mot vei, klipp og bortkjøring.", category:"hage", area:"ute", urgency:"low", estCost:4500, type:"gjør-nå", status:"godkjent", done:true, invoiced:true, approvedBy:"Egil Svoren", ts:"2025-09-18T08:00:00.000Z", completedTs:"2025-09-18T12:00:00.000Z"}),
@@ -2716,6 +2778,27 @@
   }
   function whileHereCards(ctx){ return liveClients().map(function(c){ return whileHereHTML(c, ctx||{}); }).filter(Boolean).join(""); }
 
+  /* ---- doc-63 C: next-time payback — captured assets/materials handed back for a matching request ---- */
+  function reqLightingCtx(req){ return /utelys|\blys\b|belysning|armatur|lyspære|\bpære\b|lampe|lykt/.test((((req&&req.title)||"")+" "+((req&&req.desc)||"")).toLowerCase()); }
+  function paybackAssets(c, req){
+    var assets=c.assets||[];
+    if(reqLightingCtx(req)) return assets.filter(function(a){ return a.type==="lysstyring"||a.type==="materiallager"; });
+    return assets.filter(function(a){ return a.capturedAt && a.area===req.area; });   // generic: captured assets in the same area
+  }
+  function paybackCardHTML(c){
+    var reqs=(c.requests||[]).filter(function(r){ return !r.done && r.status!=="avslått"; });
+    for(var i=0;i<reqs.length;i++){
+      var r=reqs[i], hits=paybackAssets(c, r); if(!hits.length) continue;
+      var mat=hits.map(function(a){return a.materials;}).filter(Boolean)[0]||"";
+      var when=hits.map(function(a){return a.capturedAt;}).filter(Boolean).sort().slice(-1)[0];
+      var chips=hits.map(function(a){ return '<button class="ob-payback-chip" data-ob="assetCard" data-arg="'+c.id+'|'+a.id+'">'+assetTypeEmoji(a.type)+' '+esc(a.label)+(a.photoIds&&a.photoIds.length?' 📷':'')+'</button>'; }).join("");
+      return '<div class="ob-payback"><div class="ob-payback-h">💡 Du har gjort dette her før — '+esc(r.title)+'</div>'
+        +'<div class="ob-payback-row">Sist: '+chips+(mat?'<span class="ob-payback-chip">🔧 '+esc(mat)+'</span>':'')+(when?'<span class="muted">· byttet '+esc(tsLabel(when))+'</span>':'')+'</div></div>';
+    }
+    return "";
+  }
+  function paybackCardsHTML(){ return liveClients().map(paybackCardHTML).filter(Boolean).join(""); }
+
   function renderFieldExtras(cols){
     if(!liveClients().length) return;
     var ctx=cockpit();
@@ -2733,6 +2816,7 @@
     var zc=liveClients().filter(function(c){return c.zones&&c.zones.length;})[0];
     var host=document.createElement("div"); host.className="lane"; host.style.gridColumn="1 / -1";
     host.innerHTML = cockpitBarHTML()
+      + paybackCardsHTML()   // doc-63 C: captured knowledge handed back at the TOP — "never hunt the basement again"
       + (zc?opMapsRow(zc,"fld"):"")
       + weekStepperHTML(today)
       + planSection("I dag · "+dateLabel(today), todayL, true)
@@ -3850,6 +3934,7 @@
       case "proofGeo": proofAddGeo(); break;
       case "proofGeoClear": proofClearGeo(); break;
       case "proofConfirm": proofConfirm(); break;
+      case "proofCaptureAsset": proofCaptureAsset(arg); break;
       case "proofCancel": proofCancel(); break;
       case "proofGeoView": proofGeoView(arg); break;
       case "eventDone": { var ep=(arg||"").split("|"); openProofSheet({lineId:ep[0], date:iso(refDate()), title:decodeURIComponent(ep[1]||""), freq:"beredskap", building:decodeURIComponent(ep[2]||"")}); break; }
@@ -3984,6 +4069,7 @@
     if(name==="proofBy"){ if(pendingProof){ pendingProof.by=val.trim()||currentUser(); setCurrentUser(pendingProof.by); } return; }
     if(name==="proofNote"){ if(pendingProof) pendingProof.note=val; return; }
     if(name==="proofZone"){ if(pendingProof) pendingProof.zoneId=val; return; }
+    if(name==="proofMaterials"){ if(pendingProof) pendingProof.materials=val; return; }
     if(name==="assetFind"){ ui.assetQuery=ui.assetQuery||{}; ui.assetQuery[id]=val; var afc=cust(id); var ael=document.getElementById("ob-assetlist-"+id); if(afc&&ael) ael.innerHTML=assetListInnerHTML(afc); return; }
     if(name==="assetType"){ if(pendingAsset){ var prevType=pendingAsset.type; syncAssetFromDOM(); var d=assetTypeDef(pendingAsset.type);
         if(pendingAsset.area===assetTypeDef(prevType).area) pendingAsset.area=d.area;   // move area to new type's default only if untouched

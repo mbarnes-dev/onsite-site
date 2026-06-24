@@ -187,7 +187,7 @@
   "use strict";
   var LS_KEY = "onsite_day_v1";
 
-  var SCHEMA_VERSION = 9;
+  var SCHEMA_VERSION = 10;
   function demo(){
     return {
       schemaVersion: SCHEMA_VERSION,
@@ -250,6 +250,7 @@
       if(c.groundsM2===undefined) c.groundsM2 = null;     // v9: total tomt m² (Σ teig)
       if(c.buildings===undefined) c.buildings = 1;        // v9: rep-confirmed building count (not fabricated)
       if(c.enrichment===undefined) c.enrichment = false;  // v9: whole-BRL aggregation ran
+      if(!Array.isArray(c.inspections)) c.inspections = [];  // v10: doc-63 reactive→recurring inspection cadences (folded into scheduleLines → Årsplan)
       c.zones.forEach(function(z){ if(!Array.isArray(z.completionLog)) z.completionLog = []; if(!Array.isArray(z.photoIds)) z.photoIds = []; });
       if(c.offer && typeof c.offer==="object"){
         if(Array.isArray(c.offer.modules)) c.offer.modules.forEach(function(m){ if(Array.isArray(m.lines)) m.lines.forEach(fixLine); });
@@ -541,7 +542,7 @@
 <script src="vendor/leaflet/leaflet.js"></script>
 <!-- @onsite/core (doc-55 step 1): the pure engines as a committed static ESM bundle. Module defers
      (runs before DOMContentLoaded); onboarding.js delegates to window.OnSiteCore lazily (post-load). -->
-<script type="module">import * as Core from "./core.bundle.js?v=17a"; window.OnSiteCore = Core;</script>
-<script src="onboarding.js?v=17a"></script>
+<script type="module">import * as Core from "./core.bundle.js?v=17b"; window.OnSiteCore = Core;</script>
+<script src="onboarding.js?v=17b"></script>
 </body>
 </html>
