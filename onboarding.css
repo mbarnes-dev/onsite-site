@@ -727,3 +727,12 @@
 .ob-opscore{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;font-weight:700;color:#2f4039}
 .ob-opscore-bar{width:120px;height:8px;border-radius:5px;background:#e6ebe8;overflow:hidden;display:inline-block}
 .ob-opscore-fill{height:100%;background:linear-gradient(90deg,#34d399,#0f9d6b)}
+.ob-inspprompt{border:1px solid #cfe0d8;background:#f3faf6}
+.ob-inspacts{display:flex;gap:8px;flex-wrap:wrap}
+.ob-inspacts .ob-mini{flex:1;min-height:42px;font-size:13px}
+.ob-inspgrid{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 4px}
+.ob-inspunit{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-width:76px;min-height:54px;padding:8px 6px;border-radius:10px;border:1px solid #cdd8d2;background:#fff;cursor:pointer;font-size:16px;font-weight:700}
+.ob-inspunit span{font-size:10.5px;font-weight:600;color:#5a655f}
+.ob-inspunit.ok{color:#15803d}
+.ob-inspunit.fault{background:#fdecea;border-color:#f3c9c5;color:#9c241c}
+.ob-inspunit.fault span{color:#9c241c}

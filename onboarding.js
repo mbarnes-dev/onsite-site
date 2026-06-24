@@ -1492,6 +1492,9 @@
       var due=COMPLIANCE_DUE[r.label]||{month:6,day:1,type:"annual"};
       out.push({ lineId:client.id+":comp"+i, building:bld, title:r.label, category:"Eiendomsdrift", zone:6, statutory:true, schedule:{type:due.type, years:due.years, dueMonth:due.month, dueDay:due.day} });
     });
+    (client.inspections||[]).forEach(function(ins){   // doc-63 B: reactive→recurring inspection cadences become planned lines (Field Kommende + Office Årsplan)
+      out.push({ lineId:client.id+":insp:"+ins.id, building:bld, title:ins.title, category:"Eiendomsdrift", zone:ins.zone||6, schedule:ins.schedule, inspection:true });
+    });
     return out;
   }
   function liveClients(){ return customers().filter(function(c){return c.stage==="Live";}); }
@@ -1525,6 +1528,7 @@
   function serviceOfTask(c, lineId){
     var key=(lineId||"").split(":").slice(1).join(":");
     if(/^comp/.test(key)) return "compliance";
+    if(/^insp:/.test(key)){ var ins=((c&&c.inspections)||[]).filter(function(x){return x.id===key.slice(5);})[0]; return ins?ins.service:"other"; }   // doc-63 inspection cadence line
     if(key==="snow"||key==="gritting") return "snow";   // explicit winter items
     var cs=catService(key); if(cs) return cs;           // SERVICE_CATALOGUE (was byCat on the checklist item's category)
     // marker/legacy fallback by id (markers aren't in the catalogue)
@@ -2799,6 +2803,69 @@
   }
   function paybackCardsHTML(){ return liveClients().map(paybackCardHTML).filter(Boolean).join(""); }
 
+  /* ---- doc-63 B: good-practice "inspiser alt?" while-here prompt → quick inspection → recurring cadence ---- */
+  var INSPECT_DOMAINS={ utelys:{label:"utelys", service:"technical", area:"ute", unitLabel:"armatur", defaultCount:8, cadence:{type:"nPerYear", count:2}, cadenceText:"2×/år", overdueMonths:7} };
+  function reqInspectDomain(req){ if(reqLightingCtx(req)) return "utelys"; return null; }   // // TODO extend: brann, takrenner, lekeplass…
+  function lastInspection(c, dom){ var es=(c.completionLog||[]).filter(function(e){return e.inspectDomain===dom;}); es.sort(function(a,b){return a.ts<b.ts?1:-1;}); return es[0]||null; }
+  function monthsSinceIso(ts){ try{ return Math.max(0, Math.round((refDate()-new Date(ts))/(30.4*86400000))); }catch(e){ return 0; } }
+  function inspectPromptHTML(c, dom, req){
+    var d=INSPECT_DOMAINS[dom], li=lastInspection(c, dom);
+    var when = !li ? "Ingen registrering for dette bygget ennå." :
+      ("Sist gjort "+tsLabel(li.ts)+" · for "+monthsSinceIso(li.ts)+" mnd siden"+(monthsSinceIso(li.ts)>d.overdueMonths?" — på overtid":""));
+    return '<div class="card ob-inspprompt"><div class="ct">💡 God praksis — inspiser alt '+esc(d.label)+' mens du er her?</div>'
+      +'<p class="muted" style="font-size:12px;margin:-2px 0 9px">Beboer meldte «'+esc(req.title)+'». '+esc(when)+' Sjekk alle på én runde → det reaktive blir et fast intervall.</p>'
+      +'<div class="ob-inspacts"><button class="ob-mini" data-ob="inspDismiss" data-arg="'+c.id+'|'+dom+'">Nei — kun den ene</button>'
+      +'<button class="ob-mini ok on" data-ob="inspStart" data-arg="'+c.id+'|'+dom+'">Ja — sjekk alle</button></div></div>';
+  }
+  function inspectPromptCards(){
+    return liveClients().map(function(c){
+      var reqs=(c.requests||[]).filter(function(r){ return !r.done && r.status!=="avslått"; });
+      for(var i=0;i<reqs.length;i++){ var dom=reqInspectDomain(reqs[i]); if(!dom) continue;
+        if((c.inspections||[]).some(function(x){return x.domain===dom;})) continue;        // cadence already set → stop nagging
+        if((ui.inspectDismissed||{})[c.id+"|"+dom]) continue;                               // user said "kun den ene"
+        return inspectPromptHTML(c, dom, reqs[i]);
+      }
+      return "";
+    }).filter(Boolean).join("");
+  }
+  var pendingInspection=null;
+  function inspStart(arg){ var p=(arg||"").split("|"); openInspection(p[0], p[1]); }
+  function openInspection(custId, dom){ var c=cust(custId), d=INSPECT_DOMAINS[dom]; if(!c||!d) return;
+    pendingInspection={ custId:custId, dom:dom, count:d.defaultCount, faults:{} }; obSheet(inspectionSheetHTML()); }
+  function inspectionSheetHTML(){
+    var pi=pendingInspection; if(!pi) return ""; var d=INSPECT_DOMAINS[pi.dom];
+    var rows=""; for(var i=1;i<=pi.count;i++){ var f=pi.faults[i];
+      rows+='<button class="ob-inspunit'+(f?' fault':' ok')+'" data-ob="inspToggle" data-arg="'+i+'">'+(f?'⚠️':'✓')+'<span>'+esc(cap(d.unitLabel))+' '+i+'</span></button>'; }
+    var nf=Object.keys(pi.faults).length;
+    return '<h3>🔦 Inspeksjon — alt '+esc(d.label)+'</h3>'
+      +'<div class="muted" style="font-size:12.5px;margin:-4px 0 10px">Trykk en enhet for å markere <b>feil</b>. Resten regnes som OK. ('+pi.count+' '+esc(d.unitLabel)+'er · '+nf+' feil)</div>'
+      +'<label>Antall '+esc(d.unitLabel)+'er</label><input id="insp_count" type="number" min="1" max="40" value="'+pi.count+'" data-obf="inspCount">'
+      +'<div class="ob-inspgrid">'+rows+'</div>'
+      +'<button class="save" data-ob="inspSave">Lagre inspeksjon + sett fast intervall ('+esc(d.cadenceText)+')</button>'
+      +'<button class="cancel" data-ob="inspCancel">Avbryt</button>';
+  }
+  function inspToggle(i){ if(!pendingInspection) return; i=parseInt(i,10); if(pendingInspection.faults[i]) delete pendingInspection.faults[i]; else pendingInspection.faults[i]=1; obSheet(inspectionSheetHTML()); }
+  function inspSetCount(v){ if(!pendingInspection) return; var n=parseInt(v,10); if(!isNaN(n)&&n>0&&n<=40){ pendingInspection.count=n; Object.keys(pendingInspection.faults).forEach(function(k){ if(+k>n) delete pendingInspection.faults[k]; }); } }
+  function inspCancel(){ pendingInspection=null; obCloseSheet(); }
+  function inspDismiss(arg){ ui.inspectDismissed=ui.inspectDismissed||{}; ui.inspectDismissed[arg]=1; render(); toast("Ok — kun den meldte. (Forslaget kan komme igjen ved neste melding.)"); }
+  // Ja → log the inspection (one completion per fault + one summary) + establish the recurring cadence (reactive → planned)
+  function inspSave(){
+    var pi=pendingInspection; if(!pi) return; var c=cust(pi.custId), d=INSPECT_DOMAINS[pi.dom]; if(!c||!d){ inspCancel(); return; }
+    var faults=Object.keys(pi.faults).map(Number).sort(function(a,b){return a-b;});
+    var ts=new Date().toISOString(), by=cockpitWho(), team=cockpitTeam()||null, entries=[];
+    faults.forEach(function(n){ entries.push({ id:"cl"+uid(), ts:ts, by:by, team:team, service:d.service, inspectDomain:pi.dom,
+      title:cap(d.label)+" "+d.unitLabel+" "+n+" — feil utbedret", building:c.name, taskInstanceId:null, zoneId:null, geo:null, photoIds:[], note:"Funnet ved full inspeksjon", materials:"" }); });
+    entries.push({ id:"cl"+uid(), ts:ts, by:by, team:team, service:d.service, inspectDomain:pi.dom,
+      title:"Inspeksjon "+d.label+" — "+pi.count+" sjekket, "+faults.length+" feil", building:c.name, taskInstanceId:null, zoneId:null, geo:null, photoIds:[],
+      note:faults.length?("Feil: "+d.unitLabel+" "+faults.join(", ")):"Alle OK", materials:"" });
+    var insEntry={ id:pi.dom+uid(), domain:pi.dom, title:"Full inspeksjon "+d.label, service:d.service, area:d.area, zone:6, schedule:JSON.parse(JSON.stringify(d.cadence)), establishedTs:ts };
+    c.completionLog=c.completionLog||[]; var clLen=c.completionLog.length; c.inspections=c.inspections||[];
+    entries.forEach(function(e){ c.completionLog.push(e); }); c.inspections.push(insEntry);
+    if(!save()){ c.completionLog.length=clLen; c.inspections.pop(); toast("⚠️ Ikke lagret — lagringen er full"); return; }
+    pendingInspection=null; obCloseSheet(); render();
+    toast("🔦 Inspeksjon lagret ("+faults.length+" feil) · fast intervall satt — "+d.cadenceText+" i Årsplan");
+  }
+
   function renderFieldExtras(cols){
     if(!liveClients().length) return;
     var ctx=cockpit();
@@ -2822,6 +2889,7 @@
       + planSection("I dag · "+dateLabel(today), todayL, true)
       + planSection("Denne uka", weekL, true)
       + whileHereCards({})   // doc-01 ordering: dagens oppgaver → 💡 Mens du er her → kommende
+      + inspectPromptCards()   // doc-63 B: good-practice "inspiser alt?" — woven beside while-here, not a new screen
       + (komL.length? planCondensed("Kommende (4 uker)", komL) : "")
       + beredskapHTML(month)
       + intakeInboxHTML()  // Phase 13: omnichannel intake — the front door
@@ -3935,6 +4003,11 @@
       case "proofGeoClear": proofClearGeo(); break;
       case "proofConfirm": proofConfirm(); break;
       case "proofCaptureAsset": proofCaptureAsset(arg); break;
+      case "inspStart": inspStart(arg); break;
+      case "inspToggle": inspToggle(arg); break;
+      case "inspSave": inspSave(); break;
+      case "inspCancel": inspCancel(); break;
+      case "inspDismiss": inspDismiss(arg); break;
       case "proofCancel": proofCancel(); break;
       case "proofGeoView": proofGeoView(arg); break;
       case "eventDone": { var ep=(arg||"").split("|"); openProofSheet({lineId:ep[0], date:iso(refDate()), title:decodeURIComponent(ep[1]||""), freq:"beredskap", building:decodeURIComponent(ep[2]||"")}); break; }
@@ -4070,6 +4143,7 @@
     if(name==="proofNote"){ if(pendingProof) pendingProof.note=val; return; }
     if(name==="proofZone"){ if(pendingProof) pendingProof.zoneId=val; return; }
     if(name==="proofMaterials"){ if(pendingProof) pendingProof.materials=val; return; }
+    if(name==="inspCount"){ inspSetCount(val); return; }
     if(name==="assetFind"){ ui.assetQuery=ui.assetQuery||{}; ui.assetQuery[id]=val; var afc=cust(id); var ael=document.getElementById("ob-assetlist-"+id); if(afc&&ael) ael.innerHTML=assetListInnerHTML(afc); return; }
     if(name==="assetType"){ if(pendingAsset){ var prevType=pendingAsset.type; syncAssetFromDOM(); var d=assetTypeDef(pendingAsset.type);
         if(pendingAsset.area===assetTypeDef(prevType).area) pendingAsset.area=d.area;   // move area to new type's default only if untouched
