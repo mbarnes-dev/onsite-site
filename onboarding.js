@@ -3660,14 +3660,28 @@
   }
 
   /* ---- Board view augmentation (reuse the Board role for review) ---- */
+  /* ---- doc-63 D: operability score surface (Office + Board); the Field nudges via the capture toast ---- */
+  function opScoreRowHTML(c){
+    var p=operabilityPct(c);
+    return '<div class="ob-opscore-row"><span class="nm">'+esc(c.name)+'</span>'
+      +'<span class="ob-opscore"><span class="ob-opscore-bar"><span class="ob-opscore-fill" style="width:'+p+'%"></span></span><b>'+p+' %</b> dokumentert</span></div>';
+  }
+  function opScoreCardHTML(){
+    var live=liveClients(); if(!live.length) return "";
+    return '<div class="card ob-opscorecard"><div class="ct">📊 Driftsklar — bygningskunnskap dokumentert</div>'
+      +'<p class="muted" style="font-size:12px;margin:-2px 0 9px">Hvor mye av byggets driftskunnskap er fanget — anlegg, soner, operasjonskart, utført-historikk. Høyere = mindre sårbart når en vaktmester slutter (turnover-sikring).</p>'
+      +live.map(opScoreRowHTML).join("")+'</div>';
+  }
+
   function renderBoardExtras(cols){
     var awaiting=customers().filter(function(c){ return c.offer && (c.stage==="Offer sent"||c.stage==="Changes requested"); });
     var snowreps=snowReportsListHTML();
     var proof=boardProofHTML();
     var approvals=pendingApprovalsHTML();  // Phase 11: ad-hoc requests to godkjenne
-    if(!awaiting.length && !proof && !snowreps && !approvals) return;
+    var opscore=opScoreCardHTML();          // doc-63 D: board-facing operability score (turnover-proofing, doc 59 #4)
+    if(!awaiting.length && !proof && !snowreps && !approvals && !opscore) return;
     var host=document.createElement("div"); host.className="lane"; host.style.gridColumn="1 / -1";
-    var html=approvals;
+    var html=opscore+approvals;
     if(awaiting.length){ var c=awaiting[0];
       html+='<div class="ob-board-banner"><h3>📋 New service offer to review — '+esc(c.name)+'</h3>'
         +'<p>OnSite granted you access to your building. Review the offer line by line, or just reply by email.</p>'
@@ -3695,6 +3709,7 @@
     var ars=liveClients().map(function(c){return arsplanHTML(c);}).join("");
     host.innerHTML='<div class="card"><div class="ct">Sales pipeline — new customers</div>'+rows
       +'<button class="ob-newbtn" data-ob="new">＋ Set up a new client (sales → onboarding)</button></div>'
+      +opScoreCardHTML()  // doc-63 D: per-building % dokumentert (turnover-proofing signal)
       +intakeInboxHTML()  // Phase 13: omnichannel intake — the front door
       +liveClients().map(function(c){return scopeCardHTML(c);}).join("")  // Phase 14: contract → scope
       +liveClients().map(function(c){return radarHTML(c);}).join("")  // Phase 12: recurring-revenue Muligheter radar
