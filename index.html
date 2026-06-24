@@ -188,6 +188,19 @@
   var LS_KEY = "onsite_day_v1";
 
   var SCHEMA_VERSION = 10;
+
+  /* ---------- cloud persistence v1 (doc 64): Supabase state-blob sync, localStorage-cached ----------
+     The anon key is PUBLIC-by-design (safe in the client). NEVER put the service_role key here.
+     To ENABLE cloud sync: fill CLOUD.url + CLOUD.anonKey below AND add `https://<ref>.supabase.co`
+     to connect-src in vercel.json (see CLOUD-SETUP.md). While both are empty the app is 100%
+     localStorage-only — boot + behaviour byte-for-byte unchanged, the SDK is never even loaded. */
+  var CLOUD = { url: "", anonKey: "", table: "workspaces" };   // ← Martin fills url + anonKey (anon public key)
+  function cloudEnabled(){ return !!(CLOUD.url && CLOUD.anonKey); }
+  var WS_KEY = "onsite_ws_id";
+  function workspaceId(){ try{ return localStorage.getItem(WS_KEY) || "mellomgarden-demo"; }catch(e){ return "mellomgarden-demo"; } }
+  function setWorkspaceId(id){ id=(id||"").trim().toLowerCase().replace(/[^a-z0-9-]/g,"-").replace(/-+/g,"-").replace(/^-|-$/g,"").slice(0,40) || "mellomgarden-demo"; try{ localStorage.setItem(WS_KEY, id); }catch(e){} return id; }
+  var cloud = { client:null, syncState:"idle", saveTimer:null };
+
   function demo(){
     return {
       schemaVersion: SCHEMA_VERSION,
@@ -265,13 +278,105 @@
   // C1: persistence must NOT silently swallow a failed write. Returns true on success,
   // false (+ honest error toast) on QuotaExceededError or any throw, so callers can avoid a false success.
   function save(){
-    try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); return true; }
+    try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }
     catch(e){
       try{ console.error("OnSite: save failed", e); }catch(_){}
       try{ toast("⚠️ Kunne ikke lagre — lagringen er full. Eksporter/rydd før du fortsetter."); }catch(_){}
-      return false;
+      return false;   // C1: the local write is the source of truth for the success/failure gate
     }
-    // PROD: move record persistence to a backend; localStorage is a single-device, ~5 MB demo store.
+    cloudSaveSoon();   // doc-64: schedule a debounced cloud upsert beside the local write (offline-safe, never throws)
+    return true;
+    // PROD (doc 58): structured per-tenant tables + auth; here the localStorage write is the offline cache,
+    // the Supabase blob the cross-device sync.
+  }
+
+  /* ---- cloud sync internals (all no-ops + early-return while cloudEnabled() is false) ---- */
+  function setSync(s){ cloud.syncState=s; updateSyncChip(); }
+  function cloudInit(cb){
+    if(!cloudEnabled()){ cb(false); return; }
+    if(cloud.client){ cb(true); return; }
+    function make(){ try{ cloud.client=window.supabase.createClient(CLOUD.url, CLOUD.anonKey, {auth:{persistSession:false}}); cb(true); }
+      catch(e){ try{ console.error("OnSite: Supabase init failed", e); }catch(_){} cb(false); } }
+    if(typeof window.supabase!=="undefined"){ make(); return; }
+    var sc=document.createElement("script"); sc.src="vendor/supabase-js.min.js";   // vendored, no CDN (script-src 'self')
+    sc.onload=make; sc.onerror=function(){ try{ console.error("OnSite: Supabase SDK failed to load"); }catch(_){} cb(false); };
+    document.head.appendChild(sc);
+  }
+  // boot: the cache is already rendered; async-pull the workspace and replace state only if the server rev is newer.
+  function cloudLoad(){
+    if(!cloudEnabled()) return;
+    setSync("syncing");
+    cloudInit(function(ok){ if(!ok||!cloud.client){ setSync("offline"); return; }
+      try{
+        cloud.client.from(CLOUD.table).select("state,rev").eq("id", workspaceId()).maybeSingle().then(function(res){
+          if(res && res.error){ setSync("offline"); return; }
+          var row=res && res.data;
+          if(!row || row.state==null){ setSync("synced"); return; }   // empty workspace — local seeds it on next save
+          var localRev=(state && state._rev)||0;
+          if((row.rev||0) > localRev){
+            var blob = (typeof row.state==="string") ? JSON.parse(row.state) : row.state;
+            var merged = migrate(blob); merged._rev = row.rev||0;       // same migrate() the local blob runs through
+            state = merged;
+            try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){}
+            setSync("synced"); render();
+            try{ toast("☁︎ Lastet siste versjon ("+workspaceId()+")"); }catch(_){}
+          } else { setSync("synced"); }
+        }, function(){ setSync("offline"); });
+      }catch(e){ setSync("offline"); }
+    });
+  }
+  // local save already happened; schedule a debounced cloud upsert. A cloud failure must NEVER break the local save.
+  function cloudSaveSoon(){
+    try{
+      if(!cloudEnabled()) return;
+      setSync("syncing");
+      if(cloud.saveTimer) clearTimeout(cloud.saveTimer);
+      cloud.saveTimer=setTimeout(cloudFlush, 1200);
+    }catch(e){}
+  }
+  function cloudFlush(){
+    if(!cloudEnabled()) return;
+    cloudInit(function(ok){ if(!ok||!cloud.client){ setSync("offline"); return; }
+      try{
+        var base=(state && state._rev)||0;
+        cloud.client.from(CLOUD.table).select("rev").eq("id", workspaceId()).maybeSingle().then(function(res){
+          if(res && res.error){ setSync("offline"); return; }
+          var serverRev=(res && res.data && res.data.rev)||0;
+          if(serverRev > base){   // another device advanced — reload, don't clobber (last-write-wins on rev)
+            setSync("conflict");
+            try{ toast("Oppdatert på en annen enhet — laster på nytt"); }catch(_){}
+            cloudLoad(); return;
+          }
+          var nextRev=base+1, blob=JSON.parse(JSON.stringify(state)); delete blob._rev;   // rev lives in its own column
+          cloud.client.from(CLOUD.table).upsert({ id:workspaceId(), state:blob, rev:nextRev, updated_at:new Date().toISOString() }).then(function(up){
+            if(up && up.error){ setSync("offline"); return; }
+            state._rev=nextRev;
+            try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){}
+            setSync("synced");
+          }, function(){ setSync("offline"); });
+        }, function(){ setSync("offline"); });
+      }catch(e){ setSync("offline"); }
+    });
+  }
+  // the ☁︎ Arbeidsområde chip (topbar) — present only when cloud is enabled; click = see / set / share the id
+  function updateSyncChip(){
+    var inner=document.querySelector(".topbar .inner"); if(!inner) return;
+    var chip=document.getElementById("cloudchip");
+    if(!cloudEnabled()){ if(chip && chip.parentNode) chip.parentNode.removeChild(chip); return; }
+    if(!chip){ chip=document.createElement("button"); chip.id="cloudchip"; chip.className="tbtn subtle";
+      chip.style.cssText="display:flex;align-items:center;gap:6px"; chip.addEventListener("click", cloudMenu);
+      var sp=inner.querySelector(".spacer"); if(sp && sp.nextSibling){ inner.insertBefore(chip, sp.nextSibling); } else { inner.appendChild(chip); } }
+    var m={ idle:["☁︎",""], syncing:["☁︎","synker…"], synced:["☁︎","✓ synket"], offline:["⚠︎","ikke synket"], conflict:["⚠︎","konflikt"] }[cloud.syncState]||["☁︎",""];
+    chip.innerHTML=m[0]+' <b>'+esc(workspaceId())+'</b>'+(m[1]?' <span class="muted" style="font-weight:600">'+m[1]+'</span>':'');
+    chip.title="Arbeidsområde «"+workspaceId()+"» — klikk for å bytte / dele på tvers av enheter";
+  }
+  function cloudMenu(){
+    var cur=workspaceId();
+    var raw=window.prompt("☁︎ Arbeidsområde-kode\n\nDel koden for å åpne SAMME bygg/tilbud på en annen enhet:", cur);
+    if(raw===null) return;
+    var n=setWorkspaceId(raw);
+    if(n!==cur){ if(state) state._rev=0; try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){} setSync("syncing"); cloudLoad(); try{ toast("☁︎ Byttet til arbeidsområde: "+n); }catch(_){} }
+    else { updateSyncChip(); }
   }
   function bldName(id){ var b=state.buildings.find(function(x){return x.id===id;}); return b?b.name:""; }
   function byKind(k){ return state.items.filter(function(i){return i.kind===k;}); }
@@ -377,8 +482,8 @@
     var d=e.target.closest("[data-do]"); if(!d) return;
     var act=d.getAttribute("data-do");
     if(act==="close"){ hideScrim(); }
-    else if(act==="seed"){ state=demo(); save(); hideScrim(); render(); toast("Loaded the storyboard demo day"); }
-    else if(act==="clear"){ state={nextId:100, buildings:state.buildings, items:[], customers:state.customers||[], obSeeded:state.obSeeded}; save(); hideScrim(); render(); toast("Cleared — enter your real day with “+ Add”"); }
+    else if(act==="seed"){ var _r=(state&&state._rev)||0; state=demo(); state._rev=_r; save(); hideScrim(); render(); toast("Loaded the storyboard demo day"); }   // doc-64: keep rev continuity so a reseed overwrites the cloud (not mistaken for stale)
+    else if(act==="clear"){ var _rc=(state&&state._rev)||0; state={nextId:100, buildings:state.buildings, items:[], customers:state.customers||[], obSeeded:state.obSeeded, _rev:_rc}; save(); hideScrim(); render(); toast("Cleared — enter your real day with “+ Add”"); }
     else if(act==="save"){ saveDraft(); }
   });
 
@@ -418,6 +523,7 @@
     if(window.OnSite && typeof OnSite.renderExtras==="function"){
       try{ OnSite.renderExtras(view, cols); }catch(e){ console.error(e); }
     }
+    updateSyncChip();   // doc-64: keep the ☁︎ workspace chip current (no-op when cloud disabled)
   }
 
   function laneHead(role){
@@ -533,6 +639,7 @@
     LS_KEY: LS_KEY
   };
 
+  if(cloudEnabled()){ try{ setTimeout(cloudLoad, 0); }catch(e){} }   // doc-64: cache already rendered; pull the workspace async (no-op when disabled)
   // start on landing
 })();
 </script>
@@ -542,7 +649,7 @@
 <script src="vendor/leaflet/leaflet.js"></script>
 <!-- @onsite/core (doc-55 step 1): the pure engines as a committed static ESM bundle. Module defers
      (runs before DOMContentLoaded); onboarding.js delegates to window.OnSiteCore lazily (post-load). -->
-<script type="module">import * as Core from "./core.bundle.js?v=17c"; window.OnSiteCore = Core;</script>
-<script src="onboarding.js?v=17c"></script>
+<script type="module">import * as Core from "./core.bundle.js?v=17d"; window.OnSiteCore = Core;</script>
+<script src="onboarding.js?v=17d"></script>
 </body>
 </html>
