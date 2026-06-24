@@ -194,7 +194,8 @@
      To ENABLE cloud sync: fill CLOUD.url + CLOUD.anonKey below AND add `https://<ref>.supabase.co`
      to connect-src in vercel.json (see CLOUD-SETUP.md). While both are empty the app is 100%
      localStorage-only — boot + behaviour byte-for-byte unchanged, the SDK is never even loaded. */
-  var CLOUD = { url: "", anonKey: "", table: "workspaces" };   // ← Martin fills url + anonKey (anon public key)
+  // anon public key (legacy JWT) — public-by-design, safe in client; access control is the demo RLS policy. NEVER service_role.
+  var CLOUD = { url: "https://awyjzqgxfvoptyfvspxu.supabase.co", anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF3eWp6cWd4ZnZvcHR5ZnZzcHh1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzMTgxNDcsImV4cCI6MjA5Nzg5NDE0N30.0pBC7Azoi2NrXyPh_Q16W5XdFAt2aUtmq_mLFEQNx8I", table: "workspaces" };
   function cloudEnabled(){ return !!(CLOUD.url && CLOUD.anonKey); }
   var WS_KEY = "onsite_ws_id";
   function workspaceId(){ try{ return localStorage.getItem(WS_KEY) || "mellomgarden-demo"; }catch(e){ return "mellomgarden-demo"; } }
@@ -649,7 +650,7 @@
 <script src="vendor/leaflet/leaflet.js"></script>
 <!-- @onsite/core (doc-55 step 1): the pure engines as a committed static ESM bundle. Module defers
      (runs before DOMContentLoaded); onboarding.js delegates to window.OnSiteCore lazily (post-load). -->
-<script type="module">import * as Core from "./core.bundle.js?v=17d"; window.OnSiteCore = Core;</script>
-<script src="onboarding.js?v=17d"></script>
+<script type="module">import * as Core from "./core.bundle.js?v=17e"; window.OnSiteCore = Core;</script>
+<script src="onboarding.js?v=17e"></script>
 </body>
 </html>
