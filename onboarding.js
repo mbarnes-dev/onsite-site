@@ -905,14 +905,13 @@
     }).catch(function(){ cb(null); });
   }
   // A4: the association's latest filed accounts (Regnskapsregisteret, no key) — read-only qualification context.
-  // DORMANT browser-side: data.brreg.no/regnskapsregisteret sends NO access-control-allow-origin (unlike
-  // /enhetsregisteret, which does) → a direct browser fetch is CORS-blocked (verified June 2026; curl works
-  // because curl ignores CORS). The extraction + financeHTML render are READY and the field paths are
-  // curl-verified (orgnr 922771324 → 2025: eiendeler 256 984 / gjeld 100 673 / driftsinntekter 33 000). To
-  // activate: point REGNSKAP_URL at a CORS-enabled proxy (e.g. a free Supabase edge function on the
-  // already-CSP-allowed *.supabase.co origin) and set REGNSKAP_ON=true. Guarded off keeps prod console clean.
-  var REGNSKAP_ON = false;
-  var REGNSKAP_URL = "https://data.brreg.no/regnskapsregisteret/regnskap/";  // ← swap for a CORS proxy to enable
+  // data.brreg.no/regnskapsregisteret sends NO access-control-allow-origin (unlike /enhetsregisteret) so a
+  // DIRECT browser fetch is CORS-blocked. ACTIVE via an allowlisted Supabase edge-function proxy
+  // (supabase/functions/proxy) on the already-CSP-allowed *.supabase.co origin — it adds CORS + a
+  // server-side token seam (Deno.env, reused for Group C orthophoto) and is NOT an open relay (forwards
+  // only to known upstreams, validates orgnr). cb(null)=error; cb({years:[]})=no filings; cb({years:[…]})=data.
+  var REGNSKAP_ON = true;
+  var REGNSKAP_URL = "https://awyjzqgxfvoptyfvspxu.supabase.co/functions/v1/proxy?target=regnskap&orgnr=";
   function fetchRegnskap(orgnr, cb){
     if(!orgnr || !REGNSKAP_ON){ cb(null); return; }
     fetch(REGNSKAP_URL+encodeURIComponent(orgnr)).then(function(r){
