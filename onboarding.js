@@ -844,7 +844,8 @@
         return { address:(a.adressetekst||((a.adressenavn||"")+" "+a.nummer+(a.bokstav||""))), nummer:a.nummer, bokstav:a.bokstav||"",
           gnr:String(a.gardsnummer), bnr:String(a.bruksnummer), key:a.gardsnummer+"/"+a.bruksnummer,
           units:((a.bruksenhetsnummer)||[]).length, lat:(a.representasjonspunkt||{}).lat, lon:(a.representasjonspunkt||{}).lon,
-          postnummer:a.postnummer||"", poststed:a.poststed||"" };
+          postnummer:a.postnummer||"", poststed:a.poststed||"",
+          floors:(window.OnSiteCore?window.OnSiteCore.aggregateBruksenheter((a.bruksenhetsnummer)||[]):null) };  // A2: floors/stacking
       }).sort(function(x,y){ return x.nummer-y.nummer; });
       cb(ents);
     }).catch(function(){ cb(null); });
@@ -860,7 +861,7 @@
     var p=TM33.fwd(lat, lon), BB=170;
     var bbox=[(p.e-BB).toFixed(1),(p.n-BB).toFixed(1),(p.e+BB).toFixed(1),(p.n+BB).toFixed(1),"urn:ogc:def:crs:EPSG::25833"].join(",");
     var url=TEIG_WFS+"?service=WFS&version=2.0.0&request=GetFeature&typenames=app:Teig"
-      +"&srsName=urn:ogc:def:crs:EPSG::25833&count=40&bbox="+encodeURIComponent(bbox);
+      +"&srsName=urn:ogc:def:crs:EPSG::25833&count=300&bbox="+encodeURIComponent(bbox);  // count high: a dense urban ±170m bbox can hold 140+ teiger; count=40 truncated and missed the target bnr (Kongsveien)
     fetch(url).then(function(r){return r.text();}).then(function(xml){
       var doc=new DOMParser().parseFromString(xml,"text/xml");
       var all=doc.getElementsByTagName("*"), match=null;
@@ -879,6 +880,77 @@
     var out=[], pending=props.length; if(!pending){ cb([]); return; }
     props.forEach(function(pr){ teigForProperty(pr.gnr, pr.bnr, pr.lat, pr.lon, function(res){
       if(res) out.push(res); if(--pending===0){ out.sort(function(a,b){return (+a.bnr)-(+b.bnr);}); cb(out); } }); });
+  }
+
+  /* ===========================================================================
+     GROUP A (doc 66) — free, no-key record enrichment: discover the building instead
+     of asking the caretaker to type what they don't know. =========================================================================== */
+  // A1: discover ALL oppganger on a matrikkelenhet by gnr/bnr (no house numbers typed). Mirrors addrSweep's
+  // entrance shape so the downstream pipeline (dedupe → teigFetchAll → map) is unchanged; each entrance also
+  // carries the A2 floor aggregate parsed from its bruksenhetsnummer codes. cb(entrances[]|null).
+  function addrByMatrikkel(knr, gnr, bnr, cb){
+    if(!knr || gnr==null || gnr==="" || bnr==null || bnr===""){ cb(null); return; }
+    var url="https://ws.geonorge.no/adresser/v1/sok?kommunenummer="+encodeURIComponent(knr)
+      +"&gardsnummer="+encodeURIComponent(gnr)+"&bruksnummer="+encodeURIComponent(bnr)+"&utkoordsys=4258&treffPerSide=100";
+    fetch(url).then(function(r){return r.json();}).then(function(j){
+      var ents=((j&&j.adresser)||[]).map(function(a){
+        var codes=(a.bruksenhetsnummer)||[];
+        return { address:(a.adressetekst||((a.adressenavn||"")+" "+a.nummer+(a.bokstav||""))), nummer:a.nummer, bokstav:a.bokstav||"",
+          gnr:String(a.gardsnummer), bnr:String(a.bruksnummer), key:a.gardsnummer+"/"+a.bruksnummer,
+          units:codes.length, lat:(a.representasjonspunkt||{}).lat, lon:(a.representasjonspunkt||{}).lon,
+          postnummer:a.postnummer||"", poststed:a.poststed||"",
+          floors:(window.OnSiteCore?window.OnSiteCore.aggregateBruksenheter(codes):null) };
+      }).sort(function(x,y){ return (x.nummer-y.nummer) || (x.bokstav<y.bokstav?-1:1); });
+      cb(ents);
+    }).catch(function(){ cb(null); });
+  }
+  // A4: the association's latest filed accounts (Regnskapsregisteret, no key) — read-only qualification context.
+  // DORMANT browser-side: data.brreg.no/regnskapsregisteret sends NO access-control-allow-origin (unlike
+  // /enhetsregisteret, which does) → a direct browser fetch is CORS-blocked (verified June 2026; curl works
+  // because curl ignores CORS). The extraction + financeHTML render are READY and the field paths are
+  // curl-verified (orgnr 922771324 → 2025: eiendeler 256 984 / gjeld 100 673 / driftsinntekter 33 000). To
+  // activate: point REGNSKAP_URL at a CORS-enabled proxy (e.g. a free Supabase edge function on the
+  // already-CSP-allowed *.supabase.co origin) and set REGNSKAP_ON=true. Guarded off keeps prod console clean.
+  var REGNSKAP_ON = false;
+  var REGNSKAP_URL = "https://data.brreg.no/regnskapsregisteret/regnskap/";  // ← swap for a CORS proxy to enable
+  function fetchRegnskap(orgnr, cb){
+    if(!orgnr || !REGNSKAP_ON){ cb(null); return; }
+    fetch(REGNSKAP_URL+encodeURIComponent(orgnr)).then(function(r){
+      if(r.status===404) return [];
+      if(!r.ok) return null;
+      return r.json();
+    }).then(function(arr){
+      if(arr===null){ cb(null); return; }
+      if(!Array.isArray(arr)||!arr.length){ cb({orgnr:orgnr, years:[]}); return; }
+      arr.sort(function(a,b){ var ta=((a.regnskapsperiode||{}).tilDato)||"", tb=((b.regnskapsperiode||{}).tilDato)||""; return ta<tb?1:-1; });
+      var years=arr.slice(0,3).map(function(f){ var eg=(f.egenkapitalGjeld||{}), res=(f.resultatregnskapResultat||{}), dr=(res.driftsresultat||{});
+        return { year:(((f.regnskapsperiode||{}).tilDato)||"").slice(0,4),
+          sumEgenkapital:((eg.egenkapital||{}).sumEgenkapital), sumGjeld:((eg.gjeldOversikt||{}).sumGjeld),
+          sumEiendeler:((f.eiendeler||{}).sumEiendeler), driftsinntekter:((dr.driftsinntekter||{}).sumDriftsinntekter),
+          driftsresultat:dr.driftsresultat, aarsresultat:res.aarsresultat }; });
+      cb({orgnr:orgnr, years:years});
+    }).catch(function(){ cb(null); });
+  }
+  // A3: building type per property via the Matrikkel Bygningspunkt WFS.
+  // DORMANT by design: the documented no-key WFS (wfs.matrikkelen-bygningspunkt) is currently HTTP 404 /
+  // decommissioned (re-verified June 2026; the address payload carries no bygningstype, the matrikkelkart WMS
+  // has no building layer, and the only live Matrikkel-bygning service is auth-gated). The code→label table +
+  // fetch are READY; flip BYGGPUNKT_ON once a working no-key source is confirmed — keeps prod 404-free meanwhile.
+  var BYGGPUNKT_ON = false;
+  var BYGGPUNKT_WFS = "https://wfs.geonorge.no/skwms1/wfs.matrikkelen-bygningspunkt";
+  var BYGNINGSTYPE = { "111":"Enebolig","112":"Enebolig m/hybel","113":"Våningshus","121":"Tomannsbolig vertikaldelt","122":"Tomannsbolig horisontaldelt","131":"Rekkehus","133":"Kjedehus","135":"Terrassehus","136":"Andre småhus","141":"Stort frittliggende boligbygg (2 et.)","142":"Stort frittliggende boligbygg (3–4 et.)","143":"Stort frittliggende boligbygg (5+ et.)","144":"Store sammenbygde boligbygg (2 et.)","145":"Store sammenbygde boligbygg (3–4 et.)","146":"Store sammenbygde boligbygg (5+ et.)","151":"Bofellesskap","152":"Bo-/servicesenter","161":"Garasje/uthus til bolig","181":"Garasje/uthus/anneks til bolig" };
+  function bygningstypeLabel(code){ var c=String(code||"").trim(); return BYGNINGSTYPE[c] || (c?("Bygningstype "+c):"Ukjent"); }
+  function buildingPointsForProperty(gnr, bnr, lat, lon, cb){
+    if(!BYGGPUNKT_ON || lat==null){ cb([]); return; }   // dormant: no public no-key endpoint → never fire (prod stays 404-free)
+    var p=TM33.fwd(lat, lon), BB=170;
+    var bbox=[(p.e-BB).toFixed(1),(p.n-BB).toFixed(1),(p.e+BB).toFixed(1),(p.n+BB).toFixed(1),"urn:ogc:def:crs:EPSG::25833"].join(",");
+    var url=BYGGPUNKT_WFS+"?service=WFS&version=2.0.0&request=GetFeature&typenames=app:Bygning&srsName=urn:ogc:def:crs:EPSG::25833&count=40&bbox="+encodeURIComponent(bbox);
+    fetch(url).then(function(r){return r.text();}).then(function(xml){
+      var doc=new DOMParser().parseFromString(xml,"text/xml"), all=doc.getElementsByTagName("*"), out=[];
+      for(var i=0;i<all.length;i++){ var t=all[i]; if(t.localName!=="Bygning") continue;
+        var code=xmlText(t,"bygningstype"); out.push({ bygningsnummer:xmlText(t,"bygningsnummer"), bygningstype:code, label:bygningstypeLabel(code), status:xmlText(t,"bygningsstatus") }); }
+      cb(out);
+    }).catch(function(){ cb([]); });
   }
 
   // Norway · residential CompliancePack (doc 23) — derived on create, not fetched
@@ -3039,6 +3111,7 @@
       + f("nb_forvalter","Forvalter (FFØR)",p.forvalter,"OBOS / USBL / annen")
       + '<div class="row2" style="display:flex;gap:8px"><div style="flex:1.4">'+f("nb_styreleder","Styreleder",p.styreleder)+'</div><div style="flex:1">'+f("nb_revisor","Revisor",p.revisor)+'</div></div>'
       + board
+      + financeHTML(p.finance)
       + f("nb_year","Byggeår (manuelt — ikke i API)",p.buildYear,"f.eks. 2018")
       + '<div class="ob-callout" style="font-size:11.5px">📋 Compliance-pakke (Norge · bolig) seedes automatisk: brann, el-kontroll ~5 år, lekeplass årlig, heis 2-årlig, legionella, radon, oljetank.</div>'
       + '<div class="ob-bar"><button class="ob-btn green" data-ob="nbCreate">Opprett bygg → befaring</button></div></div>';
@@ -3047,29 +3120,96 @@
   function teigColor(bnr){ var pal=["#1d4ed8","#15803d","#b5790b","#9333ea","#0369a1","#0f766e"]; var n=parseInt(bnr,10)||0; return pal[n%pal.length]; }
   function nbStreetOf(p){ return (p.addr||"").replace(/,.*$/,"").replace(/\s*\d.*$/,"").trim(); }   // building street only — never the forvalter address
   function nbEnrichHTML(p){
-    var street=(p._streetInput!=null&&p._streetInput!=="")?p._streetInput:nbStreetOf(p);
-    var brregHint = (p.source==="Brønnøysund" && !p.enrichment) ? '<div class="ob-callout" style="font-size:11px;margin:2px 0 7px;background:#fff8ec;border-color:#f2d9a8;color:#8a5a12">📍 Brreg ga <b>forvalters</b> adresse, ikke byggets. Skriv <b>byggets</b> gate + husnumre her og trykk <b>Kartlegg</b> — så henter vi oppganger, boenheter, matrikkel og kart automatisk.</div>' : '';
-    var head='<div class="ct" style="font-size:13px;margin-top:4px">🗺️ Kartlegg hele borettslaget <span class="muted" style="font-weight:600">· flere oppganger</span></div>'
-      +brregHint
-      +'<p class="muted" style="font-size:11.5px;margin:0 0 7px">Ett borettslag = ofte flere adresser/oppganger og flere matrikkelenheter. Skriv gata + husnumrene (liste «20,22,24» eller serie «20–39») → vi summerer boenheter, henter eiendomsgrensene og tomtearealet fra Matrikkelen.</p>';
-    var form='<div class="row2" style="display:flex;gap:8px;align-items:flex-end">'
-      +'<div style="flex:1.3"><label>Gate</label><input id="nb_street" value="'+esc(street)+'" placeholder="Rødtvetveien"></div>'
-      +'<div style="flex:1.7"><label>Husnumre</label><input id="nb_nums" value="'+esc(p._numsInput||"")+'" placeholder="20,22,24,26,28,33,35,37,39"></div>'
-      +'<button class="ob-btn primary" data-ob="nbSweep"'+(p._sweeping?' disabled style="opacity:.6"':'')+'>'+(p._sweeping?'Henter…':'Kartlegg')+'</button></div>';
-    var result="";
+    // already enriched → show the result (A2 floors per entrance, A3 building type per property if present)
     if(p.enrichment && p.entrances && p.entrances.length){
       var nb=(p.buildings!=null?p.buildings:p.entrances.length);
       var sumLine='🏠 <b>'+esc(String(nb))+' bygg</b> · '+p.entrances.length+' oppganger · <b>'+p.unitsTotal+' boenheter</b> · '+p.properties.length+' matrikkelenhet'+(p.properties.length>1?'er':'')+(p.groundsM2?' · tomt ~'+Math.round(p.groundsM2).toLocaleString("no")+' m²':'');
-      var propRows=p.properties.map(function(pr){ return '<span class="ob-enr-prop"><span class="ob-enr-sw" style="background:'+teigColor(pr.bnr)+'"></span>gnr '+esc(pr.gnr)+'/bnr '+esc(pr.bnr)+' · '+(pr.area_m2?pr.area_m2.toLocaleString("no")+' m²':'—')+'</span>'; }).join("");
-      var entRows=p.entrances.map(function(e){ return '<span class="ob-enr-ent">'+esc(String(e.nummer)+(e.bokstav||""))+' · '+e.units+'</span>'; }).join("");
-      result='<div class="ob-enr-summary">'+sumLine+'</div>'
+      var propRows=p.properties.map(function(pr){ var bp=(pr.buildingPoints&&pr.buildingPoints.length)?' · '+pr.buildingPoints.map(function(b){return esc(b.label);}).join(", "):''; return '<span class="ob-enr-prop"><span class="ob-enr-sw" style="background:'+teigColor(pr.bnr)+'"></span>gnr '+esc(pr.gnr)+'/bnr '+esc(pr.bnr)+' · '+(pr.area_m2?pr.area_m2.toLocaleString("no")+' m²':'—')+bp+'</span>'; }).join("");
+      var entRows=p.entrances.map(function(e){ var fl=e.floors||{}; var u=fl.parsedUnits||e.units||0; var meta=u?(u+' boe'+(fl.storeys?(' · '+fl.storeys+' etg'+(fl.hasBasement?'+kj':'')):'')):'ukjent'; return '<span class="ob-enr-ent">'+esc(String(e.nummer)+(e.bokstav||""))+' · '+meta+'</span>'; }).join("");
+      var result='<div class="ob-enr-summary">'+sumLine+'</div>'
         +'<div class="ob-teigmap" id="nb-teigmap"></div>'
         +'<div class="ob-enr-props">'+propRows+'</div>'
         +'<div class="ob-enr-ents">'+entRows+'</div>'
         +'<div class="row2" style="display:flex;gap:8px;align-items:flex-end;margin-top:6px"><div style="flex:1"><label>Antall bygg (bekreft)</label><input id="nb_buildings" value="'+esc(String(nb))+'"></div>'
-        +'<div style="flex:2.2"><div class="ob-callout" style="font-size:10.5px;margin:0">Offentlige data gir oppganger/boenheter/matrikkel/tomt sikkert — men ikke et rent <b>antall bygg</b> (én bnr kan ha flere bygg). Bekreft på befaring. <span class="muted">// TODO FKB-Bygning footprints (auth)</span></div></div></div>';
+        +'<div style="flex:2.2"><div class="ob-callout" style="font-size:10.5px;margin:0">Offentlige data gir oppganger/boenheter/matrikkel/tomt sikkert — men ikke et rent <b>antall bygg</b> (én bnr kan ha flere bygg). Bekreft på befaring.</div></div></div>';
+      return '<div class="ob-enrcard"><div class="ct" style="font-size:13px;margin-top:4px">🗺️ Bygget — kartlagt</div>'+result+'</div>';
     }
-    return '<div class="ob-enrcard">'+head+form+result+'</div>';
+    // A1 discovery confirm-list — the primary path when a gnr/bnr is known
+    var discoveryBlock="";
+    if(p._discovery){
+      var d=p._discovery;
+      if(d.loading){ discoveryBlock='<div class="ob-callout" style="font-size:12px;margin:2px 0">🔎 Søker oppganger på gnr '+esc(d.gnr)+'/bnr '+esc(d.bnr)+'…</div>'; }
+      else if(d.candidates && d.candidates.length){
+        var rows=d.candidates.map(function(e,i){ var fl=e.floors||{}; var u=fl.parsedUnits||e.units||0; var meta=u?(u+' boe'+(fl.storeys?(' · '+fl.storeys+' etg'+(fl.hasBasement?'+kj':'')):'')):'boenheter ukjent';
+          return '<label class="ob-disc-row"><input type="checkbox"'+(d.checked[i]?' checked':'')+' data-ob="nbDiscoverToggle" data-arg="'+i+'"><b>'+esc(e.address)+'</b> <span class="muted">· '+meta+'</span></label>'; }).join("");
+        var nsel=d.candidates.filter(function(e,i){return d.checked[i];}).length;
+        discoveryBlock='<div class="ob-disc"><div class="ob-disc-h">🏢 Fant '+d.candidates.length+' oppganger på gnr '+esc(d.gnr)+'/bnr '+esc(d.bnr)+' — alle del av dette bygget?</div>'+rows
+          +'<div class="muted" style="font-size:10.5px;margin:5px 0 7px">Dekker denne matrikkelenheten; et større sameie kan ha flere (full dekning: Grunnbok, fase 2).</div>'
+          +'<button class="ob-btn primary" data-ob="nbDiscoverConfirm"'+(p._sweeping?' disabled style="opacity:.6"':'')+'>'+(p._sweeping?'Kartlegger…':('Bekreft '+nsel+' oppganger → kartlegg'))+'</button></div>';
+      }
+    }
+    var hasDisc=!!(p._discovery && (p._discovery.loading || (p._discovery.candidates&&p._discovery.candidates.length)));
+    var street=(p._streetInput!=null&&p._streetInput!=="")?p._streetInput:nbStreetOf(p);
+    var brregHint=(p.source==="Brønnøysund" && !hasDisc) ? '<div class="ob-callout" style="font-size:11px;margin:2px 0 7px;background:#fff8ec;border-color:#f2d9a8;color:#8a5a12">📍 Brreg ga <b>forvalters</b> adresse. Geokod byggets adresse (over) for å finne alle oppganger automatisk — eller skriv gate + husnumre her.</div>' : '';
+    var intro = hasDisc ? '<div class="muted" style="font-size:11px;margin:6px 0 4px">Mangler en oppgang, eller vet du ikke gnr/bnr? Skriv gate + husnumre:</div>'
+      : '<p class="muted" style="font-size:11.5px;margin:0 0 7px">Geokod byggets adresse (over) → vi finner alle oppganger på matrikkelen automatisk. Eller skriv gata + husnumrene (liste «20,22,24» / serie «20–39»).</p>';
+    var form='<div class="row2" style="display:flex;gap:8px;align-items:flex-end">'
+      +'<div style="flex:1.3"><label>Gate</label><input id="nb_street" value="'+esc(street)+'" placeholder="Rødtvetveien"></div>'
+      +'<div style="flex:1.7"><label>Husnumre</label><input id="nb_nums" value="'+esc(p._numsInput||"")+'" placeholder="20,22,24,26,28"></div>'
+      +'<button class="ob-btn'+(hasDisc?' ghost':' primary')+'" data-ob="nbSweep"'+(p._sweeping?' disabled style="opacity:.6"':'')+'>'+(p._sweeping?'Henter…':'Kartlegg')+'</button></div>';
+    var head='<div class="ct" style="font-size:13px;margin-top:4px">🗺️ Kartlegg hele bygget <span class="muted" style="font-weight:600">· oppganger · boenheter · tomt</span></div>'+brregHint;
+    return '<div class="ob-enrcard">'+head+discoveryBlock+intro+form+'</div>';
+  }
+  // shared enrichment pipeline (used by BOTH the A1 gnr/bnr discovery and the street+numbers sweep):
+  // entrances → unitsTotal, dedupe properties, teig polygons/areas, centroid, (dormant) building points.
+  function applyDiscoveredEntrances(p, ents){
+    p.entrances=ents; p.unitsTotal=ents.reduce(function(s,e){return s+(e.units||0);},0);
+    var seen={}, props=[]; ents.forEach(function(e){ if(!seen[e.key]){ seen[e.key]=1; props.push({gnr:e.gnr, bnr:e.bnr, key:e.key, lat:e.lat, lon:e.lon}); } });
+    p.properties=props.map(function(pr){ return {gnr:pr.gnr, bnr:pr.bnr, key:pr.key, area_m2:null, ring:null, buildingPoints:null}; });
+    p.groundsM2=null; p.enrichment=true; p.buildings=ents.length; p._discovery=null;
+    var withGeo=ents.filter(function(e){return e.lat!=null;});
+    if(withGeo.length){ p.lat=withGeo.reduce(function(s,e){return s+e.lat;},0)/withGeo.length; p.lon=withGeo.reduce(function(s,e){return s+e.lon;},0)/withGeo.length; }
+    nbRender(); toast("📍 "+ents.length+" oppganger · "+p.unitsTotal+" boenheter — henter eiendomsgrenser…");
+    teigFetchAll(props, function(teigs){
+      var byKey={}; (teigs||[]).forEach(function(t){ byKey[t.key]=t; }); var total=0, got=0;
+      p.properties.forEach(function(pp){ var t=byKey[pp.key]; if(t){ pp.area_m2=t.area_m2; pp.ring=t.ring; total+=t.area_m2; got++; } });
+      p.groundsM2=total||null;
+      // A3 (dormant): building points per property — guarded off → returns [] WITHOUT a network call (prod stays 404-free)
+      var pend=props.length;
+      if(!pend){ p._sweeping=false; nbRender(); }
+      props.forEach(function(pr){ buildingPointsForProperty(pr.gnr, pr.bnr, pr.lat, pr.lon, function(bps){
+        var pp=p.properties.filter(function(x){return x.key===pr.key;})[0]; if(pp) pp.buildingPoints=bps;
+        if(--pend===0){ p._sweeping=false; nbRender(); } }); });
+      toast(got?("🗺️ "+got+" eiendomsgrense"+(got>1?"r":"")+" · tomt ~"+Math.round(total).toLocaleString("no")+" m²"):"Fant boenheter, men ikke eiendomsgrenser");
+    });
+  }
+  // A1: discover all oppganger on the gnr/bnr (no house numbers typed) → a confirm list
+  function nbDiscoverMatrikkel(p){
+    if(!p || !p.kommunenummer || !p.gnr || !p.bnr || p.enrichment) return;
+    p._discovery={loading:true, gnr:p.gnr, bnr:p.bnr, candidates:null, checked:{}}; nbRender();
+    addrByMatrikkel(p.kommunenummer, p.gnr, p.bnr, function(ents){
+      if(!ents || !ents.length){ p._discovery=null; nbRender(); return; }
+      var checked={}; ents.forEach(function(e,i){ checked[i]=true; });
+      p._discovery={loading:false, gnr:p.gnr, bnr:p.bnr, candidates:ents, checked:checked}; nbRender();
+    });
+  }
+  function nbDiscoverToggle(i){ var nb=ui.newBuilding; if(!nb||!nb.prefill||!nb.prefill._discovery) return; var d=nb.prefill._discovery; i=parseInt(i,10); d.checked[i]=!d.checked[i]; nbRender(); }
+  function nbDiscoverConfirm(){
+    var nb=ui.newBuilding; if(!nb||!nb.prefill) return; var p=nb.prefill, d=p._discovery; if(!d||!d.candidates) return;
+    var kept=d.candidates.filter(function(e,i){ return d.checked[i]; });
+    if(!kept.length){ toast("Velg minst én oppgang"); return; }
+    if(!p.kommunenummer && kept[0]) p.kommunenummer=p.kommunenummer; // (already known on this path)
+    p._sweeping=true; p._discovery=null; nbRender(); applyDiscoveredEntrances(p, kept);
+  }
+  // A4: render the association's latest filed accounts (read-only qualification context)
+  function finKr(n){ return (n==null)?"—":(Math.round(n).toLocaleString("no")+" kr"); }
+  function finCell(label,val){ return '<div class="ob-fin-cell"><span class="ob-fin-lbl">'+esc(label)+'</span><span class="ob-fin-val">'+esc(val)+'</span></div>'; }
+  function financeHTML(fin){
+    if(!fin) return "";
+    if(!fin.years || !fin.years.length) return '<div class="ob-callout" style="font-size:11.5px;margin-top:8px">💰 Regnskap: <span class="muted">Ingen innleverte regnskap (Regnskapsregisteret)</span></div>';
+    var y=fin.years[0], trend=fin.years.length>1?' <span class="muted">· '+fin.years.length+" år":"";
+    return '<div class="ob-fin"><div class="ob-fin-h">💰 Regnskap '+esc(y.year||"")+trend+' <span class="muted" style="font-weight:600">· Regnskapsregisteret</span></div>'
+      +'<div class="ob-fin-grid">'+finCell("Eiendeler",finKr(y.sumEiendeler))+finCell("Egenkapital",finKr(y.sumEgenkapital))+finCell("Gjeld",finKr(y.sumGjeld))+finCell("Driftsinntekter",finKr(y.driftsinntekter))+finCell("Årsresultat",finKr(y.aarsresultat))+'</div></div>';
   }
   function nbSweep(){
     var nb=ui.newBuilding; if(!nb||!nb.prefill) return; syncPrefillFromForm(); var p=nb.prefill;
@@ -3082,19 +3222,8 @@
       addrSweep(knr, street, nums, function(ents){
         if(ents===null){ stop("geonorge utilgjengelig — prøv igjen"); return; }
         if(!ents.length){ stop("Fant ingen av husnumrene på "+street); return; }
-        p.entrances=ents; p.unitsTotal=ents.reduce(function(s,e){return s+(e.units||0);},0);
-        var seen={}, props=[]; ents.forEach(function(e){ if(!seen[e.key]){ seen[e.key]=1; props.push({gnr:e.gnr, bnr:e.bnr, key:e.key, lat:e.lat, lon:e.lon}); } });
-        p.properties=props.map(function(pr){ return {gnr:pr.gnr, bnr:pr.bnr, key:pr.key, area_m2:null, ring:null}; });
-        p.groundsM2=null; p.enrichment=true; p.buildings=ents.length;
-        p.lat=ents.reduce(function(s,e){return s+e.lat;},0)/ents.length; p.lon=ents.reduce(function(s,e){return s+e.lon;},0)/ents.length;
         if(!p.kommunenummer) p.kommunenummer=knr; if(!p.poststed&&poststed) p.poststed=poststed;
-        nbRender(); toast("📍 "+ents.length+" oppganger · "+p.unitsTotal+" boenheter — henter eiendomsgrenser…");
-        teigFetchAll(props, function(teigs){
-          var byKey={}; (teigs||[]).forEach(function(t){ byKey[t.key]=t; }); var total=0, got=0;
-          p.properties.forEach(function(pp){ var t=byKey[pp.key]; if(t){ pp.area_m2=t.area_m2; pp.ring=t.ring; total+=t.area_m2; got++; } });
-          p.groundsM2=total||null;
-          stop(got?("🗺️ "+got+" eiendomsgrense"+(got>1?"r":"")+" · tomt ~"+Math.round(total).toLocaleString("no")+" m²"):"Fant boenheter, men ikke eiendomsgrenser");
-        });
+        applyDiscoveredEntrances(p, ents);   // shared with the A1 gnr/bnr discovery path
       });
     }
     if(p.kommunenummer){ go(p.kommunenummer, p.poststed); return; }
@@ -3156,8 +3285,9 @@
   function applyAddr(p,res){ p.addr=res.adressetekst; p.postnummer=res.postnummer; p.poststed=res.poststed; p.kommunenavn=res.kommunenavn||p.kommunenavn; p.kommunenummer=res.kommunenummer||p.kommunenummer; p.gnr=res.gnr; p.bnr=res.bnr; p.lat=res.lat; p.lon=res.lon; p.units=res.units; }
   function nbPick(idx){
     var nb=ui.newBuilding; if(!nb||!nb.results) return; var it=(nb.results.items||[])[idx]; if(!it) return;
-    if(nb.results.type==="geo"){ nb.prefill=prefillFromGeo(it); nbRender(); return; }
+    if(nb.results.type==="geo"){ nb.prefill=prefillFromGeo(it); nbRender(); nbDiscoverMatrikkel(nb.prefill); return; }  // A1: address pick → discover all oppganger on its gnr/bnr
     var p=prefillFromBrreg(it); nb.prefill=p; nb.loading=false; nbRender();
+    if(p.orgnr) fetchRegnskap(p.orgnr, function(fin){ if(nb.prefill===p){ p.finance=fin; nbRender(); } });   // A4: association accounts
     brregRoles(it.organisasjonsnummer, function(roles){
       if(roles){ p.forvalter=roles.forvalter||""; p.styreleder=roles.styreleder||""; p.styremedlemmer=roles.styremedlemmer||[]; p.revisor=roles.revisor||""; }
       nbRender();   // do NOT geocode the forvalter address as the building — the rep gives the building's gate+husnr in Kartlegg
@@ -3181,6 +3311,7 @@
       if(res===null){ toast("geonorge utilgjengelig"); return; }
       if(!res){ toast("Fant ikke adressen — prøv med husnummer/bokstav"); return; }
       applyAddr(nb.prefill,res); nbRender(); toast("📍 "+res.adressetekst+" · gnr "+res.gnr+"/"+res.bnr+" · "+res.units+" enh.");
+      nbDiscoverMatrikkel(nb.prefill);   // A1: geocode resolved → discover all oppganger on this gnr/bnr
     });
   }
   function nbManual(){ var nb=ui.newBuilding; if(!nb) return; nb.error=null; nb.results=null; nb.loading=false;
@@ -3199,6 +3330,7 @@
       profile:"Residential — association", buildYear:parseInt(p.buildYear,10)||"", size:0,
       orgnr:p.orgnr||"", orgform:p.orgform||"", naering:p.naering||"", kommune:p.kommunenavn||"", kommunenummer:p.kommunenummer||"",
       units:unitsTotal, unitsTotal:unitsTotal, entrances:enriched?p.entrances:[], properties:enriched?p.properties:[], groundsM2:enriched?(p.groundsM2||null):null, buildings:enriched?(p.buildings||p.entrances.length):1,
+      finance:p.finance||null,   // A4: association accounts (read-only context)
       manager:p.forvalter||"", revisor:p.revisor||"",
       contacts:contacts, meetingTime:"", stage:"Surveyed", period:"mnd",
       requestedScope:[], layers:["entrance","stairwell","grass","greenery","snow","gritting","tech","fire"],
@@ -4105,6 +4237,8 @@
       case "nbPick": nbPick(parseInt(arg,10)); break;
       case "nbGeocode": nbGeocode(); break;
       case "nbSweep": nbSweep(); break;
+      case "nbDiscoverToggle": nbDiscoverToggle(arg); break;
+      case "nbDiscoverConfirm": nbDiscoverConfirm(); break;
       case "nbManual": nbManual(); break;
       case "nbCreate": nbCreate(); break;
       case "nbCancel": ui.newBuilding=null; repaintSales(); break;

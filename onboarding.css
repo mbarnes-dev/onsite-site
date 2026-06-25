@@ -740,3 +740,16 @@
 .ob-opscore-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-top:1px solid #eef1ef}
 .ob-opscore-row:first-of-type{border-top:none}
 .ob-opscore-row .nm{font-weight:700;font-size:13px;color:#2a352f}
+
+/* ---- doc-66 A1 discovery confirm-list + A4 association accounts ---- */
+.ob-disc{margin:6px 0 8px;padding:8px 10px;border:1px solid #cfe0f6;border-radius:11px;background:#f3f8ff}
+.ob-disc-h{font-size:12.5px;font-weight:800;color:#23406a;margin-bottom:6px}
+.ob-disc-row{display:flex;align-items:center;gap:9px;font-size:12.5px;padding:7px 2px;border-top:1px solid #e4ecf7;cursor:pointer;min-height:40px}
+.ob-disc-row:first-of-type{border-top:none}
+.ob-disc-row input{width:auto;min-width:20px;height:20px;flex:0 0 auto}
+.ob-fin{margin:8px 0 4px;padding:9px 11px;border:1px solid #d7e6dd;border-radius:11px;background:#f4faf6}
+.ob-fin-h{font-size:12.5px;font-weight:800;color:#1f5a3f;margin-bottom:7px}
+.ob-fin-grid{display:flex;flex-wrap:wrap;gap:8px}
+.ob-fin-cell{display:flex;flex-direction:column;gap:1px;min-width:92px;background:#fff;border:1px solid #e2ece6;border-radius:8px;padding:5px 9px}
+.ob-fin-lbl{font-size:10px;font-weight:600;color:#6b7670;text-transform:uppercase;letter-spacing:.03em}
+.ob-fin-val{font-size:13px;font-weight:750;color:#23332b}

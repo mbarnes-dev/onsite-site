@@ -405,6 +405,29 @@ export function rankWhileHere(cand, opts) {
   return uniq;
 }
 
+/* ============================================================ A2 (doc 66) — bruksenhetsnummer → floors / stacking.
+ * A Norwegian dwelling code "H0301" = plan letter (H hovedetasje / K kjeller / U underetasje / L loft / M mellometasje)
+ * + 2-digit floor + 2-digit unit-on-floor. Pure; the codes already ride in the geonorge address payload (we only
+ * read .length today). floorsAbove = max H floor; hasBasement = any K/U; storeys = floorsAbove + (basement?1:0). */
+export function parseBruksenhet(code) {
+  var m = /^([HKULM])(\d{2})(\d{2})$/.exec(String(code || "").toUpperCase().trim());
+  if (!m) return null;
+  return { plan: m[1], floor: parseInt(m[2], 10), unit: parseInt(m[3], 10) };
+}
+export function aggregateBruksenheter(codes) {
+  var parsed = (codes || []).map(parseBruksenhet).filter(Boolean);
+  var floorsAbove = 0, hasBasement = false, byFloor = {};
+  parsed.forEach(function (p) {
+    if (p.plan === "H") floorsAbove = Math.max(floorsAbove, p.floor);
+    if (p.plan === "K" || p.plan === "U") hasBasement = true;
+    var k = p.plan + (p.floor < 10 ? "0" + p.floor : "" + p.floor);
+    (byFloor[k] = byFloor[k] || { floor: p.floor, plan: p.plan, count: 0 }).count++;
+  });
+  var unitsPerFloor = Object.keys(byFloor).map(function (k) { return byFloor[k]; })
+    .sort(function (a, b) { return (a.floor - b.floor) || (a.plan < b.plan ? -1 : 1); });
+  return { storeys: floorsAbove + (hasBasement ? 1 : 0), floorsAbove: floorsAbove, hasBasement: hasBasement, unitsPerFloor: unitsPerFloor, parsedUnits: parsed.length };
+}
+
 /* ============================================================ migration — INTENTIONALLY NOT EXTRACTED.
  * Migration is the one engine that stays app-side (index.html `migrate`): it runs at parse-time, BEFORE
  * this deferred module loads, and depends on the app's `demo()` seed + `SCHEMA_VERSION`. A core copy would

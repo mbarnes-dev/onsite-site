@@ -156,3 +156,25 @@ test("rankWhileHere → co-located + co-equipment + due-soon ranks top with 📍
   );
   assert.equal(dup.length, 0, "dedupe → 1, then team-scope filters out the non-matching service bucket");
 });
+
+/* ---- ANCHOR 8 (doc 66 A2): bruksenhetsnummer → floors / stacking (real Kongsveien codes) ---- */
+test("parseBruksenhet + aggregateBruksenheter → storeys/units/basement", () => {
+  assert.deepEqual(Core.parseBruksenhet("H0301"), { plan: "H", floor: 3, unit: 1 });
+  assert.equal(Core.parseBruksenhet("xx"), null, "garbage → null");
+  assert.equal(Core.parseBruksenhet(""), null, "empty → null");
+  // Kongsveien 86A (real geonorge payload): 11 dwellings across H01–H04, no basement → storeys 4
+  const a86 = Core.aggregateBruksenheter(["H0101", "H0102", "H0103", "H0201", "H0202", "H0203", "H0301", "H0302", "H0303", "H0401", "H0402"]);
+  assert.equal(a86.parsedUnits, 11);
+  assert.equal(a86.floorsAbove, 4);
+  assert.equal(a86.storeys, 4);
+  assert.equal(a86.hasBasement, false);
+  // Kongsveien 88B: 12 dwellings, 4 storeys
+  const a88 = Core.aggregateBruksenheter(["H0101", "H0102", "H0201", "H0202", "H0203", "H0204", "H0301", "H0302", "H0303", "H0304", "H0401", "H0402"]);
+  assert.equal(a88.parsedUnits, 12);
+  assert.equal(a88.storeys, 4);
+  // basement code → hasBasement true
+  assert.equal(Core.aggregateBruksenheter(["K0101", "H0101"]).hasBasement, true);
+  // empty payload (like 88A/88C) → zeros, not a crash
+  assert.equal(Core.aggregateBruksenheter([]).parsedUnits, 0);
+  assert.equal(Core.aggregateBruksenheter([]).storeys, 0);
+});
