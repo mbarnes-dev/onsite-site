@@ -3138,7 +3138,7 @@
   function renderNewBuilding(){
     var nb=ui.newBuilding;
     var tab=function(m,label){ return '<button class="ob-mini'+(nb.mode===m?' on':'')+'" data-ob="nbMode" data-arg="'+m+'">'+label+'</button>'; };
-    var ph = nb.mode==="name" ? "f.eks. Holtet Horisont, Solbakken borettslag…" : "f.eks. Kongsveien 82A, Oslo";
+    var ph = nb.mode==="name" ? "f.eks. Holtet Horisont, Solbakken borettslag…" : "Kongsveien 88, 1177 Oslo";
     var resultsBlock="";
     if(nb.loading) resultsBlock='<div class="empty">Henter fra offentlig register…</div>';
     else if(nb.error) resultsBlock='<div class="ob-callout">⚠️ '+esc(nb.error)+' <button class="ob-mini" data-ob="nbManual">Fyll inn manuelt</button></div>';
@@ -3151,6 +3151,7 @@
       +    '<p class="muted" style="font-size:12.5px;margin:0 0 9px">Fra navn eller adresse henter vi org, forvalter, styre, gnr/bnr og koordinater (geonorge + Brønnøysund) — alt redigerbart, du bekrefter på befaring.</p>'
       +    '<div class="ob-cat-chips" style="margin-bottom:8px">'+tab("name","🏢 Søk på navn")+tab("address","📍 Søk på adresse")+'</div>'
       +    '<div style="display:flex;gap:8px"><input id="nb_q" value="'+esc(nb.query||"")+'" placeholder="'+ph+'" style="flex:1"><button class="ob-btn primary" data-ob="nbSearch">Søk</button></div>'
+      +    (nb.mode==="address" ? '<div class="muted" style="font-size:11px;margin:5px 0 0">Skriv hele adressen — gate, husnr, postnr og sted — for riktig treff (ellers kan du treffe en annen «Kongsveien» i Norge).</div>' : '')
       +    '<div class="ob-bar" style="margin-top:8px"><button class="ob-btn ghost" data-ob="nbManual">Fyll inn manuelt →</button></div>'
       +    resultsBlock
       +  '</div>'
@@ -3181,7 +3182,8 @@
     return '<div class="card"><div class="ct">Bekreft & rediger <span class="muted" style="font-weight:600">· '+esc(p.source||"register")+'</span></div>'
       + f("nb_name","Navn",p.name)
       + '<div class="row2" style="display:flex;gap:8px"><div style="flex:1">'+f("nb_orgnr","Org.nr",p.orgnr)+'</div><div style="flex:1.4">'+f("nb_orgform","Org.form",p.orgform)+'</div></div>'
-      + '<div class="row2" style="display:flex;gap:8px"><div style="flex:2">'+f("nb_addr","Adresse (enkeltbygg)",p.addr,"borettslag: bruk Kartlegg ↓")+'</div><button class="ob-btn ghost" data-ob="nbGeocode" style="align-self:flex-end" title="Geokod én adresse (enkeltbygg). Borettslag med flere oppganger: bruk Kartlegg nedenfor.">📍 Geokod</button></div>'
+      + '<div class="row2" style="display:flex;gap:8px"><div style="flex:2">'+f("nb_addr","Adresse (enkeltbygg)",p.addr,"Kongsveien 88, 1177 Oslo")+'</div><button class="ob-btn ghost" data-ob="nbGeocode" style="align-self:flex-end" title="Geokod én adresse (enkeltbygg). Borettslag med flere oppganger: bruk Kartlegg nedenfor.">📍 Geokod</button></div>'
+      + '<div class="muted" style="font-size:11px;margin:-2px 0 2px">Skriv hele adressen — gate, husnr, postnr og sted — for riktig treff. Borettslag med flere oppganger: bruk Kartlegg ↓.</div>'
       + '<div class="row2" style="display:flex;gap:8px"><div style="flex:1">'+f("nb_postnr","Postnr",p.postnummer)+'</div><div style="flex:1.6">'+f("nb_poststed","Poststed",p.poststed)+'</div></div>'
       + '<div class="row2" style="display:flex;gap:8px"><div style="flex:1.6">'+f("nb_kommune","Kommune",p.kommunenavn)+'</div><div style="flex:1">'+f("nb_gnr","gnr",p.gnr)+'</div><div style="flex:1">'+f("nb_bnr","bnr",p.bnr)+'</div></div>'
       + '<div class="row2" style="display:flex;gap:8px"><div style="flex:1">'+f("nb_lat","Lat",p.lat!=null?(+p.lat).toFixed(5):"")+'</div><div style="flex:1">'+f("nb_lon","Lon",p.lon!=null?(+p.lon).toFixed(5):"")+'</div><div style="flex:1">'+f("nb_units","Enheter (ca.)",p.units||"")+'</div></div>'
@@ -3350,7 +3352,7 @@
       geoSearch(q, function(list){ nb.loading=false; if(list===null) nb.error="geonorge utilgjengelig — fyll inn manuelt"; else nb.results={type:"geo", items:list}; nbRender(); });
     }
   }
-  function prefillFromGeo(a){ var p=parseAddr(a); return { source:"geonorge", name:"", orgnr:"", orgform:"Eierseksjonssameie",
+  function prefillFromGeo(a){ var p=parseAddr(a); return { source:"geonorge", name:(p.adressetekst||""), orgnr:"", orgform:"Eierseksjonssameie",
     addr:p.adressetekst, postnummer:p.postnummer, poststed:p.poststed, kommunenavn:p.kommunenavn, kommunenummer:p.kommunenummer,
     gnr:p.gnr, bnr:p.bnr, lat:p.lat, lon:p.lon, units:p.units, forvalter:"", styreleder:"", styremedlemmer:[], revisor:"", naering:"", buildYear:"" }; }
   function prefillFromBrreg(e){ var of=(e.organisasjonsform||{});
@@ -3389,7 +3391,7 @@
     geoLookup(q, function(res){
       if(res===null){ toast("geonorge utilgjengelig"); return; }
       if(!res){ toast("Fant ikke adressen — prøv med husnummer/bokstav"); return; }
-      applyAddr(nb.prefill,res); nbRender(); toast("📍 "+res.adressetekst+" · gnr "+res.gnr+"/"+res.bnr+" · "+res.units+" enh.");
+      applyAddr(nb.prefill,res); if(!nb.prefill.name) nb.prefill.name=res.adressetekst||"";  nbRender(); toast("📍 "+res.adressetekst+" · gnr "+res.gnr+"/"+res.bnr+" · "+res.units+" enh.");
       nbDiscoverMatrikkel(nb.prefill);   // A1: geocode resolved → discover all oppganger on this gnr/bnr
     });
   }
@@ -3397,7 +3399,7 @@
     nb.prefill={source:"manuelt", name:"", orgnr:"", orgform:"Borettslag", addr:"", postnummer:"", poststed:"", kommunenavn:"", kommunenummer:"", gnr:"", bnr:"", lat:59.9139, lon:10.7522, units:"", forvalter:"", styreleder:"", styremedlemmer:[], revisor:"", naering:"", buildYear:""}; nbRender(); }
   function nbCreate(){
     var nb=ui.newBuilding; if(!nb) return; syncPrefillFromForm(); var p=nb.prefill||{};
-    if(!p.name){ toast("Navn må fylles ut"); var e=document.getElementById("nb_name"); if(e) e.focus(); return; }
+    if(!p.name){ p.name=((p.addr||(p.entrances&&p.entrances[0]&&p.entrances[0].address)||"").split(",")[0]).trim()||"Nytt bygg"; }   // fix #4: the address/discovery path has no org name → default to the address (rep renames in Bygg-info) so "Opprett bygg" never silently blocks → walkaround
     var enriched=!!(p.enrichment&&p.entrances&&p.entrances.length);
     var unitsTotal=enriched?(p.unitsTotal||0):(parseInt(p.units,10)||0);
     var lat=(p.lat!=null&&!isNaN(p.lat))?p.lat:59.9139, lon=(p.lon!=null&&!isNaN(p.lon))?p.lon:10.7522;
@@ -3481,30 +3483,30 @@
     }).join("");
     var ct=c.contacts[0]||{name:"",role:"Board chair",email:""};
     return '<div class="ob-grid split">'
-      +'<div class="card"><div class="ct">Prospect shell</div>'
-        +'<button class="ob-btn ghost" data-ob="prefill" style="margin-bottom:6px">⤓ Pre-fill from registry (Matrikkel / Kartverket — mocked)</button>'
-        +'<label>Name</label><input id="p_name" value="'+esc(c.name||"")+'" placeholder="e.g. Solbakken Borettslag">'
-        +'<label>Address</label><div class="row2" style="display:flex;gap:8px"><input id="p_addr" value="'+esc(c.addr||"")+'" placeholder="Street, postcode, town" style="flex:1"><button class="ob-btn ghost" data-ob="locatePrep">📍 Locate</button></div>'
+      +'<div class="card"><div class="ct">Bygg-info</div>'
+        +'<button class="ob-btn ghost" data-ob="prefill" style="margin-bottom:6px">⤓ Hent fra register</button>'
+        +'<label>Navn</label><input id="p_name" value="'+esc(c.name||"")+'" placeholder="f.eks. Sameiet Holtet Horisont I">'
+        +'<label>Adresse</label><div class="row2" style="display:flex;gap:8px"><input id="p_addr" value="'+esc(c.addr||"")+'" placeholder="Kongsveien 88, 1177 Oslo" style="flex:1"><button class="ob-btn ghost" data-ob="locatePrep">📍 Finn</button></div>'
         +'<div class="row2" style="display:flex;gap:10px"><div style="flex:1"><label>gnr</label><input id="p_gnr" value="'+esc(c.gnr||"")+'"></div><div style="flex:1"><label>bnr</label><input id="p_bnr" value="'+esc(c.bnr||"")+'"></div></div>'
-        +'<label>Building profile</label><select id="p_profile">'+PROFILES.map(function(p){return '<option'+(c.profile===p?' selected':'')+'>'+p+'</option>';}).join("")+'</select>'
-        +'<div class="row2" style="display:flex;gap:10px"><div style="flex:1"><label>Build year</label><input id="p_year" type="number" value="'+(c.buildYear||"")+'" placeholder="1998"></div><div style="flex:1"><label>Lot size (m²)</label><input id="p_size" type="number" value="'+(c.size||"")+'" placeholder="2400"></div></div>'
-        +'<label>Board contact</label><input id="p_cname" value="'+esc(ct.name)+'" placeholder="Name">'
-        +'<input id="p_cemail" value="'+esc(ct.email)+'" placeholder="email@board.no" style="margin-top:6px">'
-        +'<label>Meeting time</label><input id="p_meet" value="'+esc(c.meetingTime||"")+'" placeholder="Tue 10:00">'
-        +'<div class="ob-bar"><button class="ob-btn primary" data-ob="savePrep">'+(isNew?"Create prospect →":"Save shell")+'</button></div>'
+        +'<label>Byggprofil</label><select id="p_profile">'+PROFILES.map(function(p){return '<option'+(c.profile===p?' selected':'')+'>'+p+'</option>';}).join("")+'</select>'
+        +'<div class="row2" style="display:flex;gap:10px"><div style="flex:1"><label>Byggeår</label><input id="p_year" type="number" value="'+(c.buildYear||"")+'" placeholder="1998"></div><div style="flex:1"><label>Tomt (m²)</label><input id="p_size" type="number" value="'+(c.size||"")+'" placeholder="2400"></div></div>'
+        +'<label>Styrekontakt</label><input id="p_cname" value="'+esc(ct.name)+'" placeholder="Navn">'
+        +'<input id="p_cemail" value="'+esc(ct.email)+'" placeholder="epost@styret.no" style="margin-top:6px">'
+        +'<label>Møtetid</label><input id="p_meet" value="'+esc(c.meetingTime||"")+'" placeholder="tir 10:00">'
+        +'<div class="ob-bar"><button class="ob-btn primary" data-ob="savePrep">'+(isNew?"Opprett prospekt →":"Lagre og fortsett →")+'</button></div>'
       +'</div>'
       +'<div>'
         + (c.manager||(c.contacts&&c.contacts.length>1) ? managerCardHTML(c) : '')
         + (c.systems&&c.systems.length ? systemsCardHTML(c) : '')
-        +'<div class="card"><div class="ct">Requested-scope checklist</div>'
-          +'<p class="muted" style="font-size:12.5px;margin:0 0 10px">What the board asked us to quote — tick so we arrive prepared.</p>'
+        +'<div class="card"><div class="ct">Ønsket omfang</div>'
+          +'<p class="muted" style="font-size:12.5px;margin:0 0 10px">Hva styret ba oss prise — huk av så vi møter forberedt.</p>'
           +'<div style="display:flex;flex-direction:column;gap:9px">'+scopeBoxes+'</div></div>'
-        +'<div class="card"><div class="ct">Map-layer set (loaded for the walkaround)</div>'
-          +'<p class="muted" style="font-size:12.5px;margin:0 0 10px">Pre-selected from profile + requested scope, ready to mark on site.</p>'
+        +'<div class="card"><div class="ct">Kartlag (lastet for befaringen)</div>'
+          +'<p class="muted" style="font-size:12.5px;margin:0 0 10px">Forhåndsvalgt fra profil + ønsket omfang, klart å markere på stedet.</p>'
           +'<div class="ob-layers">'+(c.layers||[]).map(function(k){return layerChip(c,k,false);}).join("")+'</div>'
-          +(sugg.length?'<div class="ob-callout"><b>Suggested from build year '+(c.buildYear||"?")+':</b> likely '+sugg.map(function(k){return LAYERS[k].emoji+" "+LAYERS[k].label;}).join(", ")+'. Added to the layer set.</div>':'')
+          +(sugg.length?'<div class="ob-callout"><b>Foreslått fra byggeår '+(c.buildYear||"?")+':</b> trolig '+sugg.map(function(k){return LAYERS[k].emoji+" "+LAYERS[k].label;}).join(", ")+'. Lagt til i kartlaget.</div>':'')
         +'</div>'
-        +(c.stage?'<div class="ob-bar"><button class="ob-btn primary" data-ob="step" data-id="1">Go to walkaround →</button></div>':'')
+        +(c.stage?'<div class="ob-bar"><button class="ob-btn primary" data-ob="step" data-id="1">Til befaring →</button></div>':'')
       +'</div></div>';
   }
 
@@ -4473,7 +4475,7 @@
   function setVal(id,v){ var el=document.getElementById(id); if(el) el.value=v; }
   function savePrep(){
     var c=cur(); if(!c) return;
-    var name=val("p_name"); if(!name){ toast("Enter a name first"); var el=document.getElementById("p_name"); if(el) el.focus(); return; }
+    var name=val("p_name"); if(!name){ toast("Skriv et navn først"); var el=document.getElementById("p_name"); if(el) el.focus(); return; }
     c.name=name; c.addr=val("p_addr"); c.gnr=val("p_gnr"); c.bnr=val("p_bnr");
     c.profile=val("p_profile")||c.profile; c.buildYear=parseInt(val("p_year"),10)||""; c.size=parseInt(val("p_size"),10)||"";
     c.meetingTime=val("p_meet");
@@ -4486,7 +4488,7 @@
     (c.markers||[]).forEach(function(m){ m.inScope=(c.requestedScope.indexOf(m.layer)>=0); });
     if(c.stage==="Prospect"){ logEvent(c,"Office prep saved — "+(c.requestedScope.length)+" scope items, "+c.layers.length+" layers loaded"); }
     ui.draftNew=false; ui.step=1; save();
-    toast("Saved — walkaround layers loaded");
+    toast("Lagret — kartlag klare for befaring");
     repaintSales();
   }
 
