@@ -3484,7 +3484,6 @@
     var ct=c.contacts[0]||{name:"",role:"Board chair",email:""};
     return '<div class="ob-grid split">'
       +'<div class="card"><div class="ct">Bygg-info</div>'
-        +'<button class="ob-btn ghost" data-ob="prefill" style="margin-bottom:6px">⤓ Hent fra register</button>'
         +'<label>Navn</label><input id="p_name" value="'+esc(c.name||"")+'" placeholder="f.eks. Sameiet Holtet Horisont I">'
         +'<label>Adresse</label><div class="row2" style="display:flex;gap:8px"><input id="p_addr" value="'+esc(c.addr||"")+'" placeholder="Kongsveien 88, 1177 Oslo" style="flex:1"><button class="ob-btn ghost" data-ob="locatePrep">📍 Finn</button></div>'
         +'<div class="row2" style="display:flex;gap:10px"><div style="flex:1"><label>gnr</label><input id="p_gnr" value="'+esc(c.gnr||"")+'"></div><div style="flex:1"><label>bnr</label><input id="p_bnr" value="'+esc(c.bnr||"")+'"></div></div>'
@@ -4331,7 +4330,6 @@
       case "mobilePane": { ui.mobilePane=arg; var g=document.getElementById("ob-walkgrid"); if(g){ g.classList.remove("pane-map","pane-list"); g.classList.add("pane-"+arg);
         [].forEach.call(document.querySelectorAll('[data-ob="mobilePane"]'),function(b){ b.classList.toggle("on", b.getAttribute("data-arg")===arg); });
         if(arg==="map"&&map){ setTimeout(function(){ try{map.invalidateSize();}catch(e){} },60); } } break; }
-      case "prefill": prefillForm(); break;
       case "savePrep": savePrep(); break;
       case "locatePrep": { var a=val("p_addr"); var cc=cur(); if(cc){ cc.addr=a; locate(cc,a);} break; }
       case "locateWalk": if(c) locate(c, c.addr); break;
@@ -4465,14 +4463,6 @@
     ui.openId=c.id; ui.step=0; ui.draftNew=true; ui.activeLayer=null;
     OnSite.go("sales");
   }
-  function prefillForm(){
-    // mock Matrikkel/Kartverket registry pre-fill
-    setVal("p_year","1998"); setVal("p_size","2400");
-    var sel=document.getElementById("p_profile"); if(sel) sel.value="Residential — association";
-    if(!val("p_gnr")) setVal("p_gnr","62"); if(!val("p_bnr")) setVal("p_bnr","140");
-    toast("Registry pre-fill applied (mocked): 1998 · 2 400 m² · association");
-  }
-  function setVal(id,v){ var el=document.getElementById(id); if(el) el.value=v; }
   function savePrep(){
     var c=cur(); if(!c) return;
     var name=val("p_name"); if(!name){ toast("Skriv et navn først"); var el=document.getElementById("p_name"); if(el) el.focus(); return; }
