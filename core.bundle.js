@@ -123,6 +123,19 @@ export function computeOffer(c, opts) {
       optionLines.push(oLine({ id: id + "opt:bed" + i, service: "greenery", role: "bed", label: "Gartner bed (" + zz.label + ")", emoji: "🌷", qty: zz.area_m2, unit: "m²", rate: RATES.greenery.gartner_bed_m2_year, cadence: "Sesong", computed: yr, zoneId: zz.id })); zz.priceLineId = id + "opt:bed" + i; });
     (c.checklist || []).filter(function (it) { return it.scope === "upsell" && (it.price || 0) > 0; }).forEach(function (it, i) {
       optionLines.push(oLine({ id: id + "opt:up" + i, service: layerToService(it.id) || "other", role: "upsell", label: it.subtype || it.label, emoji: it.emoji || "⬆", qty: null, computed: it.price, oneOff: !!it.oneOff, cadence: it.oneOff ? "engangs" : "løpende" })); });
+    // fix 3: the rep's count markers (Heis, lekeplass, brannpunkt …) are priced per-unit but this checklist
+    // branch ignored them — aggregate by layer so N markers price as ×N (e.g. 4 Heis → 4 × kr 12 000). These
+    // sit in optionLines (OUTSIDE the monthly base — totalMonthly comes only from modules), so the Holtet
+    // kr 16 530 anchor is untouched. Sums m.qty/m.price so a single edited marker (qty 4) counts too.
+    var mkBy = {};
+    (c.markers || []).forEach(function (m) { var md = LAYERS[m.layer];
+      if (!md || md.recordOnly || md.measure !== "count" || !(md.rate > 0)) return;
+      var a = mkBy[m.layer] || (mkBy[m.layer] = { qty: 0, price: 0, d: md });
+      a.qty += (m.qty != null ? m.qty : 1); a.price += (m.price != null ? m.price : md.rate * (m.qty != null ? m.qty : 1)); });
+    Object.keys(mkBy).forEach(function (layer) { var a = mkBy[layer]; if (a.qty <= 0) return;
+      optionLines.push(oLine({ id: id + "opt:mk:" + layer, service: layerToService(layer) || "other", role: "upsell",
+        label: a.d.label + " (" + a.qty + " " + a.d.unit + ")", emoji: a.d.emoji, qty: a.qty, unit: a.d.unit, rate: a.d.rate,
+        cadence: a.d.freq, computed: a.price, compliance: !!a.d.compliance })); });
     lines.forEach(function (l) { if (l.zoneId) { var zz = findZone(c, l.zoneId); if (zz) zz.priceLineId = l.id; } });
   } else {
     (c.markers || []).filter(function (m) { return LAYERS[m.layer] && !LAYERS[m.layer].recordOnly; }).forEach(function (m) {

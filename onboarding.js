@@ -390,8 +390,9 @@
     map=L.map(el,{zoomControl:true});
     map.setView(center, zoom);
     // M19: Kartverket topo only — OSM public tiles removed (commercial-use terms compliance)
-    var __base=L.tileLayer(KARTVERKET,{attribution:"© Kartverket", maxZoom:20}).addTo(map);
+    var __base=L.tileLayer(KARTVERKET,{attribution:"© Kartverket", maxZoom:20, maxNativeZoom:18}).addTo(map);
     addOverlayLayers(map, __base);   // doc-66 B: hazard/compliance overlays (off by default, remembered)
+    drawTeigUnderlay(c);   // fix 1: show the property boundary (Group A teig) under the draw/zone/marker layers
     markerLayer=L.layerGroup().addTo(map);
     buildingMarker=L.marker(center,{interactive:false, keyboard:false,
       icon:L.divIcon({className:"", html:'<div class="ob-bpin">🏢</div>', iconSize:[30,30], iconAnchor:[15,15]})}).addTo(map);
@@ -400,6 +401,21 @@
     map.on("click", onMapClick);
     map.on("dblclick", function(){ if(drawMode && drawMode!=="point") finishDraw(); });
     setTimeout(function(){ if(map) map.invalidateSize(); }, 60);
+  }
+  // fix 1: render the property boundary (+ entrance pins) from Group A discovery as a NON-interactive
+  // underlay on the walkaround map — a dedicated low-z pane with pointer-events:none so taps still drop
+  // markers. Teal stroke, light fill, beneath the rep's zones/markers. No fitBounds (keeps the rep's view).
+  function drawTeigUnderlay(c){
+    if(!map || !c || !c.properties || !c.properties.length) return;
+    if(!map.getPane("ob-teig")){ var pn=map.createPane("ob-teig"); pn.style.zIndex=250; pn.style.pointerEvents="none"; }
+    c.properties.forEach(function(pr){ if(!pr.ring || pr.ring.length<3) return;
+      var ll=pr.ring.map(function(pt){ return [pt[1], pt[0]]; });   // ring is [lon,lat] → Leaflet [lat,lon]
+      L.polygon(ll,{pane:"ob-teig", interactive:false, color:"#0f766e", weight:2, opacity:0.9, fillColor:"#0f766e", fillOpacity:0.07}).addTo(map);
+    });
+    (c.entrances||[]).forEach(function(e){ if(e.lat==null) return;
+      L.marker([e.lat,e.lon],{pane:"ob-teig", interactive:false, keyboard:false,
+        icon:L.divIcon({className:"", html:'<div class="ob-enpin">'+esc(String((e.nummer!=null?e.nummer:"")+(e.bokstav||"")))+'</div>', iconSize:[26,26], iconAnchor:[13,13]})}).addTo(map);
+    });
   }
   function markerIcon(c,m){
     var d=LAYERS[m.layer];
@@ -417,8 +433,15 @@
   function markerPopupHTML(c,m){
     var d=LAYERS[m.layer];
     var qtyLabel = d.measure==="area" ? "Area (m²)" : "Count / units";
+    // fix 3: when 2+ markers of this layer exist, show the aggregate so the rep sees all are registered
+    // (not just this point's "1"). layerTally sums qty per layer → total units; ×rate = the option total.
+    var same=(c.markers||[]).filter(function(x){return x.layer===m.layer;});
+    var aggLine = same.length>1 ? '<div style="font-size:11.5px;font-weight:700;color:var(--teal-d);background:var(--teal-l);border-radius:7px;padding:3px 8px;margin-bottom:6px">'
+      +d.emoji+' '+same.length+' '+esc(d.label)+' markert totalt'+(d.measure!=="area"?(' · '+layerTally(c,m.layer)+' '+esc(d.unit)):'')
+      +(d.rate>0&&d.measure!=="area"?(' → '+kr(layerTally(c,m.layer)*d.rate)+'/år som opsjon'):'')+'</div>' : '';
     return '<div class="ob-pop" style="min-width:215px">'
       +'<div style="font-weight:750;margin-bottom:2px">'+d.emoji+' '+esc(d.label)+(isUpsell(c,m)?' <span style="color:#b5790b">· upsell</span>':'')+'</div>'
+      +aggLine
       +'<label>Service</label><input data-obf="mkservice" data-id="'+m.id+'" value="'+esc(m.service)+'">'
       +'<label>Frequency</label><input data-obf="mkfreq" data-id="'+m.id+'" value="'+esc(m.frequency)+'">'
       +'<label>'+qtyLabel+'</label><input type="number" step="1" min="0" data-obf="mkqty" data-id="'+m.id+'" value="'+(m.qty||0)+'">'
@@ -771,7 +794,7 @@
     if(opMaps[elId]){ try{opMaps[elId].remove();}catch(e){} delete opMaps[elId]; }
     var m=L.map(el,{zoomControl:true, attributionControl:true});
     opMaps[elId]=m;
-    L.tileLayer(KARTVERKET,{attribution:"© Kartverket", maxZoom:20}).addTo(m);
+    L.tileLayer(KARTVERKET,{attribution:"© Kartverket", maxZoom:20, maxNativeZoom:18}).addTo(m);
     L.marker([c.center.lat,c.center.lon],{interactive:false, keyboard:false, icon:bpinIcon()}).addTo(m);
     var zones=(c.zones||[]).filter(kind==="snow" ? function(z){return z.service==="snow";} : function(z){return z.service==="grass"||z.service==="greenery";});
     var grp=L.featureGroup().addTo(m);
@@ -1845,7 +1868,7 @@
     setTimeout(function(){
       if(!hasLeaflet) return; var el=document.getElementById("ob-geomap"); if(!el) return;
       geoMini=L.map(el,{zoomControl:true, attributionControl:true});
-      L.tileLayer(KARTVERKET,{attribution:"© Kartverket", maxZoom:20}).addTo(geoMini);
+      L.tileLayer(KARTVERKET,{attribution:"© Kartverket", maxZoom:20, maxNativeZoom:18}).addTo(geoMini);
       L.circleMarker([lat,lon],{radius:7, color:"#2f6fed", weight:2, fillColor:"#2f6fed", fillOpacity:.9}).addTo(geoMini);
       if(acc>0) L.circle([lat,lon],{radius:acc, color:"#2f6fed", weight:1, fillOpacity:.10}).addTo(geoMini);
       geoMini.setView([lat,lon], 18);
@@ -2310,7 +2333,7 @@
       +'<div class="muted" style="margin-top:8px;font-size:12.5px">'+lat.toFixed(5)+', '+lon.toFixed(5)+'</div>'
       +'<button class="cancel" data-ob="closeObSheet">Lukk</button>');
     setTimeout(function(){ if(!hasLeaflet) return; var el=document.getElementById("ob-geomap"); if(!el) return;
-      geoMini=L.map(el,{zoomControl:true, attributionControl:true}); L.tileLayer(KARTVERKET,{attribution:"© Kartverket", maxZoom:20}).addTo(geoMini);
+      geoMini=L.map(el,{zoomControl:true, attributionControl:true}); L.tileLayer(KARTVERKET,{attribution:"© Kartverket", maxZoom:20, maxNativeZoom:18}).addTo(geoMini);
       L.circleMarker([lat,lon],{radius:8, color:"#b45309", weight:2, fillColor:"#f59e0b", fillOpacity:.9}).addTo(geoMini);
       geoMini.setView([lat,lon], 18); setTimeout(function(){ if(geoMini) geoMini.invalidateSize(); }, 60); }, 40);
   }
@@ -3327,7 +3350,7 @@
     if(!hasLeaflet) return; var el=document.getElementById("nb-teigmap"); if(!el) return;
     if(opMaps["nb-teigmap"]){ try{opMaps["nb-teigmap"].remove();}catch(e){} delete opMaps["nb-teigmap"]; }
     var m=L.map(el,{zoomControl:true}); opMaps["nb-teigmap"]=m;
-    var __base=L.tileLayer(KARTVERKET,{attribution:"© Kartverket", maxZoom:20}).addTo(m);
+    var __base=L.tileLayer(KARTVERKET,{attribution:"© Kartverket", maxZoom:20, maxNativeZoom:18}).addTo(m);
     addOverlayLayers(m, __base);   // doc-66 B: radon/flom/skred toggles on the building preview (before the walk)
     var grp=L.featureGroup().addTo(m);
     (p.properties||[]).forEach(function(pr){ if(!pr.ring||pr.ring.length<3) return;
@@ -4129,7 +4152,7 @@
     if(!hasLeaflet||!c) return; var el=document.getElementById(elId); if(!el) return;
     if(opMaps[elId]){ try{opMaps[elId].remove();}catch(e){} delete opMaps[elId]; }
     var m=L.map(el,{zoomControl:true, attributionControl:true}); opMaps[elId]=m;
-    L.tileLayer(KARTVERKET,{attribution:"© Kartverket", maxZoom:20}).addTo(m);
+    L.tileLayer(KARTVERKET,{attribution:"© Kartverket", maxZoom:20, maxNativeZoom:18}).addTo(m);
     if(c.center) L.marker([c.center.lat,c.center.lon],{interactive:false, keyboard:false, icon:bpinIcon()}).addTo(m);
     var anyAttr=coveredIds.length>0, grp=L.featureGroup().addTo(m);
     (c.zones||[]).filter(function(z){return z.service==="snow";}).forEach(function(z){

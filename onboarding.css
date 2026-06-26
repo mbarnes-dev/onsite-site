@@ -175,6 +175,9 @@
 
 /* big primary action bar inside wizard */
 .ob-bar{display:flex;gap:9px;flex-wrap:wrap;margin-top:14px}
+/* fix 4: a lone CTA fills its bar so the WHOLE visible row is the tap target — no dead strip beside a
+   content-width button (sendOffer/nbCreate/goLive/savePrep/genOffer …). Multi-button bars unaffected. */
+.ob-bar>.ob-btn:only-child{flex:1 1 100%}
 .ob-btn{border:none;border-radius:12px;padding:13px 18px;font-size:14.5px;font-weight:700;cursor:pointer}
 .ob-btn.primary{background:var(--teal);color:#fff}
 .ob-btn.amber{background:var(--amber);color:#fff}
