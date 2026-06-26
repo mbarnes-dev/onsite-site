@@ -390,7 +390,8 @@
     map=L.map(el,{zoomControl:true});
     map.setView(center, zoom);
     // M19: Kartverket topo only — OSM public tiles removed (commercial-use terms compliance)
-    L.tileLayer(KARTVERKET,{attribution:"© Kartverket", maxZoom:20}).addTo(map);
+    var __base=L.tileLayer(KARTVERKET,{attribution:"© Kartverket", maxZoom:20}).addTo(map);
+    addOverlayLayers(map, __base);   // doc-66 B: hazard/compliance overlays (off by default, remembered)
     markerLayer=L.layerGroup().addTo(map);
     buildingMarker=L.marker(center,{interactive:false, keyboard:false,
       icon:L.divIcon({className:"", html:'<div class="ob-bpin">🏢</div>', iconSize:[30,30], iconAnchor:[15,15]})}).addTo(map);
@@ -688,6 +689,83 @@
     if(!(c.zones && c.zones.length)) return "";
     return '<div class="ob-opmaps">'+opCardHTML(c,"snow",prefix)+opCardHTML(c,"grass",prefix)+'</div>';
   }
+  /* ===========================================================================
+     GROUP B (doc 66) — hazard & compliance WMS overlays (open, no token) + the record
+     flag (B3 GetFeatureInfo). GROUP C — orthophoto base via the proxy (token-gated, demo).
+     All confirmed via GetCapabilities: radon/flom/skred render in EPSG:3857 (Leaflet default);
+     GetFeatureInfo is CORS-enabled on geo.ngu.no + kart.nve.no. =========================================================================== */
+  var OVERLAY_PREF_KEY="onsite_overlays";
+  function overlayPrefs(){ try{ return JSON.parse(localStorage.getItem(OVERLAY_PREF_KEY)||"{}"); }catch(e){ return {}; } }
+  function setOverlayPref(name,on){ try{ var p=overlayPrefs(); p[name]=!!on; localStorage.setItem(OVERLAY_PREF_KEY, JSON.stringify(p)); }catch(e){} }
+  // C: NiB orthophoto via the proxy. OFF until a NIB_TOKEN is set in Supabase secrets (server-side,
+  // supabase/functions/proxy) — the token is IP-bound + ≤weekly so it can't live in client JS. Demo-grade;
+  // production token-refresh is phase-2. Flip ORTHO_ON=true once a token is configured to expose the base.
+  var ORTHO_ON=false;
+  var ORTHO_URL="https://awyjzqgxfvoptyfvspxu.supabase.co/functions/v1/proxy?target=orthophoto";
+  function wmsOverlay(base, layers, attr){ return L.tileLayer.wms(base, { layers:layers, format:"image/png", transparent:true, opacity:0.55, version:"1.3.0", attribution:attr }); }
+  function makeHazardOverlays(){
+    var NVE="https://kart.nve.no/enterprise/services/";
+    return {
+      "☢️ Radon": wmsOverlay("https://geo.ngu.no/mapserver/RadonWMS2", "Radon_aktsomhet", "NGU/DSA"),
+      "🌊 Flom": wmsOverlay(NVE+"Flomaktsomhet/MapServer/WMSServer", "Flom_aktsomhetsomrade", "NVE"),
+      "⛰️ Skred": L.layerGroup([
+        wmsOverlay(NVE+"SnoskredAktsomhet/MapServer/WMSServer", "S2_snoskred_m_skogeffekt_Aktsomhetsomrade", "NVE"),
+        wmsOverlay(NVE+"JordflomskredAktsomhet/MapServer/WMSServer", "Jord_flomskred_aktsomhetsomrader", "NVE"),
+        wmsOverlay(NVE+"KvikkleireskredAktsomhet/MapServer/WMSServer", "KvikkleireskredAktsomhet", "NVE")
+      ])
+    };
+  }
+  // attach toggleable hazard overlays (+ the C orthophoto base when enabled) to a Leaflet map. Off by default,
+  // choice remembered in localStorage. base = the Kartverket tileLayer already on the map (for the base switcher).
+  function addOverlayLayers(map, base){
+    if(!hasLeaflet || !map) return;
+    var overlays=makeHazardOverlays(), prefs=overlayPrefs();
+    Object.keys(overlays).forEach(function(name){ if(prefs[name]) overlays[name].addTo(map); });
+    var bases=null;
+    if(ORTHO_ON && base){
+      bases={ "🗺️ Kart": base, "🛰️ Ortofoto (demo)": L.tileLayer.wms(ORTHO_URL, { layers:"ortofoto", format:"image/png", version:"1.3.0", attribution:"Norge i bilder (demo)" }) };
+    }
+    L.control.layers(bases, overlays, {collapsed:true}).addTo(map);
+    map.on("overlayadd", function(e){ setOverlayPref(e.name,true); });
+    map.on("overlayremove", function(e){ setOverlayPref(e.name,false); });
+  }
+  /* ---- B3: classify the building's hazard exposure from the aktsomhetskart (GetFeatureInfo) ---- */
+  function merc(lat,lon){ var x=lon*20037508.34/180, y=Math.log(Math.tan((90+lat)*Math.PI/360))/(Math.PI/180)*20037508.34/180; return [x,y]; }
+  function gfi(base, layer, bbox, fmt, cb){
+    var url=base+(base.indexOf("?")<0?"?":"&")+"service=WMS&version=1.3.0&request=GetFeatureInfo&layers="+encodeURIComponent(layer)+"&query_layers="+encodeURIComponent(layer)+"&crs=EPSG:3857&bbox="+encodeURIComponent(bbox)+"&width=101&height=101&i=50&j=50&info_format="+encodeURIComponent(fmt);
+    fetch(url).then(function(r){return r.text();}).then(cb).catch(function(){ cb(null); });
+  }
+  function gfiHasFeature(t){ return !!t && /Feature\s+\d+/i.test(t) && !/No features found/i.test(t); }
+  function normRadon(s){ s=(s||"").toLowerCase(); if(/særlig\s*høy/.test(s)) return "særlig høy"; if(/høy/.test(s)) return "høy"; if(/moderat|lav/.test(s)) return "moderat-lav"; if(/usikker/.test(s)) return "usikker"; return null; }
+  function radonHigh(rc){ return rc==="høy"||rc==="særlig høy"; }
+  // advisory only — "fra aktsomhetskart, bekreft på befaring". Null/timeout handled silently; never blocks setup.
+  function queryHazards(lat, lon, cb){
+    if(lat==null||lon==null||typeof fetch==="undefined"){ cb(null); return; }
+    var c=merc(lat,lon), d=80, bbox=[(c[0]-d),(c[1]-d),(c[0]+d),(c[1]+d)].join(",");
+    var NVE="https://kart.nve.no/enterprise/services/";
+    var out={ radonClass:null, flom:false, skred:false, queriedTs:new Date().toISOString() }, pending=5;
+    function done(){ if(--pending===0) cb(out); }
+    gfi("https://geo.ngu.no/mapserver/RadonWMS2","Radon_aktsomhet",bbox,"application/vnd.ogc.gml",function(x){ if(x){ var m=/<aktsomhetgrad_besk>([^<]+)<\/aktsomhetgrad_besk>/i.exec(x); if(m) out.radonClass=normRadon(m[1]); } done(); });
+    gfi(NVE+"Flomaktsomhet/MapServer/WMSServer","Flom_aktsomhetsomrade",bbox,"text/plain",function(t){ if(gfiHasFeature(t)) out.flom=true; done(); });
+    gfi(NVE+"SnoskredAktsomhet/MapServer/WMSServer","S2_snoskred_m_skogeffekt_Aktsomhetsomrade",bbox,"text/plain",function(t){ if(gfiHasFeature(t)) out.skred=true; done(); });
+    gfi(NVE+"JordflomskredAktsomhet/MapServer/WMSServer","Jord_flomskred_aktsomhetsomrader",bbox,"text/plain",function(t){ if(gfiHasFeature(t)) out.skred=true; done(); });
+    gfi(NVE+"KvikkleireskredAktsomhet/MapServer/WMSServer","KvikkleireskredAktsomhet",bbox,"text/plain",function(t){ if(gfiHasFeature(t)) out.skred=true; done(); });
+  }
+  // radon høy/særlig høy → flag the existing Radonmåling compliance item (doc-23 pack)
+  function applyHazards(c){
+    var h=c&&c.hazards; if(!h) return;
+    if(radonHigh(h.radonClass)) (c.compliance||[]).forEach(function(r){ if(/radon/i.test(r.label||"")){ r.aktsomhet=h.radonClass; r.note="Anbefalt pga. radon-aktsomhetssone ("+h.radonClass+") — fra aktsomhetskart, bekreft på befaring"; r.priority=true; } });
+  }
+  function hazardNoteHTML(c){
+    var h=c&&c.hazards; if(!h||!h.queriedTs) return "";
+    var bits=[];
+    if(h.radonClass){ var hi=radonHigh(h.radonClass); bits.push('<span class="ob-haz'+(hi?' hi':'')+'">☢️ Radon: '+esc(h.radonClass)+(hi?' · Radonmåling anbefalt':'')+'</span>'); }
+    if(h.flom) bits.push('<span class="ob-haz hi">🌊 Flom-aktsomhet</span>');
+    if(h.skred) bits.push('<span class="ob-haz hi">⛰️ Skred-aktsomhet</span>');
+    if(!h.flom && !h.skred && !radonHigh(h.radonClass)) bits.push('<span class="ob-haz ok">✓ Ingen høy aktsomhetssone</span>');
+    return '<div class="ob-hazrow">'+bits.join("")+' <span class="muted" style="font-size:10px">· fra aktsomhetskart, bekreft på befaring</span></div>';
+  }
+
   function buildOpMap(c, kind, elId){
     if(!hasLeaflet) return; var el=document.getElementById(elId); if(!el) return;
     if(opMaps[elId]){ try{opMaps[elId].remove();}catch(e){} delete opMaps[elId]; }
@@ -2196,6 +2274,7 @@
       +'<div class="ct">🏢 Bygg-info — '+esc(c.name)+' <span class="muted" style="font-weight:600">· '+n+' anlegg kartlagt</span></div>'
       +'<div class="ob-bygg-sub">Hvor er avstengning, tavle, sentral? Samlet og stedfestet — kunnskapen blir i systemet, ikke i hodet til én. Ny vaktmester er produktiv dag én.</div>'
       +emergencyStripHTML(c)
+      +hazardNoteHTML(c)   // doc-66 B3: radon/flom/skred aktsomhet flags (advisory)
       +'<div class="ob-assetfind-wrap"><input class="ob-assetfind" id="assetfind-'+c.id+'" data-obf="assetFind" data-id="'+c.id+'" placeholder="🔎 Hvor er hovedstoppekranen?" value="'+esc(q)+'" autocomplete="off"></div>'
       +'<div class="ob-assetfilter">'+tabs+'</div>'
       +'<div id="ob-assetlist-'+c.id+'" class="ob-assetlist">'+assetListInnerHTML(c)+'</div>'
@@ -3246,7 +3325,8 @@
     if(!hasLeaflet) return; var el=document.getElementById("nb-teigmap"); if(!el) return;
     if(opMaps["nb-teigmap"]){ try{opMaps["nb-teigmap"].remove();}catch(e){} delete opMaps["nb-teigmap"]; }
     var m=L.map(el,{zoomControl:true}); opMaps["nb-teigmap"]=m;
-    L.tileLayer(KARTVERKET,{attribution:"© Kartverket", maxZoom:20}).addTo(m);
+    var __base=L.tileLayer(KARTVERKET,{attribution:"© Kartverket", maxZoom:20}).addTo(m);
+    addOverlayLayers(m, __base);   // doc-66 B: radon/flom/skred toggles on the building preview (before the walk)
     var grp=L.featureGroup().addTo(m);
     (p.properties||[]).forEach(function(pr){ if(!pr.ring||pr.ring.length<3) return;
       var ll=pr.ring.map(function(pt){ return [pt[1], pt[0]]; }); var col=teigColor(pr.bnr);
@@ -3339,6 +3419,7 @@
       offer:null, offerHistory:[], changeRequests:[], buildingId:null, handover:null, enrichment:enriched,
       log:[{ts:nowStr(), text:"Opprettet fra offentlig register ("+(p.source||"register")+") — verifiseres på befaring"+(enriched?(" · kartlagt: "+p.entrances.length+" oppganger / "+unitsTotal+" boenheter / "+p.properties.length+" matrikkelenheter"):"")}] };
     customers().push(c); save();
+    queryHazards(c.center.lat, c.center.lon, function(hz){ if(hz){ c.hazards=hz; applyHazards(c); save(); render(); } });  // doc-66 B3: classify radon/flom/skred at the centroid (advisory; silent on null/timeout)
     ui.newBuilding=null; ui.openId=c.id; ui.step=1; ui.draftNew=false; ui.activeLayer=null; ui.zonesOpen={1:true,3:true}; ui.modOpen={};
     toast("✅ Bygg opprettet: "+p.name+" — klar for befaring"); OnSite.go("sales");
   }

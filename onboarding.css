@@ -753,3 +753,9 @@
 .ob-fin-cell{display:flex;flex-direction:column;gap:1px;min-width:92px;background:#fff;border:1px solid #e2ece6;border-radius:8px;padding:5px 9px}
 .ob-fin-lbl{font-size:10px;font-weight:600;color:#6b7670;text-transform:uppercase;letter-spacing:.03em}
 .ob-fin-val{font-size:13px;font-weight:750;color:#23332b}
+
+/* ---- doc-66 B3 hazard aktsomhet flags ---- */
+.ob-hazrow{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0 4px}
+.ob-haz{font-size:11px;font-weight:700;padding:3px 9px;border-radius:999px;background:#eef1ef;color:#3a443f;border:1px solid #e0e5e1}
+.ob-haz.hi{background:#fdecea;color:#9c241c;border-color:#f3c9c5}
+.ob-haz.ok{background:#e7f6ee;color:#15803d;border-color:#bfe6cf}

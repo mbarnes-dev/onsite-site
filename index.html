@@ -187,7 +187,7 @@
   "use strict";
   var LS_KEY = "onsite_day_v1";
 
-  var SCHEMA_VERSION = 11;
+  var SCHEMA_VERSION = 12;
 
   /* ---------- cloud persistence v1 (doc 64): Supabase state-blob sync, localStorage-cached ----------
      The anon key is PUBLIC-by-design (safe in the client). NEVER put the service_role key here.
@@ -266,6 +266,7 @@
       if(c.enrichment===undefined) c.enrichment = false;  // v9: whole-BRL aggregation ran
       if(!Array.isArray(c.inspections)) c.inspections = [];  // v10: doc-63 reactive→recurring inspection cadences (folded into scheduleLines → Årsplan)
       if(c.finance===undefined) c.finance = null;            // v11: doc-66 A4 association accounts (Regnskapsregisteret; entrance floors + property buildingPoints are nested-optional, read defensively)
+      if(c.hazards===undefined) c.hazards = null;            // v12: doc-66 B3 radon/flom/skred aktsomhet flags (advisory, from aktsomhetskart GetFeatureInfo)
       c.zones.forEach(function(z){ if(!Array.isArray(z.completionLog)) z.completionLog = []; if(!Array.isArray(z.photoIds)) z.photoIds = []; });
       if(c.offer && typeof c.offer==="object"){
         if(Array.isArray(c.offer.modules)) c.offer.modules.forEach(function(m){ if(Array.isArray(m.lines)) m.lines.forEach(fixLine); });
@@ -651,7 +652,7 @@
 <script src="vendor/leaflet/leaflet.js"></script>
 <!-- @onsite/core (doc-55 step 1): the pure engines as a committed static ESM bundle. Module defers
      (runs before DOMContentLoaded); onboarding.js delegates to window.OnSiteCore lazily (post-load). -->
-<script type="module">import * as Core from "./core.bundle.js?v=17h"; window.OnSiteCore = Core;</script>
-<script src="onboarding.js?v=17h"></script>
+<script type="module">import * as Core from "./core.bundle.js?v=17i"; window.OnSiteCore = Core;</script>
+<script src="onboarding.js?v=17i"></script>
 </body>
 </html>

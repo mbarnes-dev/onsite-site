@@ -1,12 +1,15 @@
-// OnSite allowlisted proxy (doc 66 A4 + Group C seam). DEPLOYED to Supabase Edge Functions
+// OnSite allowlisted proxy (doc 66 A4 + Group C). DEPLOYED to Supabase Edge Functions
 // (project awyjzqgxfvoptyfvspxu, fn "proxy", verify_jwt=false). This file is the source of record.
 //
 // Forwards ONLY to known upstreams (an allowlist), validating params per target. NOT an open relay.
-// A server-side secret/token can be injected PER TARGET via Deno.env — it NEVER touches client JS.
-// Today: `regnskap` = public brreg Regnskapsregister (no token; /enhetsregisteret is CORS-open but
-// /regnskapsregisteret is not, which is why this exists). Group C: add an `orthophoto` target whose
-// upstream needs a key — put the key in Deno.env and read it in that target's headers(); for a PAID
-// token, redeploy with verify_jwt=true + add rate-limiting so a public proxy can't burn the quota.
+// A server-side secret/token is injected PER TARGET via Deno.env — it NEVER touches client JS.
+//  - regnskap   : public brreg Regnskapsregister (no token; /enhetsregisteret is CORS-open but
+//                 /regnskapsregisteret is not, which is why this exists).
+//  - orthophoto : Norge i bilder WMS mosaic. Its token is IP-bound + expires ≤weekly, so it lives ONLY
+//                 here (Deno.env NIB_TOKEN), never in the browser. DEMO-GRADE: the token must be valid for
+//                 THIS proxy's egress IP; production needs server-side token refresh + a stable egress
+//                 (phase-2 worker). With no NIB_TOKEN set, this target returns 400 and the client keeps the
+//                 Ortofoto base option off — so prod stays clean. // for a paid token: redeploy verify_jwt=true + rate-limit.
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -17,7 +20,7 @@ function json(o: unknown, status: number) {
   return new Response(JSON.stringify(o), { status, headers: { ...cors, "content-type": "application/json" } });
 }
 
-type Target = { build: (p: URLSearchParams) => string | null; headers?: () => Record<string, string>; accept?: string };
+type Target = { build: (p: URLSearchParams) => string | null; headers?: () => Record<string, string> };
 const ALLOW: Record<string, Target> = {
   regnskap: {
     build: (p) => {
@@ -25,8 +28,16 @@ const ALLOW: Record<string, Target> = {
       if (!/^\d{9}$/.test(orgnr)) return null;
       return `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}`;
     },
-    accept: "application/json",
-    headers: () => ({}), // ← Group C token seam: e.g. { "X-API-Key": Deno.env.get("NIB_KEY")! } — server-side only
+  },
+  orthophoto: {
+    build: (p) => {
+      const token = Deno.env.get("NIB_TOKEN");
+      if (!token) return null; // not configured → 400; client leaves the Ortofoto base off
+      const qs = new URLSearchParams(p);
+      qs.delete("target");
+      qs.set("token", token); // server-side token injection — never in client JS
+      return `https://services.norgeibilder.no/wms/mosaikk?${qs.toString()}`;
+    },
   },
 };
 
@@ -38,11 +49,14 @@ Deno.serve(async (req) => {
   const def = ALLOW[target];
   if (!def) return json({ error: "unknown target" }, 400);
   const upstream = def.build(url.searchParams);
-  if (!upstream) return json({ error: "bad or missing params" }, 400);
+  if (!upstream) return json({ error: "bad params or not configured" }, 400);
   try {
-    const r = await fetch(upstream, { headers: { accept: def.accept || "application/json", ...(def.headers ? def.headers() : {}) } });
-    const body = await r.text();
-    return new Response(body, { status: r.status, headers: { ...cors, "content-type": r.headers.get("content-type") || "application/json" } });
+    const r = await fetch(upstream, { headers: { ...(def.headers ? def.headers() : {}) } });
+    // stream the upstream body through unchanged — works for JSON (regnskap) AND binary images (orthophoto)
+    return new Response(r.body, {
+      status: r.status,
+      headers: { ...cors, "content-type": r.headers.get("content-type") || "application/octet-stream" },
+    });
   } catch (_e) {
     return json({ error: "upstream fetch failed" }, 502);
   }
