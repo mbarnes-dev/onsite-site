@@ -7,7 +7,7 @@
 -- NEVER expose the service_role key in the client — the app uses the anon public key only.
 
 create table if not exists public.workspaces (
-  id          text primary key,                              -- e.g. 'mellomgarden-demo'
+  id          text primary key,                              -- e.g. 'solbakken-demo'
   state       jsonb       not null default '{}'::jsonb,      -- the full OnSite state blob (migrate()-shaped)
   rev         bigint      not null default 0,                -- last-write-wins counter (no CRDTs)
   updated_at  timestamptz not null default now()

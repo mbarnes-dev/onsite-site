@@ -896,7 +896,7 @@
 
   /* ===========================================================================
      STEP-0 ENRICHMENT v2 (doc 57) — whole-borettslag aggregation. A single address
-     under-counts a real BRL (Mellomgården: 1 address → ~60 units; the borettslag is
+     under-counts a real BRL (validation case: 1 address → ~60 units; the borettslag is
      9 oppganger · 308 boenheter · 3 matrikkelenheter · ~26 399 m² tomt). Sweep the
      address SET → entrances/units/properties; pull each property's Matrikkel teig
      polygon → grounds area + map boundaries. Free, no-key public APIs (geonorge

@@ -198,8 +198,8 @@
   var CLOUD = { url: "https://awyjzqgxfvoptyfvspxu.supabase.co", anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF3eWp6cWd4ZnZvcHR5ZnZzcHh1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzMTgxNDcsImV4cCI6MjA5Nzg5NDE0N30.0pBC7Azoi2NrXyPh_Q16W5XdFAt2aUtmq_mLFEQNx8I", table: "workspaces" };
   function cloudEnabled(){ return !!(CLOUD.url && CLOUD.anonKey); }
   var WS_KEY = "onsite_ws_id";
-  function workspaceId(){ try{ return localStorage.getItem(WS_KEY) || "mellomgarden-demo"; }catch(e){ return "mellomgarden-demo"; } }
-  function setWorkspaceId(id){ id=(id||"").trim().toLowerCase().replace(/[^a-z0-9-]/g,"-").replace(/-+/g,"-").replace(/^-|-$/g,"").slice(0,40) || "mellomgarden-demo"; try{ localStorage.setItem(WS_KEY, id); }catch(e){} return id; }
+  function workspaceId(){ try{ return localStorage.getItem(WS_KEY) || "solbakken-demo"; }catch(e){ return "solbakken-demo"; } }
+  function setWorkspaceId(id){ id=(id||"").trim().toLowerCase().replace(/[^a-z0-9-]/g,"-").replace(/-+/g,"-").replace(/^-|-$/g,"").slice(0,40) || "solbakken-demo"; try{ localStorage.setItem(WS_KEY, id); }catch(e){} return id; }
   var cloud = { client:null, syncState:"idle", saveTimer:null };
 
   function demo(){

@@ -30,7 +30,7 @@ connect-src 'self' https://ws.geonorge.no https://wfs.geonorge.no https://data.b
 Bump `?v=` on both includes, commit, push. The `☁︎ <workspace>` chip appears in the topbar.
 
 ## How it works
-- **Workspace id** (`onsite_ws_id` in localStorage, default `mellomgarden-demo`) identifies the shared
+- **Workspace id** (`onsite_ws_id` in localStorage, default `solbakken-demo`) identifies the shared
   blob. The topbar chip shows / sets / shares it — open the same id on another device to load the same data.
 - **Load:** render from the localStorage cache instantly, then async-pull the workspace row; if its
   `rev` is newer than the local base, replace state (through `migrate()`) and re-render. Offline → cache.
