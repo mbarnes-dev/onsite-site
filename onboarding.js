@@ -360,6 +360,65 @@
            {ts:"12 Jun 2026", text:"Prospect created from board enquiry (grass + winter + cleaning)"}]
     };
   }
+  /* doc 75 — Ren Dunk vertical (first design partner). A Gjøvik borettslag with bins (first-class assets),
+     a LIVE tømmekalender (Gjøvik 3407 Hunnsvegen 12 is a verified Min Renovasjon address), a bin-wash
+     service (AqtiVann) on the offer, and a proof-of-clean record. Demo-grade; production is doc 78 phase 2/3. */
+  function renDunkAssets(){
+    var cy=60.79770, cx=10.68420;
+    function A(o){ return { id:o.id, buildingId:"rendunk-cust", type:"avfall-bin", label:o.label, area:"avfall",
+      geo:{lat:cy+o.dlat, lon:cx+o.dlon}, photoIds:[], notes:o.notes||"", access:o.access||"", complianceLink:null,
+      bin:{ binType:o.binType, supplier:o.supplier, fraction:o.fraction, capacity:o.capacity, lidHinge:o.lidHinge||"" } }; }
+    return [
+      A({id:"rd-bin1", label:"Nedgravd restavfall (Molok)", binType:"nedgravd", supplier:"Molok", fraction:"Restavfall", capacity:"5 m³", dlat:0.00010, dlon:0.00016, access:"Renovasjonsbod nord", notes:"Gasslokk — løft med krok"}),
+      A({id:"rd-bin2", label:"Nedgravd matavfall (Molok)", binType:"nedgravd", supplier:"Molok", fraction:"Matavfall", capacity:"3 m³", dlat:0.00013, dlon:0.00021, access:"Renovasjonsbod nord", notes:""}),
+      A({id:"rd-bin3", label:"Papir (frittstående)", binType:"frittstående", supplier:"Strømberg", fraction:"Papir", capacity:"660 l", dlat:-0.00008, dlon:0.00011, access:"Bak blokk B", notes:"Hengsel v. venstre"}),
+      A({id:"rd-bin4", label:"Plast (frittstående)", binType:"frittstående", supplier:"Strømberg", fraction:"Plast", capacity:"660 l", dlat:-0.00010, dlon:0.00014, access:"Bak blokk B", notes:""}),
+      { id:"rd-stop", buildingId:"rendunk-cust", type:"hovedstoppekran", label:"Hovedstoppekran", area:"kjeller",
+        geo:{lat:cy-0.0001, lon:cx-0.0001}, photoIds:[], notes:"Kjeller blokk A, ved trappesjakt", access:"Nøkkel i nøkkelboks", complianceLink:null }
+    ];
+  }
+  function seedRenDunk(){
+    var cy=60.79770, cx=10.68420, recent;
+    try{ recent=new Date(Date.now()-2*86400000).toISOString(); }catch(e){ recent="2026-06-29T09:00:00.000Z"; }
+    return {
+      id:"rendunk-cust",
+      name:"Sameiet Hunnsvegen Hage", addr:"Hunnsvegen 12, 2819 Gjøvik", gnr:"67", bnr:"824",
+      profile:"Residential — association", buildYear:2005, size:0, units:24,
+      manager:"Gjøvik Boligforvaltning",
+      contacts:[{name:"Kari Nordvik", role:"Styreleder", email:"styret@hunnsvegen-hage.no"}],
+      meetingTime:"Befaring uke 27",
+      stage:"Surveyed", period:"mnd",
+      requestedScope:["binwash","stairwell","snow"],
+      layers:["entrance","binwash","stairwell","snow"],
+      compliance:[{label:"Brannvernrunde"}],
+      center:{lat:cy, lon:cx, zoom:18}, baseLayer:"topo",
+      accessNote:"Renovasjonsbod nord. Ren Dunk-avtale: dunkvask + AqtiVann-desinfeksjon, koordinert med tømming.",
+      markers:[
+        { id:"rd-e1", layer:"entrance", lat:cy+0.0002, lon:cx+0.0003, service:"Inngang A", frequency:LAYERS.entrance.freq, equipment:"", method:"", qty:1, unit:LAYERS.entrance.unit, price:0, note:"Oppgang A", photo:false, inScope:true, source:"sales", accuracy:null }
+      ],
+      zones:[],
+      assets:renDunkAssets(),
+      renovasjon:{ kommunenr:"3407", gatenavn:"Hunnsvegen", gatekode:"2460", husnr:"12", fetchedTs:null,
+        dates:[
+          {fraksjon:3,navn:"Matavfall",emoji:"🥬",dates:["2026-07-03","2026-07-17"],next:"2026-07-03"},
+          {fraksjon:2,navn:"Papir",emoji:"📄",dates:["2026-07-03","2026-07-31"],next:"2026-07-03"},
+          {fraksjon:1,navn:"Restavfall",emoji:"🗑️",dates:["2026-07-17","2026-07-31"],next:"2026-07-17"},
+          {fraksjon:4,navn:"Glass/metall",emoji:"🫙",dates:["2026-07-24"],next:"2026-07-24"},
+          {fraksjon:7,navn:"Plast",emoji:"♻️",dates:["2026-07-24"],next:"2026-07-24"}
+        ] },
+      addedLines:[
+        { id:"rendunk-binwash", src:"computed", service:"other", role:"binwash", label:"Dunk-/containervask (AqtiVann)", category:"Annet",
+          qty:4, unit:"dunk", rate:150, cadence:"Kvartalsvis", frequency:"Kvartalsvis (4×/år)", emoji:"♻️", computed:600, inScope:true }
+      ],
+      completionLog:[
+        { id:"pc-rendunk-1", ts:recent, by:"Ren Dunk (Martin)", team:null, service:"Dunk-/containervask", title:"Dunkvask + AqtiVann-desinfeksjon", building:"Sameiet Hunnsvegen Hage",
+          taskInstanceId:null, zoneId:null, geo:null, photoIds:[], note:"4 dunker spylt og desinfisert dagen etter tømming", materials:"AqtiVann",
+          binwash:{ disinfectant:"AqtiVann", bins:"Nedgravd rest, Nedgravd mat, Papir, Plast", fractions:"Restavfall, Matavfall, Papir, Plast" } }
+      ],
+      offer:null, offerHistory:[], changeRequests:[], buildingId:null, handover:null, enrichment:false,
+      log:[{ts:"20 Jun 2026", text:"Ren Dunk-pilot — dunker kartlagt, tømmekalender koblet (Min Renovasjon), AqtiVann-vask på plan"}]
+    };
+  }
   function seedIfNeeded(){
     var st=S(); if(!st) return;
     if(!st.customers) st.customers=[];
@@ -371,6 +430,11 @@
       if(!cust("solbakken-cust")) st.customers.push(seedSolbakken()); // demo client
       st.obSeeded=true; save();
     }
+    if(!cust("rendunk-cust")){ try{ st.customers.push(seedRenDunk()); save(); }catch(e){ console.error("rendunk seed", e); } }  // doc 75: Ren Dunk vertical (backfills existing users too)
+    // computeOffer delegates to window.OnSiteCore, which loads AFTER this parse-time seed (deferred module).
+    // Pre-compute the bin-wash offer once the core is ready, looking the customer up fresh (state may reload).
+    var rdOffer=function(){ try{ var c2=cust("rendunk-cust"); if(c2 && !c2.offer && window.OnSiteCore){ computeOffer(c2); save(); } }catch(e){} };
+    if(window.OnSiteCore) rdOffer(); else setTimeout(rdOffer, 40);
   }
 
   /* ===========================================================================
@@ -1031,6 +1095,55 @@
       cb({orgnr:orgnr, years:years});
     }).catch(function(){ cb(null); });
   }
+  /* ---- doc 75 (Ren Dunk): Min Renovasjon tømmekalender — municipal collection dates by address, via the
+     allowlisted Supabase proxy (appKey + WAAPI token stay server-side). Coordinate the bin-wash to the
+     window right AFTER emptying (bin empty + accessible). Verified live 2026-07 (Gjøvik 3407). ---- */
+  var TOMMEKALENDER_ON = true;
+  var TOMMEKALENDER_URL = "https://awyjzqgxfvoptyfvspxu.supabase.co/functions/v1/proxy?target=tommekalender";
+  var FRAKSJON = { 1:{navn:"Restavfall",emoji:"🗑️"}, 2:{navn:"Papir",emoji:"📄"}, 3:{navn:"Matavfall",emoji:"🥬"},
+    4:{navn:"Glass/metall",emoji:"🫙"}, 5:{navn:"Drikkekartong",emoji:"🧃"}, 6:{navn:"Farlig avfall",emoji:"☣️"},
+    7:{navn:"Plast",emoji:"♻️"}, 9:{navn:"Tekstiler",emoji:"👕"}, 15:{navn:"Matavfall (sommer)",emoji:"🥬"} };
+  function fraksjonNavn(id){ return (FRAKSJON[id]||{}).navn || ("Fraksjon "+id); }
+  function fraksjonEmoji(id){ return (FRAKSJON[id]||{}).emoji || "🗑️"; }
+  // fetch + parse the collection calendar for a building's stored renovasjon params → c.renovasjon.dates[].
+  // cb(dates|null). Uncovered kommune → [] → dates empty (graceful, never blocks). params come from geonorge
+  // (adressekode = gatekode). NB: text/plain body carrying JSON → parse defensively.
+  function fetchTommekalender(c, cb){
+    var r=c&&c.renovasjon;
+    if(!TOMMEKALENDER_ON || !r || !r.kommunenr || !r.gatekode || !r.husnr){ if(cb) cb(null); return; }
+    var url=TOMMEKALENDER_URL+"&kommunenr="+encodeURIComponent(r.kommunenr)+"&gatenavn="+encodeURIComponent(r.gatenavn||"")+"&gatekode="+encodeURIComponent(r.gatekode)+"&husnr="+encodeURIComponent(r.husnr);
+    fetch(url).then(function(res){ return res.ok?res.text():null; }).then(function(t){
+      var d=null; if(t){ try{ d=JSON.parse(t); }catch(e){} }
+      if(!Array.isArray(d)){ if(cb) cb(null); return; }
+      r.dates = d.map(function(x){ var ds=(x.Tommedatoer||[]).map(function(s){return String(s).slice(0,10);}).filter(Boolean).sort();
+        return { fraksjon:x.FraksjonId, navn:fraksjonNavn(x.FraksjonId), emoji:fraksjonEmoji(x.FraksjonId), dates:ds, next:ds[0]||null }; })
+        .filter(function(f){ return f.next; }).sort(function(a,b){ return a.next<b.next?-1:1; });
+      r.fetchedTs=Date.now(); save();
+      if(cb) cb(r.dates);
+    }).catch(function(){ if(cb) cb(null); });
+  }
+  function nextCollection(c){ var ds=(c&&c.renovasjon&&c.renovasjon.dates)||[]; return ds.length?ds[0]:null; }   // sorted → soonest first
+  // the smart wedge (doc 75 #2): wash the bin the day AFTER the next emptying.
+  function washWindow(c){ var nx=nextCollection(c); if(!nx||!nx.next) return null; return iso(addDays(new Date(nx.next+"T00:00:00"), 1)); }
+  function dateNO(isoStr){ if(!isoStr) return "—"; try{ return new Date(isoStr+"T00:00:00").toLocaleDateString("no",{weekday:"short",day:"numeric",month:"short"}); }catch(e){ return isoStr; } }
+  function renovasjonCardHTML(c){
+    var r=c&&c.renovasjon; if(!r || !r.kommunenr) return "";
+    var ds=r.dates||[];
+    var rows = ds.length ? ds.map(function(f){ return '<div class="ob-renov-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px dashed var(--line)"><span>'+f.emoji+' '+esc(f.navn)+'</span><span class="ob-renov-date" style="font-weight:700">'+dateNO(f.next)+'</span></div>'; }).join("")
+      : '<div class="empty" style="margin:4px 0">'+(r.fetchedTs?'Ingen tømmedatoer funnet for adressen (kommunen bruker kanskje ikke Min Renovasjon).':'Ikke hentet ennå — trykk «Hent tømmedatoer».')+'</div>';
+    var nx=nextCollection(c), ww=washWindow(c);
+    var suggest = (nx&&ww) ? '<div class="ob-renov-sug" style="background:var(--teal-l);border-radius:9px;padding:8px 10px;margin-top:8px;font-size:12.5px"><b>🚿 Vaskeforslag:</b> kommunen tømmer '+esc((nx.navn||"").toLowerCase())+' '+dateNO(nx.next)+' → foreslå dunkvask <b>'+dateNO(ww)+'</b> (tom + tilgjengelig)</div>' : '';
+    return '<div class="card"><div class="ct">🗓️ Tømmekalender <span class="muted" style="font-weight:600">· '+esc(r.gatenavn||"")+' '+esc(r.husnr||"")+' · Min Renovasjon</span></div>'
+      +'<div class="ob-renov-list">'+rows+'</div>'+suggest
+      +'<div class="ob-bar" style="margin-top:8px"><button class="ob-btn ghost" data-ob="renovRefresh" data-arg="'+c.id+'">↻ Hent tømmedatoer</button></div></div>';
+  }
+  function renovRefresh(custId){
+    var c=cust(custId); if(!c) return; toast("Henter tømmekalender…");
+    fetchTommekalender(c, function(dates){
+      if(dates===null){ toast("Fant ikke tømmekalender — sjekk adresse/kommune"); return; }
+      render(); toast(dates.length?("🗓️ "+dates.length+" fraksjoner hentet"):"Ingen tømmedatoer for adressen");
+    });
+  }
   // A3: building type per property via the Matrikkel Bygningspunkt WFS.
   // DORMANT by design: the documented no-key WFS (wfs.matrikkelen-bygningspunkt) is currently HTTP 404 /
   // decommissioned (re-verified June 2026; the address payload carries no bygningstype, the matrikkelkart WMS
@@ -1514,7 +1627,7 @@
     roofsnow:  {                                                                       area:"ute",                       service:"snow"},
     // waste
     wells:     {                                                                       area:"teknisk",                   service:"technical"},
-    binwash:   {                                                                       area:"ute",                       service:"other"},
+    binwash:   {cadence:{type:"nPerYear", count:4},                                    area:"avfall",  method:"AqtiVann", service:"other", equipment:["spyler","AqtiVann"]},   // doc 75 Ren Dunk: dunk-/containervask, kvartalsvis, AqtiVann-desinfeksjon
     bulky:     {                                                                       area:"avfall",                    service:"technical"},
     // entrances & stairwells
     oppganger: {cadence:{type:"weekly"},                                              area:"oppgang",                   service:"cleaning",  rateKey:"cleaning.per_oppgang_floor_week"},
@@ -1727,6 +1840,19 @@
     obSheet(proofSheetHTML(c));
     setTimeout(function(){ hydratePhotos(document.getElementById("sheet")); }, 20);
   }
+  // doc 75 (Ren Dunk proof-of-clean): a bin-wash completion carries before/after photos + an AqtiVann log.
+  function isBinwashProof(p){ return /binwash|dunk|containervask|spyling|aqtivann|dunkvask/i.test(((p&&p._inst&&p._inst.lineId)||"")+" "+((p&&p.service)||"")+" "+((p&&p.title)||"")); }
+  function binwashProofHTML(c, p){
+    if(!p.binwash){ var bins=(c.assets||[]).filter(assetIsBin);
+      p.binwash={ disinfectant:"AqtiVann",
+        bins: bins.map(function(a){return a.label||assetTypeLabel(a.type);}).join(", "),
+        fractions: bins.map(function(a){return (a.bin&&a.bin.fraction)||"";}).filter(Boolean).join(", ") }; }
+    return '<div class="ob-binwashlog" style="border:1px dashed var(--teal);border-radius:11px;padding:9px 11px;margin:8px 0;background:var(--teal-l)">'
+      +'<div style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.03em;margin-bottom:5px">🧴 AqtiVann-logg (desinfeksjon)</div>'
+      +'<label>Dunker vasket</label><input id="pf_bins" value="'+esc(p.binwash.bins||"")+'" placeholder="hvilke dunker">'
+      +'<label>Fraksjoner</label><input id="pf_fractions" value="'+esc(p.binwash.fractions||"")+'" placeholder="rest, papir, mat…">'
+      +'<div class="muted" style="font-size:11px;margin-top:5px">Desinfeksjonsmiddel: <b>AqtiVann</b> · før/etter-bilder legges ved over.</div></div>';
+  }
   function proofSheetHTML(c){
     var p=pendingProof; if(!p) return "";
     var zs=proofZoneChoices(c, p.service);
@@ -1739,7 +1865,8 @@
       +'<div class="muted" style="font-size:12.5px;margin:-4px 0 12px">'+esc(p.building)+' · '+(SERVICE_ICON[p.service]||"✅")+' '+esc(p.service)+'</div>'
       +'<label>Utført av</label><input id="pf_by" data-obf="proofBy" value="'+esc(p.by)+'" placeholder="navn / initialer">'
       +'<label>Posisjon (valgfritt)</label>'+geoBlock
-      +'<label style="margin-top:10px">Bilde (valgfritt)</label>'+photoStripHTML("proof", p.id, p.photoIds)
+      +'<label style="margin-top:10px">'+(isBinwashProof(p)?'Før / etter — bilder':'Bilde (valgfritt)')+'</label>'+photoStripHTML("proof", p.id, p.photoIds)
+      +(isBinwashProof(p)?binwashProofHTML(c, p):'')
       +'<label>Notat (valgfritt)</label><textarea id="pf_note" data-obf="proofNote" rows="2" placeholder="kort beskrivelse">'+esc(p.note)+'</textarea>'
       + zonePick
       + captureSectionHTML(c, p)
@@ -1752,6 +1879,8 @@
     var note=document.getElementById("pf_note"); if(note) pendingProof.note=note.value;
     var z=document.getElementById("pf_zone"); if(z) pendingProof.zoneId=z.value;
     var mt=document.getElementById("pf_mat"); if(mt) pendingProof.materials=mt.value;
+    var pb=document.getElementById("pf_bins"), pfr=document.getElementById("pf_fractions");   // doc 75 AqtiVann log
+    if(pb||pfr){ pendingProof.binwash=pendingProof.binwash||{disinfectant:"AqtiVann"}; if(pb) pendingProof.binwash.bins=pb.value; if(pfr) pendingProof.binwash.fractions=pfr.value; }
   }
   function reRenderProofSheet(){
     if(!pendingProof) return;
@@ -1831,7 +1960,8 @@
     var inst=p._inst, c=clientOf(inst.lineId); if(!c){ proofCleanup(); obCloseSheet(); return; }
     p.ts=new Date().toISOString();
     var entry={ id:p.id, ts:p.ts, by:p.by||cockpitWho(), team:p.team||cockpitTeam()||null, service:p.service, title:p.title, building:p.building,
-      taskInstanceId:p.taskInstanceId, zoneId:p.zoneId||null, geo:p.geo||null, photoIds:p.photoIds||[], note:p.note||"", materials:p.materials||"" };
+      taskInstanceId:p.taskInstanceId, zoneId:p.zoneId||null, geo:p.geo||null, photoIds:p.photoIds||[], note:p.note||"", materials:p.materials||"",
+      binwash:(isBinwashProof(p)&&p.binwash)?p.binwash:null };   // doc 75: AqtiVann proof-of-clean log rides on the completion entry
     // C1: mutate, then persist ONCE and only confirm if the write succeeded (no false "dokumentert" on quota failure)
     var st=S(), prevUser=st.currentUser, itemsLen=(st.items||[]).length, instK=instKey(inst),
         hadInst=!!(st.completedInstances&&st.completedInstances[instK]);
@@ -1895,6 +2025,7 @@
       +'<div class="ob-proofmain"><div class="ob-prooftop">'+esc(e.title||"Utført")+' <span class="muted">· '+time+'</span> '+geo+'</div>'
       +'<div class="ob-proofsub">'+esc(e.by||"")+(e.building?' · '+esc(e.building):'')+(e.note?' · '+esc(e.note):'')+'</div>'
       + proofThumbsHTML(e.photoIds)
+      + (e.binwash ? '<div class="ob-proofbinwash" style="font-size:11.5px;background:var(--teal-l);border-radius:7px;padding:3px 8px;margin-top:5px">🧴 <b>'+esc(e.binwash.disinfectant||"AqtiVann")+'</b>-desinfeksjon'+(e.binwash.bins?' · '+esc(e.binwash.bins):'')+(e.binwash.fractions?' · '+esc(e.binwash.fractions):'')+'</div>' : '')   // doc 75 proof-of-clean
       +'</div></div>';
   }
   function boardProofHTML(){
@@ -2188,10 +2319,15 @@
     "kum/pumpe":       {label:"Kum / pumpe",            emoji:"🕳️", area:"ute"},
     "lysstyring":      {label:"Utelys — bryter / tidsur", emoji:"💡", area:"teknisk"},
     "materiallager":   {label:"Materiallager (pærer/forbruk)", emoji:"📦", area:"kjeller"},
+    "avfall-bin":      {label:"Avfallsdunk / -brønn", emoji:"♻️", area:"avfall", isBin:true},   // doc 75 Ren Dunk: bins as first-class assets
     "annet":           {label:"Annet anlegg",           emoji:"🔧", area:"teknisk"}
   };
   // ordered for the type picker — emergency-critical first
-  var ASSET_TYPE_ORDER = ["hovedstoppekran","el-skap","sikringsskap","brannsentral","avstengning-gass","sprinkler-sentral","ventilasjon","varmekilde","heismaskinrom","nøkkelboks","kum/pumpe","lysstyring","materiallager","annet"];
+  var ASSET_TYPE_ORDER = ["hovedstoppekran","el-skap","sikringsskap","brannsentral","avstengning-gass","sprinkler-sentral","ventilasjon","varmekilde","heismaskinrom","nøkkelboks","kum/pumpe","lysstyring","materiallager","avfall-bin","annet"];
+  // doc 75: bin taxonomy for the avfall-bin asset type (Ren Dunk vertical)
+  var BIN_TYPE = ["nedgravd","frittstående","kompaktor"];
+  var BIN_FRACTION = ["Restavfall","Papir","Matavfall","Plast","Glass/metall","Drikkekartong","Farlig avfall","Tekstiler"];
+  function assetIsBin(a){ return !!(a && (a.type==="avfall-bin" || (ASSET_TYPE[a.type]||{}).isBin)); }
   function assetTypeDef(t){ return ASSET_TYPE[t]||ASSET_TYPE["annet"]; }
   function assetTypeLabel(t){ return assetTypeDef(t).label; }
   function assetTypeEmoji(t){ return assetTypeDef(t).emoji; }
@@ -2267,6 +2403,7 @@
   function assetRowHTML(c, a){
     var due=a.complianceLink?nextComplianceDue(c, a.complianceLink):null;
     var meta=['<span class="ob-asset-area">'+esc(areaLabel(a.area))+'</span>'];
+    if(assetIsBin(a) && a.bin){ var bm=[]; if(a.bin.fraction) bm.push(a.bin.fraction); if(a.bin.binType) bm.push(a.bin.binType); if(a.bin.capacity) bm.push(a.bin.capacity); if(a.bin.supplier) bm.push(a.bin.supplier); if(bm.length) meta.push(esc(bm.join(" · "))); }
     if(a.access) meta.push(esc(a.access.length>42?a.access.slice(0,40)+"…":a.access));
     if(a.complianceLink) meta.push('📋 '+(due?esc(dueLabel(due)):"lovpålagt"));
     var tags=(a.photoIds&&a.photoIds.length?' <span class="ob-asset-tag">📷'+a.photoIds.length+'</span>':'')+(a.geo?' <span class="ob-asset-tag">📍</span>':'');
@@ -2293,7 +2430,8 @@
     var modes=[["naermest","Nærmest"],["alle","Alle"],["type","Etter type"]], cur=ui.assetFilter||"naermest";
     var tabs=modes.map(function(m){ return '<button class="ob-assettab'+(cur===m[0]?' on':'')+'" data-ob="assetFilter" data-arg="'+m[0]+'">'+m[1]+'</button>'; }).join("");
     var q=(ui.assetQuery||{})[c.id]||"";
-    return '<div class="card ob-bygg">'
+    return renovasjonCardHTML(c)   // doc 75: tømmekalender + wash-window suggestion sits above the bin/asset record
+      +'<div class="card ob-bygg">'
       +'<div class="ct">🏢 Bygg-info — '+esc(c.name)+' <span class="muted" style="font-weight:600">· '+n+' anlegg kartlagt</span></div>'
       +'<div class="ob-bygg-sub">Hvor er avstengning, tavle, sentral? Samlet og stedfestet — kunnskapen blir i systemet, ikke i hodet til én. Ny vaktmester er produktiv dag én.</div>'
       +emergencyStripHTML(c)
@@ -2346,6 +2484,20 @@
     pendingAsset._origPhotoIds=(pendingAsset.photoIds||[]).slice();
     obSheet(assetSheetHTML(c, pendingAsset)); hydratePhotos(document.getElementById("sheet"));
   }
+  // doc 75: bin-specific fields, shown only for the avfall-bin asset type (Ren Dunk vertical)
+  function binFieldsHTML(pa){
+    var b=pa.bin||{};
+    var typeOpts=BIN_TYPE.map(function(t){ return '<option value="'+t+'"'+(b.binType===t?' selected':'')+'>'+esc(cap(t))+'</option>'; }).join("");
+    var fracOpts='<option value="">— velg —</option>'+BIN_FRACTION.map(function(f){ return '<option value="'+esc(f)+'"'+(b.fraction===f?' selected':'')+'>'+esc(f)+'</option>'; }).join("");
+    return '<div class="ob-binfields" style="border:1px dashed var(--line);border-radius:11px;padding:8px 11px;margin:8px 0">'
+      +'<div class="muted" style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.03em;margin-bottom:4px">♻️ Dunk-detaljer</div>'
+      +'<label>Type</label><select id="as_binType">'+typeOpts+'</select>'
+      +'<label>Fraksjon</label><select id="as_fraction">'+fracOpts+'</select>'
+      +'<div class="row2" style="display:flex;gap:8px"><div style="flex:1"><label>Leverandør</label><input id="as_supplier" value="'+esc(b.supplier||"")+'" placeholder="Molok / Strømberg / annet"></div>'
+      +'<div style="flex:1"><label>Volum</label><input id="as_capacity" value="'+esc(b.capacity||"")+'" placeholder="f.eks. 5 m³ / 660 l"></div></div>'
+      +'<label>Lokk / hengsel (notat)</label><input id="as_lidhinge" value="'+esc(b.lidHinge||"")+'" placeholder="f.eks. gasslokk, hengsel v. venstre">'
+      +'</div>';
+  }
   function assetSheetHTML(c, pa){
     var typeOpts=ASSET_TYPE_ORDER.map(function(t){ return '<option value="'+t+'"'+(pa.type===t?' selected':'')+'>'+assetTypeEmoji(t)+' '+esc(assetTypeLabel(t))+'</option>'; }).join("");
     var areaOpts=Object.keys(AREA_LABEL).map(function(k){ return '<option value="'+k+'"'+(pa.area===k?' selected':'')+'>'+esc(AREA_LABEL[k])+'</option>'; }).join("");
@@ -2354,6 +2506,7 @@
       +'<label>Type</label><select id="as_type" data-obf="assetType">'+typeOpts+'</select>'
       +'<label>Navn / merking</label><input id="as_label" data-obf="assetLabel" value="'+esc(pa.label||"")+'" placeholder="'+esc(assetTypeLabel(pa.type))+'">'
       +'<label>Område</label><select id="as_area" data-obf="assetArea">'+areaOpts+'</select>'
+      +(assetIsBin(pa)?binFieldsHTML(pa):'')
       +'<label>Tilgang — nøkkel / kode / hvor</label><input id="as_access" data-obf="assetAccess" value="'+esc(pa.access||"")+'" placeholder="f.eks. nøkkel B3 / kode i nøkkelboks">'
       +'<label>Notat</label><textarea id="as_notes" data-obf="assetNotes" rows="3" placeholder="hvordan finne / betjene; hva å passe på">'+esc(pa.notes||"")+'</textarea>'
       +'<label>Lovpålagt kontroll (valgfritt)</label><select id="as_comp" data-obf="assetCompliance">'+compOpts+'</select>'
@@ -2373,6 +2526,12 @@
     var ac=document.getElementById("as_access"); if(ac) pendingAsset.access=ac.value;
     var n=document.getElementById("as_notes"); if(n) pendingAsset.notes=n.value;
     var cp=document.getElementById("as_comp"); if(cp) pendingAsset.complianceLink=cp.value||null;
+    var bt=document.getElementById("as_binType");   // doc 75: bin fields (present only for avfall-bin)
+    if(bt){ pendingAsset.bin=pendingAsset.bin||{}; pendingAsset.bin.binType=bt.value;
+      var bf=document.getElementById("as_fraction"); if(bf) pendingAsset.bin.fraction=bf.value;
+      var bs=document.getElementById("as_supplier"); if(bs) pendingAsset.bin.supplier=bs.value;
+      var bc=document.getElementById("as_capacity"); if(bc) pendingAsset.bin.capacity=bc.value;
+      var bl=document.getElementById("as_lidhinge"); if(bl) pendingAsset.bin.lidHinge=bl.value; }
   }
   function startAssetPin(){
     syncAssetFromDOM();
@@ -3577,6 +3736,7 @@
       +'</div>'
       +'<div class="ob-walkpane list">'
         + (c.checklist&&c.checklist.length ? '<div id="ob-checkwrap">'+checklistPanelHTML(c)+'</div>' : '')
+        + ((c.renovasjon || (c.assets||[]).some(assetIsBin)) ? '<div id="ob-renwrap">'+byggInfoHTML(c)+'</div>' : '')   // doc 75: tømmekalender + bins (Bygg-info) surfaced in the walkaround for bin buildings
         +'<div id="ob-zonepanel">'+zonesPanelHTML(c)+'</div>'
         +'<div class="card"><div class="ct">Zones captured</div><div id="ob-zones">'+zonesHTML(c)+'</div></div>'
         +'<div id="ob-upsell">'+upsellHTML(c)+'</div>'
@@ -4303,6 +4463,7 @@
       case "assetDel": { var ad=(arg||"").split("|"); delAsset(ad[0], ad[1]); break; }
       case "assetPin": startAssetPin(); break;
       case "assetGeoView": assetGeoView(arg); break;
+      case "renovRefresh": renovRefresh(arg); break;   // doc 75: re-fetch tømmekalender from Min Renovasjon
       case "assetFilter": { ui.assetFilter=arg; render(); break; }
       case "reqNew": { var rnc=cust(arg); if(rnc) openRequestSheet(rnc, {}); break; }
       case "reqSubmit": reqSubmit(); break;
@@ -4386,7 +4547,7 @@
       case "photo": togglePhoto(id); break;
       case "delMarker": deleteMarker(id); break;
       case "clearCustomers": if(window.confirm("Clear all sales customers? (the day app is unaffected)")){ S().customers=[]; S().obSeeded=true; save(); photoGC(); ui.openId=null; repaintSales(); toast("Customers cleared — add a real one with ＋ New customer"); } break;
-      case "reseed": { var rst=S(); rst.customers=(rst.customers||[]).filter(function(x){return x.id!=="holtet-cust"&&x.id!=="solbakken-cust";}); rst.customers.unshift(seedSolbakken()); rst.customers.unshift(seedHoltet()); rst.obSeeded=true; rst.storage=seedStorage(); rst.equipment=seedEquipment(); rst.intake=seedIntake(); save(); photoGC(); ui.openId=null; repaintSales(); toast("Seed-klienter + utstyr tilbakestilt"); break; }
+      case "reseed": { var rst=S(); rst.customers=(rst.customers||[]).filter(function(x){return x.id!=="holtet-cust"&&x.id!=="solbakken-cust"&&x.id!=="rendunk-cust";}); rst.customers.unshift(seedSolbakken()); rst.customers.unshift(seedHoltet()); var rrd=seedRenDunk(); rst.customers.push(rrd); try{computeOffer(rrd);}catch(e){} rst.obSeeded=true; rst.storage=seedStorage(); rst.equipment=seedEquipment(); rst.intake=seedIntake(); save(); photoGC(); ui.openId=null; repaintSales(); toast("Seed-klienter + utstyr tilbakestilt"); break; }
     }
   });
 

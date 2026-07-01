@@ -1,15 +1,19 @@
-// OnSite allowlisted proxy (doc 66 A4 + Group C). DEPLOYED to Supabase Edge Functions
+// OnSite allowlisted proxy (doc 66 A4 + Group C + doc 75 Ren Dunk). DEPLOYED to Supabase Edge Functions
 // (project awyjzqgxfvoptyfvspxu, fn "proxy", verify_jwt=false). This file is the source of record.
 //
 // Forwards ONLY to known upstreams (an allowlist), validating params per target. NOT an open relay.
 // A server-side secret/token is injected PER TARGET via Deno.env — it NEVER touches client JS.
-//  - regnskap   : public brreg Regnskapsregister (no token; /enhetsregisteret is CORS-open but
-//                 /regnskapsregisteret is not, which is why this exists).
-//  - orthophoto : Norge i bilder WMS mosaic. Its token is IP-bound + expires ≤weekly, so it lives ONLY
-//                 here (Deno.env NIB_TOKEN), never in the browser. DEMO-GRADE: the token must be valid for
-//                 THIS proxy's egress IP; production needs server-side token refresh + a stable egress
-//                 (phase-2 worker). With no NIB_TOKEN set, this target returns 400 and the client keeps the
-//                 Ortofoto base option off — so prod stays clean. // for a paid token: redeploy verify_jwt=true + rate-limit.
+//  - regnskap      : public brreg Regnskapsregister (no token; /enhetsregisteret is CORS-open but
+//                    /regnskapsregisteret is not, which is why this exists).
+//  - orthophoto    : Norge i bilder WMS mosaic. Its token is IP-bound + expires ≤weekly, so it lives ONLY
+//                    here (Deno.env NIB_TOKEN), never in the browser. DEMO-GRADE. With no NIB_TOKEN set,
+//                    this target returns 400 and the client keeps the Ortofoto base option off.
+//  - tommekalender : Norkart "Min Renovasjon" municipal collection calendar (by address → fractions +
+//                    dates). komteksky.norkart.no requires a WAAPI token that Norkart's own
+//                    proxyserver.ashx injects, AND a RenovasjonAppKey header (a PUBLIC app key, kept here
+//                    server-side / overridable via Deno.env RENOVASJON_APPKEY). Both the appKey and the
+//                    Kommunenr header are required (verified 2026-07 against Gjøvik 3407). Response is
+//                    JSON [{FraksjonId, Tommedatoer:[ISO]}]. Not every kommune is covered → [] = graceful.
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -20,7 +24,7 @@ function json(o: unknown, status: number) {
   return new Response(JSON.stringify(o), { status, headers: { ...cors, "content-type": "application/json" } });
 }
 
-type Target = { build: (p: URLSearchParams) => string | null; headers?: () => Record<string, string> };
+type Target = { build: (p: URLSearchParams) => string | null; headers?: (p: URLSearchParams) => Record<string, string> };
 const ALLOW: Record<string, Target> = {
   regnskap: {
     build: (p) => {
@@ -39,6 +43,24 @@ const ALLOW: Record<string, Target> = {
       return `https://services.norgeibilder.no/wms/mosaikk?${qs.toString()}`;
     },
   },
+  tommekalender: {
+    build: (p) => {
+      const knr = (p.get("kommunenr") || "").replace(/\D/g, "");
+      const gatenavn = (p.get("gatenavn") || "").trim();
+      const gatekode = (p.get("gatekode") || "").replace(/\D/g, "");
+      const husnr = (p.get("husnr") || "").replace(/[^0-9A-Za-zæøåÆØÅ]/g, "");
+      if (!/^\d{3,4}$/.test(knr) || !gatenavn || !/^\d+$/.test(gatekode) || !husnr) return null;
+      const komtek = `https://komteksky.norkart.no/MinRenovasjon.Api/api/tommekalender?kommunenr=${knr}` +
+        `&gatenavn=${encodeURIComponent(gatenavn)}&gatekode=${gatekode}&husnr=${encodeURIComponent(husnr)}`;
+      // komteksky rejects direct calls (401) — forward through Norkart's proxyserver.ashx, which injects
+      // the WAAPI token komteksky requires. The RenovasjonAppKey + Kommunenr headers ride along (below).
+      return `https://norkartrenovasjon.azurewebsites.net/proxyserver.ashx?server=${encodeURIComponent(komtek)}`;
+    },
+    headers: (p) => ({
+      "RenovasjonAppKey": Deno.env.get("RENOVASJON_APPKEY") || "AE13DEEC-804F-4615-A74E-B4FAC11F0A30",
+      "Kommunenr": (p.get("kommunenr") || "").replace(/\D/g, ""),
+    }),
+  },
 };
 
 Deno.serve(async (req) => {
@@ -51,8 +73,8 @@ Deno.serve(async (req) => {
   const upstream = def.build(url.searchParams);
   if (!upstream) return json({ error: "bad params or not configured" }, 400);
   try {
-    const r = await fetch(upstream, { headers: { ...(def.headers ? def.headers() : {}) } });
-    // stream the upstream body through unchanged — works for JSON (regnskap) AND binary images (orthophoto)
+    const r = await fetch(upstream, { headers: { ...(def.headers ? def.headers(url.searchParams) : {}) } });
+    // stream the upstream body through unchanged — works for JSON (regnskap/tommekalender) AND binary images (orthophoto)
     return new Response(r.body, {
       status: r.status,
       headers: { ...cors, "content-type": r.headers.get("content-type") || "application/octet-stream" },
