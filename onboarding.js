@@ -2119,6 +2119,82 @@
   function teamZones(c, team){ return teamMapKind(team)==="snow"
       ? (c.zones||[]).filter(function(z){return z.service==="snow";})
       : (c.zones||[]).filter(function(z){return z.service==="grass"||z.service==="greenery"||z.service==="beds";}); }
+
+  /* ---- doc 75 (Ren Dunk pain #1) / doc 67: multilingual + spoken work instructions for a multinational crew.
+     Each crew member sees the instruction in THEIR language and can hear it aloud (browser TTS) — comprehension
+     + an HMS win for the AqtiVann chemical (safety in the language they actually read). Canned for the demo;
+     one t(taskId,lang) seam an LLM drops behind for prod. ---- */
+  var CREW_LANGS=[
+    {code:"nb", label:"Norsk",     bcp:"nb-NO"},
+    {code:"en", label:"English",   bcp:"en-GB"},
+    {code:"pl", label:"Polski",    bcp:"pl-PL"},
+    {code:"lt", label:"Lietuvių",  bcp:"lt-LT"}
+  ];
+  function langDef(code){ for(var i=0;i<CREW_LANGS.length;i++){ if(CREW_LANGS[i].code===code) return CREW_LANGS[i]; } return CREW_LANGS[0]; }
+  function crewLang(name){ var st=S(); return (st.crewLang||{})[name] || "nb"; }
+  function setCrewLang(name, code){ var st=S(); st.crewLang=st.crewLang||{}; st.crewLang[name||""]=code; save(); }
+  // canned demo translations; nb is the source of truth. // PROD: on-the-fly LLM translation behind t().
+  var TASK_I18N={
+    binwash:{
+      nb:"Spyl og vask alle dunkene innvendig og utvendig. Tørk kantene. Desinfiser med AqtiVann etter vask.",
+      en:"Rinse and wash every bin inside and out. Wipe the rims. Disinfect with AqtiVann after washing.",
+      pl:"Opłucz i umyj wszystkie pojemniki w środku i na zewnątrz. Wytrzyj krawędzie. Po umyciu zdezynfekuj środkiem AqtiVann.",
+      lt:"Nuplaukite ir išplaukite visus konteinerius iš vidaus ir išorės. Nušluostykite kraštus. Po plovimo dezinfekuokite „AqtiVann“."
+    },
+    binwash_hms:{
+      nb:"HMS: Bruk hansker og øyevern. Ikke bland AqtiVann med andre kjemikalier. Sørg for god ventilasjon.",
+      en:"HSE: Wear gloves and eye protection. Do not mix AqtiVann with other chemicals. Ensure good ventilation.",
+      pl:"BHP: Noś rękawice i ochronę oczu. Nie mieszaj AqtiVann z innymi chemikaliami. Zapewnij dobrą wentylację.",
+      lt:"SDG: Mūvėkite pirštines ir akių apsaugą. Nemaišykite „AqtiVann“ su kitomis cheminėmis medžiagomis. Užtikrinkite gerą vėdinimą."
+    },
+    stairwell:{
+      nb:"Vask trappeoppgangen: gulv, gelender og inngangsmatter. Tørk håndtak og postkasser.",
+      en:"Clean the stairwell: floors, railings and entrance mats. Wipe handles and mailboxes.",
+      pl:"Posprzątaj klatkę schodową: podłogi, poręcze i wycieraczki. Przetrzyj klamki i skrzynki na listy.",
+      lt:"Išvalykite laiptinę: grindis, turėklus ir kilimėlius. Nušluostykite rankenas ir pašto dėžutes."
+    },
+    snow:{
+      nb:"Brøyt og strø gangveier og innganger. Prioriter rømningsveier og trapper. Strø ved is.",
+      en:"Plough and grit the paths and entrances. Prioritise escape routes and stairs. Grit when icy.",
+      pl:"Odśnież i posyp ścieżki oraz wejścia. Priorytetowo drogi ewakuacyjne i schody. Posyp przy oblodzeniu.",
+      lt:"Nuvalykite sniegą ir pabarstykite takus bei įėjimus. Pirmenybę teikite evakuaciniams keliams ir laiptams. Barstykite apledėjus."
+    }
+  };
+  function tr(taskId, lang){ var e=TASK_I18N[taskId]||{}; return e[lang] || e.nb || ""; }   // task translation; nb fallback (NB: not `t` — the click dispatch shadows `t` with the clicked element). // PROD: LLM behind this seam
+  var TEAM_INSTRUCTIONS={ vaktmester:["binwash","binwash_hms","stairwell"], snow:["snow"], brann:["binwash_hms"] };
+  function ttsAvailable(){ try{ return typeof window!=="undefined" && "speechSynthesis" in window && typeof window.SpeechSynthesisUtterance!=="undefined"; }catch(e){ return false; } }
+  function speakText(text, bcp){
+    if(!ttsAvailable() || !text) return;
+    try{
+      window.speechSynthesis.cancel();   // cancel any in-progress utterance on a new tap
+      var u=new SpeechSynthesisUtterance(text); u.lang=bcp||"nb-NO"; u.rate=0.98;
+      var pref=(bcp||"").toLowerCase(), two=pref.slice(0,2);
+      var voices=window.speechSynthesis.getVoices()||[];
+      var v=voices.filter(function(x){return (x.lang||"").toLowerCase()===pref;})[0]
+          || voices.filter(function(x){return (x.lang||"").toLowerCase().indexOf(two)===0;})[0];
+      if(v) u.voice=v;   // exact/partial match if the OS has the voice; else the browser default speaks (graceful degrade)
+      window.speechSynthesis.speak(u);
+    }catch(e){}
+  }
+  // the crew-facing card: language selector + the day's instructions in that language, each with a 🔊 Hør button.
+  function instructionCardHTML(ctx){
+    if(!ctx || !ctx.team) return "";
+    var ids=TEAM_INSTRUCTIONS[ctx.team]; if(!ids || !ids.length) return "";
+    var who=ctx.individual||"", lang=crewLang(who), ld=langDef(lang), tts=ttsAvailable();
+    var langChips=CREW_LANGS.map(function(l){ return '<button class="ob-mini'+(lang===l.code?' on':'')+'" data-ob="cockLang" data-arg="'+l.code+'">'+esc(l.label)+'</button>'; }).join("");
+    var rows=ids.map(function(id){
+      var hms=/hms/.test(id), txt=tr(id, lang);
+      var spk = tts ? '<button class="ob-mini ok on" data-ob="speakTask" data-arg="'+id+'|'+lang+'" title="Hør">🔊 Hør</button>' : '';
+      return '<div style="border-radius:10px;padding:9px 11px;margin-bottom:8px;background:'+(hms?'#fbe9e7':'#f4f5f3')+';border:1px solid '+(hms?'#f1c3bd':'var(--line)')+'">'
+        +'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px">'
+        +'<span style="font-size:11px;font-weight:800;letter-spacing:.03em;text-transform:uppercase;color:'+(hms?'#9c241c':'var(--muted)')+'">'+(hms?'⚠️ HMS · AqtiVann':'📋 Instruks')+'</span>'+spk+'</div>'
+        +'<div style="font-size:13.5px;line-height:1.45">'+esc(txt)+'</div></div>';
+    }).join("");
+    return '<div class="card"><div class="ct">🗣️ Arbeidsinstruks · '+esc(ld.label)+' <span class="muted" style="font-weight:600">· '+esc(who||"—")+'</span></div>'
+      +'<div class="ob-cocklang" style="display:flex;gap:6px;flex-wrap:wrap;margin:-2px 0 10px">'+langChips+'</div>'
+      + rows
+      +'<p class="muted" style="font-size:11px;margin:4px 0 0">Instruksen på ditt språk — trykk 🔊 for å høre den opplest.'+(tts?'':' <b>(Tale ikke støttet i denne nettleseren)</b>')+' <span style="opacity:.6">// PROD: LLM-oversettelse på direkten</span></p></div>';
+  }
   function syncCockpitChip(){
     var inner=document.querySelector(".topbar .inner"); if(!inner) return;
     var chip=document.getElementById("ob-cockchip"), ctx=cockpit();
@@ -2180,7 +2256,7 @@
     }).filter(Boolean);
     var head='<div class="card ob-routeintro"><div class="ct">🧭 Min rute i dag · '+td.icon+' '+esc(td.label)+' <span class="chip grey">'+blocks.length+' bygg</span></div>'
       +'<p class="muted" style="font-size:12px;margin:-2px 0 0">Dagens oppgaver for laget ditt, samlet per bygg. Åpne kartet som kjøreguide og marker utført rett fra sonen. <span style="opacity:.6">// later: ruterekkefølge/nav</span></p></div>';
-    return head + morningManifestHTML(ctx) + (blocks.length? blocks.join("") : '<div class="card"><div class="empty">Ingen aktive oppgaver for '+esc(td.label)+' i dag — sjekk «Alle bygg» eller kartet.</div></div>');
+    return head + instructionCardHTML(ctx) + morningManifestHTML(ctx) + (blocks.length? blocks.join("") : '<div class="card"><div class="empty">Ingen aktive oppgaver for '+esc(td.label)+' i dag — sjekk «Alle bygg» eller kartet.</div></div>');
   }
   /* ---- morning manifest (doc 10, Phase 9): the day's load-list writes itself ---- */
   function svcToTeamBucket(s){ return ({greenery:"grass", grass:"grass", snow:"snow", cleaning:"cleaning", compliance:"compliance", technical:"technical", other:"other"})[s]||"other"; }
@@ -3211,12 +3287,18 @@
   }
 
   function renderFieldExtras(cols){
-    if(!liveClients().length) return;
     var ctx=cockpit();
+    // cockpit route renders regardless of Live clients (crews start their day + see the multilingual work
+    // instructions even before a building is live) — doc 75. The per-building task rows still need Live clients.
     if(ctx.team && (ui.cockMode||"route")==="route"){
       var rh=document.createElement("div"); rh.className="lane"; rh.style.gridColumn="1 / -1";
       rh.innerHTML=cockpitBarHTML()+cockpitRouteHTML();
       cols.insertBefore(rh, cols.firstChild);
+      return;
+    }
+    if(!liveClients().length){   // no live clients yet → still offer the cockpit boot (team picker)
+      var bh=document.createElement("div"); bh.className="lane"; bh.style.gridColumn="1 / -1"; bh.innerHTML=cockpitBarHTML();
+      cols.insertBefore(bh, cols.firstChild);
       return;
     }
     var today=refDate(), ws=mondayOf(today), we=addDays(ws,6), tIso=iso(today), month=today.getMonth()+1;
@@ -4557,6 +4639,8 @@
       case "cockSwitch": cockpitSwitchSheet(); break;
       case "cockLogoff": clearCockpit(); ui.cockMode="route"; obCloseSheet(); render(); toast("Logget av cockpit"); break;
       case "cockMode": ui.cockMode=arg; render(); break;
+      case "cockLang": setCrewLang(cockpitWho(), arg); render(); break;   // doc 75: crew member's language
+      case "speakTask": { var sp=(arg||"").split("|"); speakText(tr(sp[0], sp[1]), langDef(sp[1]).bcp); break; }   // 🔊 Hør (browser TTS)
       case "openCockMap": showCockMap(arg); break;
       case "closeCockMap": closeCockMap(); break;
       case "cockZoneDone": { var cz=(arg||"").split("|"); openZoneProof(cz[0], cz[1]); break; }
