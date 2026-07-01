@@ -363,6 +363,14 @@
   /* doc 75 — Ren Dunk vertical (first design partner). A Gjøvik borettslag with bins (first-class assets),
      a LIVE tømmekalender (Gjøvik 3407 Hunnsvegen 12 is a verified Min Renovasjon address), a bin-wash
      service (AqtiVann) on the offer, and a proof-of-clean record. Demo-grade; production is doc 78 phase 2/3. */
+  // doc 75: lightweight placeholder before/after wash photos (SVG data-URIs) so the vaskerapport renders
+  // a visible proof-of-delivery in the demo. // PROD: real captured before/after photos from the field.
+  function washPhotoSVG(label, bg){
+    var svg="<svg xmlns='http://www.w3.org/2000/svg' width='200' height='150'><rect width='200' height='150' fill='"+bg+"'/>"
+      +"<rect x='58' y='34' width='84' height='78' rx='7' fill='rgba(255,255,255,0.16)' stroke='#fff' stroke-width='2.5'/>"
+      +"<text x='100' y='136' font-family='-apple-system,sans-serif' font-size='19' font-weight='bold' fill='#fff' text-anchor='middle'>"+label+"</text></svg>";
+    return "data:image/svg+xml,"+encodeURIComponent(svg);
+  }
   function renDunkAssets(){
     var cy=60.79770, cx=10.68420;
     function A(o){ return { id:o.id, buildingId:"rendunk-cust", type:"avfall-bin", label:o.label, area:"avfall",
@@ -378,8 +386,8 @@
     ];
   }
   function seedRenDunk(){
-    var cy=60.79770, cx=10.68420, recent;
-    try{ recent=new Date(Date.now()-2*86400000).toISOString(); }catch(e){ recent="2026-06-29T09:00:00.000Z"; }
+    var cy=60.79770, cx=10.68420;
+    var washTs="2026-06-27T10:15:00.000Z";   // a completed wash the day after the 26 June kommunal tømming (proof-of-clean / vaskerapport demo)
     return {
       id:"rendunk-cust",
       name:"Sameiet Hunnsvegen Hage", addr:"Hunnsvegen 12, 2819 Gjøvik", gnr:"67", bnr:"824",
@@ -411,9 +419,10 @@
           qty:4, unit:"dunk", rate:150, cadence:"Kvartalsvis", frequency:"Kvartalsvis (4×/år)", emoji:"♻️", computed:600, inScope:true }
       ],
       completionLog:[
-        { id:"pc-rendunk-1", ts:recent, by:"Ren Dunk (Martin)", team:null, service:"Dunk-/containervask", title:"Dunkvask + AqtiVann-desinfeksjon", building:"Sameiet Hunnsvegen Hage",
-          taskInstanceId:null, zoneId:null, geo:null, photoIds:[], note:"4 dunker spylt og desinfisert dagen etter tømming", materials:"AqtiVann",
-          binwash:{ disinfectant:"AqtiVann", bins:"Nedgravd rest, Nedgravd mat, Papir, Plast", fractions:"Restavfall, Matavfall, Papir, Plast" } }
+        { id:"pc-rendunk-1", ts:washTs, by:"Ren Dunk (Martin)", team:null, service:"Dunk-/containervask", title:"Dunkvask + AqtiVann-desinfeksjon", building:"Sameiet Hunnsvegen Hage",
+          taskInstanceId:null, zoneId:null, geo:null, photoIds:["rdwash-before","rdwash-after"], note:"4 dunker spylt og desinfisert dagen etter tømming", materials:"AqtiVann",
+          binwash:{ disinfectant:"AqtiVann", bins:"Nedgravd rest, Nedgravd mat, Papir, Plast", fractions:"Restavfall, Matavfall, Papir, Plast",
+            afterCollection:{ navn:"Matavfall", date:"2026-06-26" } } }   // schedule tie: washed the day after collection
       ],
       offer:null, offerHistory:[], changeRequests:[], buildingId:null, handover:null, enrichment:false,
       log:[{ts:"20 Jun 2026", text:"Ren Dunk-pilot — dunker kartlagt, tømmekalender koblet (Min Renovasjon), AqtiVann-vask på plan"}]
@@ -431,6 +440,9 @@
       st.obSeeded=true; save();
     }
     if(!cust("rendunk-cust")){ try{ st.customers.push(seedRenDunk()); save(); }catch(e){ console.error("rendunk seed", e); } }  // doc 75: Ren Dunk vertical (backfills existing users too)
+    // doc 75: the seeded wash proof references before/after photos; inject them into the in-memory photoCache
+    // each load (seed blobs aren't persisted to IndexedDB; proofThumbsHTML reads photoCache synchronously).
+    try{ if(!photoCache["rdwash-before"]) photoCache["rdwash-before"]=washPhotoSVG("FØR","#7c6244"); if(!photoCache["rdwash-after"]) photoCache["rdwash-after"]=washPhotoSVG("ETTER","#0f766e"); }catch(e){}
     // computeOffer delegates to window.OnSiteCore, which loads AFTER this parse-time seed (deferred module).
     // Pre-compute the bin-wash offer once the core is ready, looking the customer up fresh (state may reload).
     var rdOffer=function(){ try{ var c2=cust("rendunk-cust"); if(c2 && !c2.offer && window.OnSiteCore){ computeOffer(c2); save(); } }catch(e){} };
@@ -4090,10 +4102,11 @@
   function renderBoardExtras(cols){
     var awaiting=customers().filter(function(c){ return c.offer && (c.stage==="Offer sent"||c.stage==="Changes requested"); });
     var snowreps=snowReportsListHTML();
+    var washreps=washReportsListHTML();   // doc 75: Ren Dunk proof-of-clean reports
     var proof=boardProofHTML();
     var approvals=pendingApprovalsHTML();  // Phase 11: ad-hoc requests to godkjenne
     var opscore=opScoreCardHTML();          // doc-63 D: board-facing operability score (turnover-proofing, doc 59 #4)
-    if(!awaiting.length && !proof && !snowreps && !approvals && !opscore) return;
+    if(!awaiting.length && !proof && !snowreps && !washreps && !approvals && !opscore) return;
     var host=document.createElement("div"); host.className="lane"; host.style.gridColumn="1 / -1";
     var html=opscore+approvals;
     if(awaiting.length){ var c=awaiting[0];
@@ -4103,6 +4116,7 @@
         + (ui.boardOpen===c.id ? boardReviewHTML(c) : "");
     }
     html += snowreps;
+    html += washreps;
     html += proof;
     host.innerHTML=html;
     cols.insertBefore(host, cols.firstChild);
@@ -4269,7 +4283,9 @@
   function compileServiceReports(service){
     var reports=[];
     customers().forEach(function(c){
-      var es=(c.completionLog||[]).filter(function(e){return e.service===service;});
+      // doc 75: bin-wash proofs carry service strings like "Dunk-/containervask" but always an AqtiVann log
+      // (e.binwash) — match on that so the Vaskerapport picks them up regardless of the exact service label.
+      var es=(c.completionLog||[]).filter(function(e){return e.service===service || (service==="binwash" && !!e.binwash);});
       if(!es.length) return;
       var byDate={};
       es.forEach(function(e){ var k=iso(new Date(e.ts)); (byDate[k]=byDate[k]||[]).push(e); }); // group by local calendar date
@@ -4285,9 +4301,10 @@
   function findReport(id){ return snowReports().filter(function(r){return r.id===id;})[0]; }
   function reportAck(id){ var st=S(); return (st.reportsSent||{})[id]||null; }
   function markReportSent(id){
-    var st=S(); st.reportsSent=st.reportsSent||{}; st.reportsSent[id]=new Date().toISOString(); save(); render(); // PROD: email/push to board
-    var host=document.getElementById("ob-snowrep"); if(host&&host.classList.contains("on")) showSnowReport(id); // refresh open panel bar + rebuild map (render() ran destroyOpMaps)
-    toast("📤 Brøyterapport markert sendt til styret");
+    var st=S(); st.reportsSent=st.reportsSent||{}; st.reportsSent[id]=new Date().toISOString(); save(); render(); // PROD: email/push/share-link to board
+    var snow=document.getElementById("ob-snowrep"); if(snow&&snow.classList.contains("on")) showSnowReport(id); // refresh open panel bar + rebuild map (render() ran destroyOpMaps)
+    var wash=document.getElementById("ob-washrep"); if(wash&&wash.classList.contains("on")) showWashReport(id); // doc 75: same for the Vaskerapport panel
+    toast("📤 Rapport markert sendt til styret");
   }
   function snowSummaryLine(c, entries){
     var ms=entries.map(function(e){return new Date(e.ts).getTime();});
@@ -4403,6 +4420,91 @@
       + rows +'</div>';
   }
 
+  /* ---- doc 75/67 (Ren Dunk vaskerapport): proof-of-clean as a board/forvalter-facing, shareable record.
+     Reuses the Phase-6b compileServiceReports machinery + the .ob-srdoc/.ob-srcard styles; no Leaflet map
+     (bin-wash has no zones). // PROD: the same record feeds the forvalter-oversight feed (doc 72 / doc 78 P4-5). */
+  function washReports(){ return compileServiceReports("binwash"); }
+  function findWashReport(id){ return washReports().filter(function(r){return r.id===id;})[0]; }
+  function washBinCount(c, e){
+    var bw=(e&&e.binwash)||{}; var n=(bw.bins||"").split(",").filter(function(s){return s.trim();}).length;
+    return n || (c.assets||[]).filter(assetIsBin).length || 0;
+  }
+  function washSummaryLine(c, entries){
+    var e=entries[entries.length-1], bw=(e&&e.binwash)||{};
+    var n=washBinCount(c, e), fr=(bw.fractions||"").toLowerCase();
+    return n+" dunk"+(n!==1?"er":"")+" vasket og desinfisert med "+(bw.disinfectant||"AqtiVann")+(fr?(" ("+fr+")"):"")+".";
+  }
+  // the schedule tie (closes the loop with the tømmekalender wedge): the wash happened the day after
+  // the kommunal collection. The completion records which collection it followed (binwash.afterCollection);
+  // // PROD: a live wash computes this from the tømmekalender at capture time.
+  function washScheduleTie(entries){
+    var e=entries[entries.length-1], ac=(e&&e.binwash&&e.binwash.afterCollection)||null;
+    if(!ac || !ac.date) return "";
+    return "Vasket "+dateNO(iso(new Date(e.ts)))+" — dagen etter kommunal tømming ("+esc((ac.navn||"").toLowerCase())+") "+dateNO(ac.date)+".";
+  }
+  function washReportHTML(r){
+    var c=cust(r.customerId); if(!c) return "";
+    var deliveredBy=(c.manager && /ren dunk/i.test(c.manager)) ? c.manager : "Ren Dunk";
+    var timeline=r.entries.map(function(e){
+      var bw=e.binwash||{};
+      var geo=e.geo?'<button class="ob-proofgeo" data-ob="proofGeoView" data-arg="'+e.geo.lat+','+e.geo.lon+','+(e.geo.acc||0)+'" title="vis posisjon">📍</button>':'';
+      var log=(bw.bins||bw.fractions)?'<div class="ob-washlog" style="font-size:12px;background:#e6f1ef;border-radius:8px;padding:6px 9px;margin:6px 0">🧴 <b>'+esc(bw.disinfectant||"AqtiVann")+'</b>-desinfeksjon'+(bw.bins?' · '+esc(bw.bins):'')+(bw.fractions?' · '+esc(bw.fractions):'')+'</div>':'';
+      return '<div class="ob-srtl"><div class="ob-srtime">'+repTime(e.ts)+'</div>'
+        +'<div class="ob-srbody"><div class="ob-srwhat">'+esc(e.title||"Dunkvask")+' '+geo+'</div>'
+        +'<div class="ob-srwho">'+esc(e.by||"")+(e.note?' · '+esc(e.note):'')+'</div>'
+        + log + proofThumbsHTML(e.photoIds) +'</div></div>';
+    }).join("");
+    var tie=washScheduleTie(r.entries);
+    return '<div class="ob-srdoc">'
+      +'<div class="ob-srhead"><div><h1>Vaskerapport</h1><div class="ob-srsub">'+esc(c.name)+' · '+esc(c.addr||"")+'</div></div>'
+      +'<div class="ob-srdate">'+dateLongNo(r.date)+'</div></div>'
+      +'<div class="ob-srsub" style="margin:-6px 0 12px;font-weight:650">Levert av '+esc(deliveredBy)+'</div>'
+      +'<p class="ob-srsummary">'+esc(washSummaryLine(c, r.entries))+'</p>'
+      +(tie?'<p class="ob-srtie" style="background:#e6f1ef;border-radius:8px;padding:8px 11px;font-weight:600">🗓️ '+esc(tie)+'</p>':'')
+      +'<h2>Før / etter + AqtiVann-logg</h2><div class="ob-srtimeline">'+timeline+'</div>'
+      +'<p class="ob-srreassure">Dunkene spyles og desinfiseres med AqtiVann, koordinert med kommunal tømming (tom + tilgjengelig). Rapporten er dokumentasjon på levert renhold — til styret og forvalter.</p>'
+      +'</div>';
+  }
+  function showWashReport(id){
+    var r=findWashReport(id); if(!r){ toast("Fant ikke rapporten"); return; }
+    var host=document.getElementById("ob-washrep"); if(!host) return;
+    var ack=reportAck(r.id);
+    host.innerHTML='<div class="ob-snowrep-bar"><button class="ob-btn ghost" data-ob="closeWashReport">✕ Lukk</button>'
+      +'<div class="ob-board-title">Vaskerapport · '+dateLongNo(r.date)+'</div>'
+      +'<div class="ob-srbaracts">'
+      +(ack?'<span class="chip green">Sendt '+repTime(ack)+'</span>':'<button class="ob-btn amber" data-ob="markReportSent" data-arg="'+r.id+'">📤 Marker sendt til styret</button>')
+      +'<button class="ob-btn ghost" data-ob="shareWashReport" data-arg="'+r.id+'">🔗 Del</button>'
+      +'<button class="ob-btn primary" data-ob="printWashReport">🖨 Skriv ut / PDF</button></div></div>'
+      +'<div class="ob-board-scroll">'+washReportHTML(r)+'</div>';
+    host.classList.add("on"); host.setAttribute("aria-hidden","false");
+    hydratePhotos(host);
+  }
+  function closeWashReport(){
+    var host=document.getElementById("ob-washrep"); if(!host) return;
+    host.classList.remove("on"); host.setAttribute("aria-hidden","true"); host.innerHTML="";
+  }
+  function printWashReport(){
+    document.body.classList.add("ob-print-vaskerapport");   // visibility-isolated print (mirrors ob-print-snowrep)
+    var cleanup=function(){ document.body.classList.remove("ob-print-vaskerapport"); window.removeEventListener("afterprint", cleanup); };
+    window.addEventListener("afterprint", cleanup);
+    setTimeout(function(){ window.print(); }, 200);
+  }
+  function shareWashReport(id){ toast("🔗 Delingslenke kopiert (demo)"); }   // PROD: signed public share-link
+  function washReportsListHTML(){
+    var reps=washReports(); if(!reps.length) return "";
+    var rows=reps.map(function(r){
+      var c=cust(r.customerId), ack=reportAck(r.id);
+      var badge= ack ? '<span class="chip green">Sendt</span>' : '<span class="chip amber ob-ny">● Ny</span>';
+      var photos=r.entries.reduce(function(s,e){return s+((e.photoIds&&e.photoIds.length)||0);},0);
+      return '<div class="ob-row" data-ob="openWashReport" data-arg="'+r.id+'" style="cursor:pointer"><div class="ob-line-top">'
+        +'<div class="rt">🚿 Vaskerapport · '+dateLongNo(r.date)+' '+badge+'</div><div class="rp">'+(photos?photos+' bilde'+(photos!==1?"r":""):r.entries.length+' logg')+'</div></div>'
+        +'<div class="rd">'+esc(c?c.name:"")+' · '+esc(washSummaryLine(c, r.entries))+' · '+(ack?'sendt til styret':'klar – ikke sendt')+'</div></div>';
+    }).join("");
+    return '<div class="card ob-srcard"><div class="ct">🚿 Vaskerapporter <span class="chip grey">'+reps.length+'</span></div>'
+      +'<p class="muted" style="font-size:12px;margin:-2px 0 10px">Bevis på levert renhold — dunkene vasket + desinfisert, klart å <b>dele med styret/forvalter</b>.</p>'
+      + rows +'</div>';
+  }
+
   /* ===========================================================================
      DOM helpers
      =========================================================================== */
@@ -4415,6 +4517,7 @@
   document.addEventListener("click", function(e){
     if(e.target && e.target.id==="ob-board"){ closeBoard(); return; } // backdrop click closes board doc
     if(e.target && e.target.id==="ob-snowrep"){ closeSnowReport(); return; } // backdrop closes Brøyterapport
+    if(e.target && e.target.id==="ob-washrep"){ closeWashReport(); return; } // backdrop closes Vaskerapport
     if(e.target && e.target.id==="ob-cockmap"){ closeCockMap(); return; } // backdrop closes in-cab map
     var t=e.target.closest("[data-ob]"); if(!t) return;
     var act=t.getAttribute("data-ob"), id=t.getAttribute("data-id"), arg=t.getAttribute("data-arg");
@@ -4443,6 +4546,10 @@
       case "openSnowReport": showSnowReport(arg); break;
       case "closeSnowReport": closeSnowReport(); break;
       case "printSnowReport": printSnowReport(); break;
+      case "openWashReport": showWashReport(arg); break;      // doc 75: Ren Dunk vaskerapport
+      case "closeWashReport": closeWashReport(); break;
+      case "printWashReport": printWashReport(); break;
+      case "shareWashReport": shareWashReport(arg); break;
       case "markReportSent": markReportSent(arg); break;
       case "cockTeam": cockpitRosterSheet(arg); break;
       case "cockPick": { var cp=(arg||"").split("|"); setCockpit(cp[0], decodeURIComponent(cp[1]||"")); ui.cockMode="route"; obCloseSheet(); render(); var ctd=teamDef(cp[0]); toast("🚗 Cockpit: "+(ctd?ctd.label:cp[0])+" · "+decodeURIComponent(cp[1]||"")); break; }

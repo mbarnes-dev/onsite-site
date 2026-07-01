@@ -111,7 +111,7 @@
     transition:opacity .2s,transform .2s;box-shadow:var(--shadow);max-width:90vw;text-align:center}
   #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 </style>
-<link rel="stylesheet" href="onboarding.css?v=17o">
+<link rel="stylesheet" href="onboarding.css?v=17p">
 </head>
 <body>
 
@@ -178,6 +178,9 @@
 
 <!-- post-snow Brøyterapport overlay (Phase 6b) — board-facing, isolated on print (onboarding.js) -->
 <div id="ob-snowrep" aria-hidden="true"></div>
+
+<!-- Ren Dunk vaskerapport overlay (doc 75) — proof-of-clean, board/forvalter-facing, isolated on print -->
+<div id="ob-washrep" aria-hidden="true"></div>
 
 <!-- team cockpit in-cab op-map overlay (Phase 6c) — execution guide w/ inline zone completion (onboarding.js) -->
 <div id="ob-cockmap" aria-hidden="true"></div>
@@ -652,7 +655,7 @@
 <script src="vendor/leaflet/leaflet.js"></script>
 <!-- @onsite/core (doc-55 step 1): the pure engines as a committed static ESM bundle. Module defers
      (runs before DOMContentLoaded); onboarding.js delegates to window.OnSiteCore lazily (post-load). -->
-<script type="module">import * as Core from "./core.bundle.js?v=17o"; window.OnSiteCore = Core;</script>
-<script src="onboarding.js?v=17o"></script>
+<script type="module">import * as Core from "./core.bundle.js?v=17p"; window.OnSiteCore = Core;</script>
+<script src="onboarding.js?v=17p"></script>
 </body>
 </html>
