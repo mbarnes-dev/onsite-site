@@ -10,7 +10,7 @@
         { "key": "X-Frame-Options", "value": "SAMEORIGIN" },
         { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
         { "key": "Permissions-Policy", "value": "geolocation=(self)" },
-        { "key": "Content-Security-Policy", "value": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://cache.kartverket.no https://kart.nve.no https://geo.ngu.no https://awyjzqgxfvoptyfvspxu.supabase.co; font-src 'self'; connect-src 'self' https://ws.geonorge.no https://wfs.geonorge.no https://data.brreg.no https://awyjzqgxfvoptyfvspxu.supabase.co https://kart.nve.no https://geo.ngu.no; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'" }
+        { "key": "Content-Security-Policy", "value": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://cache.kartverket.no https://kart.nve.no https://geo.ngu.no https://awyjzqgxfvoptyfvspxu.supabase.co; font-src 'self'; connect-src 'self' https://ws.geonorge.no https://wfs.geonorge.no https://data.brreg.no https://awyjzqgxfvoptyfvspxu.supabase.co https://btneqhrqnxmggwowboei.supabase.co https://kart.nve.no https://geo.ngu.no; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'" }
       ]
     }
   ]
