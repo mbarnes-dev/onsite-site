@@ -35,6 +35,14 @@ input{width:100%;border:1px solid var(--line);border-radius:11px;padding:12px;fo
 .bhead h1{font-size:19px}
 .aform{border:1px dashed var(--line);border-radius:12px;padding:10px 13px;margin-top:10px}
 .proofimg{display:block;max-width:200px;max-height:150px;border-radius:9px;border:1px solid var(--line);margin-top:7px;background:var(--bg);min-height:40px}
+/* offline v1 (doc-80 §6): the three truthful levels + neutral offline — no red panic for normal offline work */
+.chip{display:inline-block;font-size:11px;font-weight:700;border-radius:999px;padding:2px 9px;vertical-align:1px;white-space:nowrap}
+.chip.q{background:#eef0ee;color:var(--muted)}                /* lagret på enheten / frakoblet — neutral */
+.chip.s{background:#e7edfd;color:#1d4ed8}                     /* synkes… / foto synkes */
+.chip.ok{background:var(--green-l);color:var(--green)}        /* synket ✓ — the only board-visible state */
+.chip.warn{background:#fbf2dd;color:#b5790b}                  /* holdes / klokkeavvik */
+.chip.err{background:var(--red-l);color:var(--red)}           /* avvist — surfaced, never retried blind */
+.chip.pendbtn{border:none;cursor:pointer;font-family:inherit}
 .binbox{border:1px dashed var(--teal);background:var(--teal-l);border-radius:11px;padding:8px 11px;margin-top:10px}
 .top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:16px;flex-wrap:wrap}
 .who{font-size:12.5px;color:var(--muted)}
