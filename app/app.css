@@ -33,6 +33,8 @@ input{width:100%;border:1px solid var(--line);border-radius:11px;padding:12px;fo
 .bldg .chev{color:var(--muted);font-size:20px;font-weight:700}
 .bhead{display:flex;align-items:center;gap:12px;margin:2px 0 14px}
 .bhead h1{font-size:19px}
+.aform{border:1px dashed var(--line);border-radius:12px;padding:10px 13px;margin-top:10px}
+.binbox{border:1px dashed var(--teal);background:var(--teal-l);border-radius:11px;padding:8px 11px;margin-top:10px}
 .top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:16px;flex-wrap:wrap}
 .who{font-size:12.5px;color:var(--muted)}
 .tenant{display:inline-block;font-size:12px;font-weight:700;background:var(--teal-l);color:var(--teal-d);border-radius:999px;padding:3px 10px}

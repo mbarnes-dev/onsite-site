@@ -48,8 +48,42 @@
     tenantName: function (tid) { return sb.from("tenants").select("name").eq("id", tid).maybeSingle(); },
     listBuildings: function () { return sb.from("buildings").select("*").order("name", { ascending: true }); },
     createBuilding: function (tenantId, b) { return sb.from("buildings").insert(coreToRow(tenantId, b)).select().single(); },
-    updateBuilding: function (id, b) { return sb.from("buildings").update(coreToRow(null, b)).eq("id", id).select().single(); }
+    updateBuilding: function (id, b) { return sb.from("buildings").update(coreToRow(null, b)).eq("id", id).select().single(); },
+    // 1c-2 item 1: assets — RLS scopes to the tenant; tenant_id set from the resolved membership on insert
+    listAssets: function (bid) { return sb.from("assets").select("*").eq("building_id", bid).order("created_at", { ascending: true }); },
+    createAsset: function (tenantId, bid, a) { var r = assetToRow(a); r.tenant_id = tenantId; r.building_id = bid; return sb.from("assets").insert(r).select().single(); },
+    updateAsset: function (id, a) { return sb.from("assets").update(assetToRow(a)).eq("id", id).select().single(); },
+    deleteAsset: function (id) { return sb.from("assets").delete().eq("id", id); }
   };
+
+  /* ---- asset mapping: DB row ↔ the Phase-10 asset shape the demo/core already understand ---- */
+  var ASSET_TYPES = [
+    { id: "hovedstoppekran", emoji: "🚰", label: "Hovedstoppekran (vann)", area: "kjeller" },
+    { id: "el-skap", emoji: "⚡", label: "Hovedtavle (el-skap)", area: "teknisk" },
+    { id: "brannsentral", emoji: "🔥", label: "Brannsentral", area: "oppgang" },
+    { id: "ventilasjon", emoji: "🌀", label: "Ventilasjonsaggregat", area: "tak" },
+    { id: "varmekilde", emoji: "♨️", label: "Varmekilde", area: "teknisk" },
+    { id: "nøkkelboks", emoji: "🔑", label: "Nøkkelboks", area: "oppgang" },
+    { id: "avfall-bin", emoji: "♻️", label: "Avfallsdunk / -brønn", area: "avfall", isBin: true },
+    { id: "annet", emoji: "🔧", label: "Annet anlegg", area: "teknisk" }
+  ];
+  var AREAS = ["kjeller", "teknisk", "oppgang", "ute", "tak", "avfall", "heis", "fasade", "annet"];
+  var BIN_TYPES = ["nedgravd", "frittstående", "kompaktor"];
+  var BIN_FRACTIONS = ["Restavfall", "Papir", "Matavfall", "Plast", "Glass/metall", "Drikkekartong", "Farlig avfall", "Tekstiler"];
+  function assetTypeDef(t) { return ASSET_TYPES.filter(function (x) { return x.id === t; })[0] || ASSET_TYPES[ASSET_TYPES.length - 1]; }
+  function assetRowToCore(row) {
+    return { id: row.id, type: row.type || "annet", label: row.label || "", area: row.area || "",
+      geo: (row.lat != null && row.lon != null) ? { lat: row.lat, lon: row.lon } : null,
+      access: row.access || "", notes: row.notes || "", complianceLink: row.compliance_link || null,
+      bin: row.bin || null, photoIds: row.photo_ids || [], _row: row };
+  }
+  function assetToRow(a) {
+    var isBin = assetTypeDef(a.type).isBin;
+    return { type: a.type, label: (a.label || "").trim() || assetTypeDef(a.type).label, area: a.area || assetTypeDef(a.type).area,
+      lat: a.geo ? a.geo.lat : null, lon: a.geo ? a.geo.lon : null,
+      access: a.access || null, notes: a.notes || null, compliance_link: a.complianceLink || null,
+      bin: isBin ? (a.bin || {}) : null };
+  }
 
   /* ============================ auth ============================ */
   function sendMagicLink(email) {
@@ -197,11 +231,103 @@
 
     app.innerHTML = head + buildingsCard + addCard + coreCard;
   }
-  /* ---- section placeholders (each item in this pass replaces its own) ---- */
-  function sectionAssetsHTML(b) { return '<div class="card"><div class="ct">🧰 Eiendeler</div><div class="empty">Kommer (1c-2 · assets).</div></div>'; }
+  /* ============================ section: Eiendeler (1c-2 item 1 — assets) ============================ */
+  function loadAssets(bid) {
+    S.secBusy.assets = true; S.secErr.assets = null;
+    prodDb.listAssets(bid).then(function (r) {
+      S.secBusy.assets = false;
+      if (r.error) { S.secErr.assets = friendly(r.error); } else { S.assets = (r.data || []).map(assetRowToCore); }
+      render();
+    });
+  }
+  function assetFormHTML(a) {
+    var d = assetTypeDef(a.type);
+    var typeOpts = ASSET_TYPES.map(function (t) { return '<option value="' + t.id + '"' + (a.type === t.id ? ' selected' : '') + '>' + t.emoji + ' ' + esc(t.label) + '</option>'; }).join("");
+    var areaOpts = AREAS.map(function (k) { return '<option value="' + k + '"' + (a.area === k ? ' selected' : '') + '>' + esc(k) + '</option>'; }).join("");
+    var bin = a.bin || {};
+    var binOpts = BIN_TYPES.map(function (t) { return '<option value="' + t + '"' + (bin.binType === t ? ' selected' : '') + '>' + esc(t) + '</option>'; }).join("");
+    var fracOpts = '<option value="">— velg —</option>' + BIN_FRACTIONS.map(function (f) { return '<option value="' + esc(f) + '"' + (bin.fraction === f ? ' selected' : '') + '>' + esc(f) + '</option>'; }).join("");
+    return '<div class="aform" data-sec="assetform">'
+      + '<label>Type</label><select id="as_type" data-field="as_type">' + typeOpts + '</select>'
+      + '<label>Navn / merking</label><input id="as_label" value="' + esc(a.label || "") + '" placeholder="' + esc(d.label) + '">'
+      + '<label>Område</label><select id="as_area">' + areaOpts + '</select>'
+      + (d.isBin
+        ? '<div class="binbox"><div class="note" style="font-weight:800;text-transform:uppercase;font-size:10.5px;letter-spacing:.03em;margin-bottom:2px">♻️ Dunk-detaljer</div>'
+          + '<label>Dunktype</label><select id="as_bintype">' + binOpts + '</select>'
+          + '<label>Fraksjon</label><select id="as_fraction">' + fracOpts + '</select>'
+          + '<div class="row2"><div style="flex:1"><label>Leverandør</label><input id="as_supplier" value="' + esc(bin.supplier || "") + '" placeholder="Molok / Strømberg…"></div>'
+          + '<div style="flex:1"><label>Volum</label><input id="as_capacity" value="' + esc(bin.capacity || "") + '" placeholder="5 m³ / 660 l"></div></div>'
+          + '<label>Lokk / hengsel</label><input id="as_lidhinge" value="' + esc(bin.lidHinge || "") + '"></div>'
+        : '')
+      + '<label>Tilgang — nøkkel / kode / hvor</label><input id="as_access" value="' + esc(a.access || "") + '" placeholder="f.eks. nøkkel B3">'
+      + '<label>Notat</label><input id="as_notes" value="' + esc(a.notes || "") + '">'
+      + '<div class="bar"><button class="btn" data-act="assetSave"' + (S.secBusy.assets ? ' disabled' : '') + '>' + (a.id ? 'Lagre endringer' : 'Lagre eiendel') + ' →</button>'
+      + '<button class="btn ghost" data-act="assetCancel">Avbryt</button></div></div>';
+  }
+  function syncAssetForm() {
+    var a = S.editAsset; if (!a) return;
+    var g = function (id) { var el = document.getElementById(id); return el ? el.value : undefined; };
+    if (g("as_type") !== undefined) a.type = g("as_type");
+    if (g("as_label") !== undefined) a.label = g("as_label");
+    if (g("as_area") !== undefined) a.area = g("as_area");
+    if (g("as_access") !== undefined) a.access = g("as_access");
+    if (g("as_notes") !== undefined) a.notes = g("as_notes");
+    if (assetTypeDef(a.type).isBin) {
+      a.bin = a.bin || {};
+      if (g("as_bintype") !== undefined) a.bin.binType = g("as_bintype");
+      if (g("as_fraction") !== undefined) a.bin.fraction = g("as_fraction");
+      if (g("as_supplier") !== undefined) a.bin.supplier = g("as_supplier");
+      if (g("as_capacity") !== undefined) a.bin.capacity = g("as_capacity");
+      if (g("as_lidhinge") !== undefined) a.bin.lidHinge = g("as_lidhinge");
+    }
+  }
+  function sectionAssetsHTML(b) {
+    var body;
+    if (S.secBusy.assets && S.assets == null) body = '<div class="empty"><span class="spin"></span>Henter eiendeler…</div>';
+    else if (!S.assets || !S.assets.length) body = '<div class="empty">Ingen eiendeler registrert ennå.</div>';
+    else body = S.assets.map(function (a) {
+      var d = assetTypeDef(a.type), bin = a.bin || {};
+      var meta = [a.area, bin.fraction, bin.binType, bin.capacity, bin.supplier, a.access].filter(Boolean).join(' · ');
+      return '<div class="bldg"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><span><span class="t">' + d.emoji + ' ' + esc(a.label || d.label) + '</span>'
+        + (meta ? '<span class="d">' + esc(meta) + '</span>' : '') + (a.notes ? '<span class="d">' + esc(a.notes) + '</span>' : '') + '</span>'
+        + '<span style="display:flex;gap:6px;flex-shrink:0"><button class="btn ghost" style="padding:7px 10px" data-act="assetEdit" data-id="' + esc(a.id) + '">✎</button>'
+        + '<button class="btn ghost" style="padding:7px 10px" data-act="assetDel" data-id="' + esc(a.id) + '">🗑</button></span></div></div>';
+    }).join("");
+    return '<div class="card"><div class="ct">🧰 Eiendeler <span class="muted" style="font-weight:600">· ' + (S.assets ? S.assets.length : '…') + ' · assets (RLS: kun din tenant)</span></div>'
+      + (S.secMsg.assets ? '<div class="msg ok">' + esc(S.secMsg.assets) + '</div>' : '')
+      + (S.secErr.assets ? '<div class="msg err">' + esc(S.secErr.assets) + '</div>' : '')
+      + body
+      + (S.editAsset ? assetFormHTML(S.editAsset) : '<div class="bar"><button class="btn ghost" data-act="assetNew">＋ Legg til eiendel</button></div>')
+      + '</div>';
+  }
+  function assetSave() {
+    syncAssetForm();
+    var a = S.editAsset, b = buildingById(S.view.id); if (!a || !b) return;
+    if (!S.tenant || !S.tenant.id) { S.secErr.assets = "Mangler tenant."; render(); return; }
+    S.secBusy.assets = true; S.secErr.assets = null; S.secMsg.assets = null; render();
+    var q = a.id ? prodDb.updateAsset(a.id, a) : prodDb.createAsset(S.tenant.id, b.id, a);
+    q.then(function (r) {
+      S.secBusy.assets = false;
+      if (r.error) { S.secErr.assets = friendly(r.error); render(); return; }   // C1: nothing fakes success
+      S.secMsg.assets = "✅ Lagret i onsite-prod: " + (r.data.label || "eiendel");
+      S.editAsset = null;
+      loadAssets(b.id);   // re-read from the DB — the list shows what actually persisted
+    });
+  }
+  function assetDelete(id) {
+    var a = (S.assets || []).filter(function (x) { return x.id === id; })[0];
+    if (!a || !window.confirm("Slette «" + (a.label || "eiendel") + "»?")) return;
+    S.secBusy.assets = true; S.secErr.assets = null; render();
+    prodDb.deleteAsset(id).then(function (r) {
+      S.secBusy.assets = false;
+      if (r.error) { S.secErr.assets = friendly(r.error); render(); return; }
+      S.secMsg.assets = "Slettet."; loadAssets(S.view.id);
+    });
+  }
+
+  /* ---- remaining section placeholders (items 2-3 replace these) ---- */
   function sectionProofHTML(b) { return '<div class="card"><div class="ct">📋 Dokumentert arbeid</div><div class="empty">Kommer (1c-2 · completion_proof).</div></div>'; }
   function sectionOffersHTML(b) { return '<div class="card"><div class="ct">💰 Tilbud</div><div class="empty">Kommer (1c-2 · offers).</div></div>'; }
-  function loadAssets(id) {}
   function loadProof(id) {}
   function loadOffers(id) {}
 
@@ -231,11 +357,24 @@
     signout: signOut,
     addBuilding: addBuilding,
     openBuilding: function (el) { openBuilding(el.getAttribute("data-id")); },
-    back: closeBuilding
+    back: closeBuilding,
+    // item 1: assets
+    assetNew: function () { var d = ASSET_TYPES[0]; S.editAsset = { id: null, type: d.id, label: "", area: d.area, access: "", notes: "", bin: null }; S.secMsg.assets = null; render(); },
+    assetEdit: function (el) { var a = (S.assets || []).filter(function (x) { return x.id === el.getAttribute("data-id"); })[0]; if (a) { S.editAsset = JSON.parse(JSON.stringify(a)); S.secMsg.assets = null; render(); } },
+    assetCancel: function () { S.editAsset = null; render(); },
+    assetSave: assetSave,
+    assetDel: function (el) { assetDelete(el.getAttribute("data-id")); }
   };
   app.addEventListener("click", function (e) {
     var t = e.target.closest("[data-act]"); if (!t) return;
     var fn = ACTIONS[t.getAttribute("data-act")]; if (fn) fn(t);
+  });
+  app.addEventListener("change", function (e) {
+    if (e.target && e.target.id === "as_type") {   // type change shows/hides the bin fields — keep typed values
+      syncAssetForm();
+      if (S.editAsset) { var d = assetTypeDef(S.editAsset.type); if (!S.editAsset.id) S.editAsset.area = d.area; }
+      render();
+    }
   });
   app.addEventListener("keydown", function (ev) {
     if (ev.key === "Enter" && ev.target && ev.target.id === "li_email") { var e = val("li_email"); rememberEmail(e); sendMagicLink(e); }
