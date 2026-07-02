@@ -50,6 +50,12 @@
     createBuilding: function (tenantId, b) { return sb.from("buildings").insert(coreToRow(tenantId, b)).select().single(); },
     updateBuilding: function (id, b) { return sb.from("buildings").update(coreToRow(null, b)).eq("id", id).select().single(); },
     // 1c-2 item 1: assets — RLS scopes to the tenant; tenant_id set from the resolved membership on insert
+    // 1c-2 item 2: completion proof + the private photos bucket (path MUST start with tenant_id — storage RLS)
+    listProof: function (bid) { return sb.from("completion_proof").select("*").eq("building_id", bid).order("ts", { ascending: false }); },
+    createProof: function (tenantId, bid, p) { p.tenant_id = tenantId; p.building_id = bid; return sb.from("completion_proof").insert(p).select().single(); },
+    uploadPhoto: function (path, blob) { return sb.storage.from("photos").upload(path, blob, { contentType: "image/jpeg", upsert: false }); },
+    removePhoto: function (path) { return sb.storage.from("photos").remove([path]); },
+    signPhoto: function (path) { return sb.storage.from("photos").createSignedUrl(path, 3600); },
     listAssets: function (bid) { return sb.from("assets").select("*").eq("building_id", bid).order("created_at", { ascending: true }); },
     createAsset: function (tenantId, bid, a) { var r = assetToRow(a); r.tenant_id = tenantId; r.building_id = bid; return sb.from("assets").insert(r).select().single(); },
     updateAsset: function (id, a) { return sb.from("assets").update(assetToRow(a)).eq("id", id).select().single(); },
@@ -168,7 +174,7 @@
   function render() {
     if (!S.session) { renderLogin(); }
     else if (S.noAccess) { renderNoAccess(); }
-    else if (S.view.name === "building" && buildingById(S.view.id)) { renderBuilding(buildingById(S.view.id)); }
+    else if (S.view.name === "building" && buildingById(S.view.id)) { renderBuilding(buildingById(S.view.id)); hydrateProofPhotos(); }
     else { S.view = { name: "list" }; renderApp(); }
     bind();
   }
@@ -325,10 +331,114 @@
     });
   }
 
-  /* ---- remaining section placeholders (items 2-3 replace these) ---- */
-  function sectionProofHTML(b) { return '<div class="card"><div class="ct">📋 Dokumentert arbeid</div><div class="empty">Kommer (1c-2 · completion_proof).</div></div>'; }
+  /* ============================ section: Dokumentert arbeid (1c-2 item 2 — completion_proof + photos) ============================ */
+  // same pipeline as the demo: FileReader → canvas ≤1280px → JPEG q0.6. Data-URL path keeps the strict CSP
+  // (img-src 'self' data: …); the canvas re-encode also strips EXIF/GPS — a relied-upon privacy property.
+  function compressImage(file, cb) {
+    try {
+      var rd = new FileReader();
+      rd.onload = function () {
+        var img = new Image();
+        img.onload = function () {
+          try {
+            var MAX = 1280, w = img.width, h = img.height;
+            if (w > MAX || h > MAX) { var s = Math.min(MAX / w, MAX / h); w = Math.round(w * s); h = Math.round(h * s); }
+            var cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+            cv.getContext("2d").drawImage(img, 0, 0, w, h);
+            cv.toBlob(function (blob) { cb(blob || null); }, "image/jpeg", 0.6);
+          } catch (e) { cb(null); }
+        };
+        img.onerror = function () { cb(null); };
+        img.src = rd.result;
+      };
+      rd.onerror = function () { cb(null); };
+      rd.readAsDataURL(file);
+    } catch (e) { cb(null); }
+  }
+  var signedUrlCache = {};   // storage path → signed url (1 h TTL; per-session cache)
+  function hydrateProofPhotos() {
+    [].forEach.call(app.querySelectorAll("img[data-photo-path]"), function (img) {
+      var path = img.getAttribute("data-photo-path");
+      if (signedUrlCache[path]) { img.src = signedUrlCache[path]; return; }
+      prodDb.signPhoto(path).then(function (r) {
+        if (r.error || !r.data || !r.data.signedUrl) { img.alt = "bilde utilgjengelig"; return; }
+        signedUrlCache[path] = r.data.signedUrl;
+        if (img.isConnected) img.src = r.data.signedUrl;
+      });
+    });
+  }
+  function loadProof(bid) {
+    S.secBusy.proof = true; S.secErr.proof = null;
+    prodDb.listProof(bid).then(function (r) {
+      S.secBusy.proof = false;
+      if (r.error) { S.secErr.proof = friendly(r.error); } else { S.proof = r.data || []; }
+      render();
+    });
+  }
+  function sectionProofHTML(b) {
+    var body;
+    if (S.secBusy.proof && S.proof == null) body = '<div class="empty"><span class="spin"></span>Henter dokumentert arbeid…</div>';
+    else if (!S.proof || !S.proof.length) body = '<div class="empty">Ingen dokumentert arbeid ennå — registrer det første nedenfor.</div>';
+    else body = S.proof.map(function (p) {
+      var when = ""; try { when = new Date(p.ts).toLocaleString("no", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); } catch (e) {}
+      var assetChip = (p.extra && p.extra.asset_label) ? ' <span class="tenant" style="font-size:11px">' + esc(p.extra.asset_label) + '</span>' : '';
+      var photos = (p.photo_ids || []).map(function (path) { return '<img class="proofimg" data-photo-path="' + esc(path) + '" alt="bilde">'; }).join("");
+      return '<div class="bldg"><span class="t">✅ ' + esc(p.title || "Utført arbeid") + assetChip + '</span>'
+        + '<span class="d">' + esc(when) + (p.by_name ? ' · ' + esc(p.by_name) : '') + (p.note ? ' · ' + esc(p.note) : '') + '</span>' + photos + '</div>';
+    }).join("");
+    var assetOpts = '<option value="">— ingen spesifikk eiendel —</option>' + (S.assets || []).map(function (a) {
+      return '<option value="' + esc(a.id) + '">' + esc(a.label || assetTypeDef(a.type).label) + '</option>'; }).join("");
+    var d = S.proofDraft || {};
+    var form =
+      '<div class="aform"><div class="note" style="font-weight:800;text-transform:uppercase;font-size:10.5px;letter-spacing:.03em">Registrer utført arbeid</div>'
+      + '<label>Hva ble gjort</label><input id="pf_title" value="' + esc(d.title || "") + '" placeholder="f.eks. Dunkvask + AqtiVann-desinfeksjon">'
+      + '<label>Notat</label><input id="pf_note" value="' + esc(d.note || "") + '" placeholder="valgfritt">'
+      + '<label>Eiendel (valgfritt)</label><select id="pf_asset">' + assetOpts + '</select>'
+      + '<label>Bilde (valgfritt — komprimeres til ≤1280px)</label><input type="file" id="pf_photo" accept="image/*">'
+      + (d.photoLost ? '<div class="msg err">Velg bildet på nytt (skjemaet ble gjenopprettet etter feil).</div>' : '')
+      + '<div class="bar"><button class="btn" data-act="proofSave"' + (S.secBusy.proof ? ' disabled' : '') + '>' + (S.secBusy.proof ? '<span class="spin"></span>Lagrer…' : '✓ Dokumentér i onsite-prod') + '</button></div></div>';
+    return '<div class="card"><div class="ct">📋 Dokumentert arbeid <span class="muted" style="font-weight:600">· ' + (S.proof ? S.proof.length : '…') + ' · completion_proof + photos-bucket</span></div>'
+      + (S.secMsg.proof ? '<div class="msg ok">' + esc(S.secMsg.proof) + '</div>' : '')
+      + (S.secErr.proof ? '<div class="msg err">' + esc(S.secErr.proof) + '</div>' : '')
+      + body + form + '</div>';
+  }
+  function proofSave() {
+    var b = buildingById(S.view.id); if (!b) return;
+    if (!S.tenant || !S.tenant.id) { S.secErr.proof = "Mangler tenant."; render(); return; }
+    // read EVERYTHING from the live DOM first — a re-render clears the file input
+    var title = val("pf_title") || "Utført arbeid", note = val("pf_note"), assetId = val("pf_asset");
+    var fileEl = document.getElementById("pf_photo"), file = fileEl && fileEl.files && fileEl.files[0];
+    var asset = (S.assets || []).filter(function (a) { return a.id === assetId; })[0] || null;
+    var byName = (S.session.user && S.session.user.email) || "innlogget";
+    S.secBusy.proof = true; S.secErr.proof = null; S.secMsg.proof = null; S.proofDraft = null; render();
+    function fail(msg) { S.secBusy.proof = false; S.secErr.proof = msg; S.proofDraft = { title: title, note: note, photoLost: !!file }; render(); }
+    function insertRow(photoPath) {
+      var row = { title: title, note: note || null, by_name: byName, service: "prod-app",
+        extra: asset ? { asset_id: asset.id, asset_label: asset.label || assetTypeDef(asset.type).label } : null,
+        photo_ids: photoPath ? [photoPath] : null };
+      prodDb.createProof(S.tenant.id, b.id, row).then(function (r) {
+        if (r.error) {   // C1: surface + clean up the now-orphaned storage object (best effort)
+          if (photoPath) prodDb.removePhoto(photoPath);
+          fail(friendly(r.error)); return;
+        }
+        S.secBusy.proof = false; S.secMsg.proof = "✅ Dokumentert i onsite-prod" + (photoPath ? " (med bilde i photos-bucketen)" : "");
+        loadProof(b.id);
+      });
+    }
+    if (!file) { insertRow(null); return; }
+    compressImage(file, function (blob) {
+      if (!blob) { fail("Kunne ikke lese/komprimere bildet — prøv et annet."); return; }
+      var uid2 = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(36).slice(2));
+      var path = S.tenant.id + "/" + b.id + "/" + uid2 + ".jpg";   // FIRST folder = tenant_id (storage RLS)
+      prodDb.uploadPhoto(path, blob).then(function (r) {
+        if (r.error) { fail("Bildeopplasting feilet: " + ((r.error && r.error.message) || "ukjent") + " — ingenting ble lagret."); return; }
+        insertRow(path);
+      });
+    });
+  }
+
+  /* ---- remaining section placeholder (item 3 replaces this) ---- */
   function sectionOffersHTML(b) { return '<div class="card"><div class="ct">💰 Tilbud</div><div class="empty">Kommer (1c-2 · offers).</div></div>'; }
-  function loadProof(id) {}
   function loadOffers(id) {}
 
   /* ============================ building detail (1c-2 item 0) ============================
@@ -363,7 +473,9 @@
     assetEdit: function (el) { var a = (S.assets || []).filter(function (x) { return x.id === el.getAttribute("data-id"); })[0]; if (a) { S.editAsset = JSON.parse(JSON.stringify(a)); S.secMsg.assets = null; render(); } },
     assetCancel: function () { S.editAsset = null; render(); },
     assetSave: assetSave,
-    assetDel: function (el) { assetDelete(el.getAttribute("data-id")); }
+    assetDel: function (el) { assetDelete(el.getAttribute("data-id")); },
+    // item 2: proof
+    proofSave: proofSave
   };
   app.addEventListener("click", function (e) {
     var t = e.target.closest("[data-act]"); if (!t) return;
