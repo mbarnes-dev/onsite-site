@@ -18,7 +18,9 @@
   });
 
   var app = document.getElementById("app");
-  var S = { session: null, tenant: null, buildings: null, loading: false, error: null, msg: null, noAccess: false, _uid: null };
+  var S = { session: null, tenant: null, buildings: null, loading: false, error: null, msg: null, noAccess: false, _uid: null,
+    // 1c-2: view routing — the building detail is the container for the per-table sections (assets/proof/offers)
+    view: { name: "list" }, assets: null, proof: null, offers: null, editAsset: null, secBusy: {}, secErr: {}, secMsg: {} };
 
   /* ============================ @onsite/core mapping ============================
    * DB row  <->  the plain-JS building shape the engines expect. The core engines never see a DB row;
@@ -119,10 +121,21 @@
   function esc(s) { return (s == null ? "" : String(s)).replace(/[&<>"]/g, function (c) { return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]; }); }
 
   /* ============================ render ============================ */
+  function buildingById(id) { return (S.buildings || []).filter(function (b) { return b.id === id; })[0] || null; }
+  function openBuilding(id) {
+    S.view = { name: "building", id: id };
+    S.assets = null; S.proof = null; S.offers = null; S.editAsset = null; S.secErr = {}; S.secMsg = {}; S.msg = null; S.error = null;
+    render();
+    loadBuildingSections(id);   // sections load lazily; each surfaces its own errors (C1)
+  }
+  function closeBuilding() { S.view = { name: "list" }; S.editAsset = null; S.msg = null; S.error = null; render(); }
+  function loadBuildingSections(id) { loadAssets(id); loadProof(id); loadOffers(id); }
+
   function render() {
     if (!S.session) { renderLogin(); }
     else if (S.noAccess) { renderNoAccess(); }
-    else { renderApp(); }
+    else if (S.view.name === "building" && buildingById(S.view.id)) { renderBuilding(buildingById(S.view.id)); }
+    else { S.view = { name: "list" }; renderApp(); }
     bind();
   }
   // gate item 3: an authenticated user with NO membership gets a clear dead-end with a way out — never an empty app.
@@ -161,7 +174,7 @@
     else {
       list = S.buildings.map(function (b) {
         var meta = [b.addr, (b.gnr ? 'gnr ' + b.gnr : ''), (b.bnr ? 'bnr ' + b.bnr : '')].filter(Boolean).join(' · ');
-        return '<div class="bldg"><div class="t">🏢 ' + esc(b.name) + '</div>' + (meta ? '<div class="d">' + esc(meta) + '</div>' : '') + '</div>';
+        return '<button class="bldg click" data-act="openBuilding" data-id="' + esc(b.id) + '"><span><span class="t">🏢 ' + esc(b.name) + '</span>' + (meta ? '<span class="d">' + esc(meta) + '</span>' : '') + '</span><span class="chev">›</span></button>';
       }).join("");
     }
 
@@ -184,16 +197,50 @@
 
     app.innerHTML = head + buildingsCard + addCard + coreCard;
   }
+  /* ---- section placeholders (each item in this pass replaces its own) ---- */
+  function sectionAssetsHTML(b) { return '<div class="card"><div class="ct">🧰 Eiendeler</div><div class="empty">Kommer (1c-2 · assets).</div></div>'; }
+  function sectionProofHTML(b) { return '<div class="card"><div class="ct">📋 Dokumentert arbeid</div><div class="empty">Kommer (1c-2 · completion_proof).</div></div>'; }
+  function sectionOffersHTML(b) { return '<div class="card"><div class="ct">💰 Tilbud</div><div class="empty">Kommer (1c-2 · offers).</div></div>'; }
+  function loadAssets(id) {}
+  function loadProof(id) {}
+  function loadOffers(id) {}
+
+  /* ============================ building detail (1c-2 item 0) ============================
+   * The container for the per-table sections: Eiendeler · Dokumentert arbeid · Tilbud. Tablet-first. */
+  function renderBuilding(b) {
+    var email = (S.session.user && S.session.user.email) || "";
+    var meta = [b.addr, (b.gnr ? 'gnr ' + b.gnr : ''), (b.bnr ? 'bnr ' + b.bnr : '')].filter(Boolean).join(' · ');
+    app.innerHTML =
+      '<div class="top"><div><span class="logo">● ONSITE</span><span class="prodtag">prod</span>'
+      + (S.tenant && S.tenant.name ? ' <span class="tenant">' + esc(S.tenant.name) + '</span>' : '')
+      + '</div><div style="display:flex;gap:8px;align-items:center"><span class="who">' + esc(email) + '</span><button class="btn ghost" data-act="signout" style="padding:8px 12px">Logg av</button></div></div>'
+      + '<div class="bhead"><button class="btn ghost" data-act="back" style="padding:9px 13px">← Bygg</button>'
+      + '<div><h1>🏢 ' + esc(b.name) + '</h1>' + (meta ? '<div class="note">' + esc(meta) + '</div>' : '') + '</div></div>'
+      + (S.error ? '<div class="msg err">' + esc(S.error) + '</div>' : '')
+      + sectionAssetsHTML(b)
+      + sectionProofHTML(b)
+      + sectionOffersHTML(b);
+  }
+
   function lastEmail() { try { return localStorage.getItem("onsite_prod_email") || ""; } catch (e) { return ""; } }
   function rememberEmail(e) { try { localStorage.setItem("onsite_prod_email", e); } catch (x) {} }
 
-  function bind() {
-    var b;
-    if ((b = app.querySelector('[data-act="login"]'))) b.onclick = function () { var e = val("li_email"); rememberEmail(e); sendMagicLink(e); };
-    if ((b = app.querySelector('[data-act="signout"]'))) b.onclick = signOut;
-    if ((b = app.querySelector('[data-act="addBuilding"]'))) b.onclick = addBuilding;
-    var em = document.getElementById("li_email"); if (em) em.addEventListener("keydown", function (ev) { if (ev.key === "Enter") { var e = val("li_email"); rememberEmail(e); sendMagicLink(e); } });
-  }
+  /* one delegated dispatcher (replaces per-render bind) — sections add cases, not listeners */
+  var ACTIONS = {
+    login: function () { var e = val("li_email"); rememberEmail(e); sendMagicLink(e); },
+    signout: signOut,
+    addBuilding: addBuilding,
+    openBuilding: function (el) { openBuilding(el.getAttribute("data-id")); },
+    back: closeBuilding
+  };
+  app.addEventListener("click", function (e) {
+    var t = e.target.closest("[data-act]"); if (!t) return;
+    var fn = ACTIONS[t.getAttribute("data-act")]; if (fn) fn(t);
+  });
+  app.addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter" && ev.target && ev.target.id === "li_email") { var e = val("li_email"); rememberEmail(e); sendMagicLink(e); }
+  });
+  function bind() {} // retained no-op — render() calls it; all wiring is delegated above
 
   /* ============================ boot ============================ */
   // gate item 4 (review-2 T1-4): a failed magic-link redirect (expired/used link, or a link opened in a

@@ -25,8 +25,14 @@ input{width:100%;border:1px solid var(--line);border-radius:11px;padding:12px;fo
 .msg.ok{background:var(--green-l);color:var(--green)}
 .msg.err{background:var(--red-l);color:var(--red)}
 .bldg{border:1px solid var(--line);border-radius:12px;padding:11px 13px;margin-bottom:9px}
-.bldg .t{font-weight:700;font-size:15px}
-.bldg .d{font-size:12.8px;color:var(--muted);margin-top:2px}
+.bldg .t{font-weight:700;font-size:15px;display:block}
+.bldg .d{font-size:12.8px;color:var(--muted);margin-top:2px;display:block}
+/* 1c-2: clickable building card → detail view (tablet-first: full-row tap target) */
+.bldg.click{display:flex;width:100%;align-items:center;justify-content:space-between;gap:10px;background:#fff;font-family:inherit;font-size:inherit;color:inherit;text-align:left;cursor:pointer;min-height:52px}
+.bldg.click:active{background:var(--teal-l)}
+.bldg .chev{color:var(--muted);font-size:20px;font-weight:700}
+.bhead{display:flex;align-items:center;gap:12px;margin:2px 0 14px}
+.bhead h1{font-size:19px}
 .top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:16px;flex-wrap:wrap}
 .who{font-size:12.5px;color:var(--muted)}
 .tenant{display:inline-block;font-size:12px;font-weight:700;background:var(--teal-l);color:var(--teal-d);border-radius:999px;padding:3px 10px}
