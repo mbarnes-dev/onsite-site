@@ -11,4 +11,8 @@ const banner = `/* core.bundle.js — BUILT ARTIFACT, do not edit. Source: packa
   ` * @onsite/core v${(src.match(/VERSION\s*=\s*"([^"]+)"/) || [])[1] || "0"} — committed static bundle (loaded via <script type="module">). */\n`;
 const out = join(here, "..", "..", "core.bundle.js");
 writeFileSync(out, banner + src);
-console.log("built core.bundle.js (" + (banner + src).length + " bytes) from packages/core/src/index.mjs");
+// gate pass (review-2 T1-1): the prod app lives in app/ on its OWN origin/Vercel project — same
+// committed-static pattern, so the bundle is written to BOTH deploy roots from the one source.
+const outApp = join(here, "..", "..", "app", "core.bundle.js");
+writeFileSync(outApp, banner + src);
+console.log("built core.bundle.js + app/core.bundle.js (" + (banner + src).length + " bytes) from packages/core/src/index.mjs");

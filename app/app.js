@@ -1,7 +1,8 @@
-/* OnSite PRODUCTION app — slice 1c (doc 78/79). Talks to onsite-prod (real multi-tenant backend).
- * Thin slice: magic-link auth + tenant-isolated buildings (list/create). Everything goes through the
+/* OnSite PRODUCTION app — slice 1c + gate pass (doc 78/79, review-2). Talks to onsite-prod (real
+ * multi-tenant backend). Magic-link auth + tenant-isolated buildings. Everything goes through the
  * authenticated client; RLS scopes reads/writes to the user's tenant. NO service_role in the client.
- * Separate from index.html (the Ren Dunk demo) — the demo keeps working untouched. */
+ * Lives in app/ and deploys as its OWN Vercel project on its OWN ORIGIN (review-2 T1-1) so the prod
+ * session token never shares an origin with the demo's innerHTML surface. Demo: onsite-site.vercel.app. */
 (function () {
   "use strict";
 
@@ -120,7 +121,7 @@
       + (S.error ? '<div class="msg err">' + esc(S.error) + '</div>' : '')
       + '<div class="bar"><button class="btn" data-act="login"' + (S.loading ? ' disabled' : '') + '>' + (S.loading ? '<span class="spin"></span>Sender…' : 'Send innloggingslenke →') + '</button></div>'
       + '</div>'
-      + '<p class="note">Demoen (Ren Dunk) ligger uendret på <a href="index.html">index.html</a>. Denne siden snakker med den ekte, tenant-isolerte backenden.</p>';
+      + '<p class="note">Demoen (Ren Dunk) ligger uendret på <a href="https://onsite-site.vercel.app">onsite-site.vercel.app</a>. Denne appen kjører på sitt eget domene (origin-isolert fra demoen) og snakker med den ekte, tenant-isolerte backenden.</p>';
   }
   function renderApp() {
     var email = (S.session.user && S.session.user.email) || "innlogget";

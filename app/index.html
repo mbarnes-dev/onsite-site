@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<!-- OnSite PRODUCTION app (doc 78/79, slice 1c + gate pass) — talks to onsite-prod (real multi-tenant
+     backend, RLS). Lives in app/ and deploys as its OWN Vercel project on its OWN ORIGIN (review-2 T1-1:
+     the prod session token must never share an origin with the demo's innerHTML surface).
+     STRICT CSP: no inline scripts — all JS is external (boot.mjs sets window.OnSiteCore; app.js is the app).
+     The demo stays on onsite-site.vercel.app, untouched. -->
+<html lang="nb">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OnSite — produksjon</title>
+<link rel="stylesheet" href="app.css?v=2">
+</head>
+<body>
+<div class="wrap"><div id="app"></div></div>
+
+<script src="vendor/supabase-js.min.js"></script>
+<!-- @onsite/core: same committed static ESM bundle as the demo, built into app/ by packages/core/build.mjs -->
+<script type="module" src="boot.mjs?v=2"></script>
+<script src="app.js?v=2"></script>
+</body>
+</html>
