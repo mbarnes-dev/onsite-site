@@ -18,7 +18,7 @@
   });
 
   var app = document.getElementById("app");
-  var S = { session: null, tenant: null, buildings: null, loading: false, error: null, msg: null };
+  var S = { session: null, tenant: null, buildings: null, loading: false, error: null, msg: null, noAccess: false, _uid: null };
 
   /* ============================ @onsite/core mapping ============================
    * DB row  <->  the plain-JS building shape the engines expect. The core engines never see a DB row;
@@ -41,7 +41,8 @@
   /* ============================ prodDb: authenticated data layer ============================
    * RLS does the tenant filtering server-side. We only ever set tenant_id from the user's own membership. */
   var prodDb = {
-    myMembership: function () { return sb.from("memberships").select("tenant_id, role").limit(1).maybeSingle(); },
+    // gate item 3 (review-2 T1-3): fetch ALL memberships, deterministically ordered — never a bare limit(1).
+    myMemberships: function () { return sb.from("memberships").select("tenant_id, role, created_at").order("created_at", { ascending: true }); },
     tenantName: function (tid) { return sb.from("tenants").select("name").eq("id", tid).maybeSingle(); },
     listBuildings: function () { return sb.from("buildings").select("*").order("name", { ascending: true }); },
     createBuilding: function (tenantId, b) { return sb.from("buildings").insert(coreToRow(tenantId, b)).select().single(); },
@@ -53,7 +54,8 @@
     email = (email || "").trim();
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { S.error = "Skriv en gyldig e-postadresse."; S.msg = null; render(); return; }
     S.loading = true; S.error = null; S.msg = null; render();
-    sb.auth.signInWithOtp({ email: email, options: { emailRedirectTo: location.origin + location.pathname } })
+    // gate item 2 (review-2 T1-2): closed signup — an unknown email gets a clear refusal, no user row created.
+    sb.auth.signInWithOtp({ email: email, options: { emailRedirectTo: location.origin + location.pathname, shouldCreateUser: false } })
       .then(function (r) {
         S.loading = false;
         if (r.error) { S.error = authHint(r.error); }
@@ -63,20 +65,31 @@
   }
   function authHint(err) {
     var m = (err && err.message) || "ukjent feil";
-    if (/not enabled|disabled|provider|signups? not allowed/i.test(m)) return "Innlogging er ikke slått på ennå — den virker straks e-post/magic-link er aktivert. (" + m + ")";
+    if (/signups? not allowed/i.test(m)) return "Ingen konto for denne adressen — kontakt administrator for å få tilgang.";
+    if (/not enabled|disabled|provider/i.test(m)) return "Innlogging er ikke slått på ennå — den virker straks e-post/magic-link er aktivert. (" + m + ")";
+    if (/rate limit|too many/i.test(m)) return "For mange forsøk — vent et minutt og prøv igjen.";
     return "Innlogging feilet: " + m;
   }
-  function signOut() { sb.auth.signOut().then(function () { S.tenant = null; S.buildings = null; S.msg = null; S.error = null; render(); }); }
+  function signOut() {
+    sb.auth.signOut().then(function () {
+      try { localStorage.removeItem("onsite_prod_email"); } catch (e) {}   // shared-device hygiene: no email crumb after sign-out
+      S.tenant = null; S.buildings = null; S.msg = null; S.error = null; S.noAccess = false; render();
+    });
+  }
 
   /* ============================ load-after-login ============================ */
   function loadTenantAndBuildings() {
     if (!S.session) return;
-    S.loading = true; S.error = null; render();
-    prodDb.myMembership().then(function (mr) {
+    S.loading = true; S.error = null; S.noAccess = false; render();
+    prodDb.myMemberships().then(function (mr) {
       if (mr.error) throw mr.error;
-      if (!mr.data) { S.tenant = { id: null, role: null, name: null }; S.buildings = []; S.loading = false; S.error = "Ingen tenant-tilknytning for denne brukeren ennå."; render(); return; }
-      S.tenant = { id: mr.data.tenant_id, role: mr.data.role, name: null };
-      return prodDb.tenantName(mr.data.tenant_id).then(function (tr) {
+      var rows = mr.data || [];
+      if (!rows.length) {   // 0 memberships → a clear no-access screen, not an empty app (gate item 3)
+        S.noAccess = true; S.tenant = null; S.buildings = null; S.loading = false; render(); return;
+      }
+      var m = rows[0];   // deterministic: oldest membership first (created_at asc)
+      S.tenant = { id: m.tenant_id, role: m.role, name: null, count: rows.length };
+      return prodDb.tenantName(m.tenant_id).then(function (tr) {
         if (tr.data) S.tenant.name = tr.data.name;
         return prodDb.listBuildings();
       }).then(function (br) {
@@ -101,15 +114,27 @@
       render();
     });
   }
-  function friendly(e) { var m = (e && e.message) || String(e); if (/JWT|not authenticated|401/i.test(m)) return "Økten er utløpt — logg inn på nytt."; return m; }
+  function friendly(e) { var m = (e && e.message) || String(e); if (/JWT|not authenticated|session missing|401/i.test(m)) return "Økten er utløpt — logg inn på nytt (arbeidet ble IKKE lagret)."; return m; }
   function val(id) { var el = document.getElementById(id); return el ? el.value.trim() : ""; }
   function esc(s) { return (s == null ? "" : String(s)).replace(/[&<>"]/g, function (c) { return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]; }); }
 
   /* ============================ render ============================ */
   function render() {
     if (!S.session) { renderLogin(); }
+    else if (S.noAccess) { renderNoAccess(); }
     else { renderApp(); }
     bind();
+  }
+  // gate item 3: an authenticated user with NO membership gets a clear dead-end with a way out — never an empty app.
+  function renderNoAccess() {
+    var email = (S.session.user && S.session.user.email) || "";
+    app.innerHTML =
+      '<div class="top"><div><span class="logo">● ONSITE</span><span class="prodtag">prod</span></div>'
+      + '<div style="display:flex;gap:8px;align-items:center"><span class="who">' + esc(email) + '</span><button class="btn ghost" data-act="signout" style="padding:8px 12px">Logg av</button></div></div>'
+      + '<div class="card"><div class="ct">Ingen tilgang</div>'
+      + '<p class="note" style="margin-top:-2px">Kontoen din er bekreftet, men den er ikke knyttet til noen virksomhet ennå.</p>'
+      + '<div class="msg err">Ingen tilgang — kontakt administrator for å bli lagt til i riktig virksomhet.</div>'
+      + '</div>';
   }
   function renderLogin() {
     app.innerHTML =
@@ -127,7 +152,7 @@
     var email = (S.session.user && S.session.user.email) || "innlogget";
     var head =
       '<div class="top"><div><span class="logo">● ONSITE</span><span class="prodtag">prod</span>'
-      + (S.tenant && S.tenant.name ? ' <span class="tenant">' + esc(S.tenant.name) + (S.tenant.role ? ' · ' + esc(S.tenant.role) : '') + '</span>' : '')
+      + (S.tenant && S.tenant.name ? ' <span class="tenant">' + esc(S.tenant.name) + (S.tenant.role ? ' · ' + esc(S.tenant.role) : '') + (S.tenant.count > 1 ? ' · tilgang 1 av ' + S.tenant.count : '') + '</span>' : '')
       + '</div><div style="display:flex;gap:8px;align-items:center"><span class="who">' + esc(email) + '</span><button class="btn ghost" data-act="signout" style="padding:8px 12px">Logg av</button></div></div>';
 
     var list;
@@ -171,14 +196,36 @@
   }
 
   /* ============================ boot ============================ */
+  // gate item 4 (review-2 T1-4): a failed magic-link redirect (expired/used link, or a link opened in a
+  // different browser — the PKCE verifier lives where the link was requested) arrives as error params in
+  // the URL. Surface them on the login screen with a send-a-new-link path; never a silent dead end.
+  (function surfaceAuthRedirectErrors() {
+    try {
+      var qs = new URLSearchParams(location.search);
+      var hs = new URLSearchParams((location.hash || "").replace(/^#/, ""));
+      var code = qs.get("error_code") || hs.get("error_code") || "";
+      var desc = qs.get("error_description") || hs.get("error_description") || "";
+      var err = qs.get("error") || hs.get("error") || "";
+      if (!err && !code && !desc) return;
+      if (/otp_expired|expired/i.test(code + " " + desc)) S.error = "Innloggingslenken er utløpt eller allerede brukt — send en ny nedenfor.";
+      else if (/access_denied/i.test(err + " " + code)) S.error = "Innloggingen ble avvist" + (desc ? " (" + desc.replace(/\+/g, " ") + ")" : "") + " — send en ny lenke nedenfor. Åpne lenken i samme nettleser som du bestilte den fra.";
+      else S.error = "Innlogging feilet" + (desc ? ": " + desc.replace(/\+/g, " ") : "") + " — send en ny lenke nedenfor.";
+      try { history.replaceState(null, "", location.pathname); } catch (e) {}
+    } catch (e) {}
+  })();
   sb.auth.onAuthStateChange(function (event, session) {
-    var was = !!S.session; S.session = session;
-    if (session && !was) { S.buildings = null; S.tenant = null; loadTenantAndBuildings(); }
-    if (!session) { S.tenant = null; S.buildings = null; }
+    var was = !!S.session, wasUid = S._uid || null;
+    var uid = session && session.user ? session.user.id : null;
+    S.session = session; S._uid = uid;
+    // gate item 3: re-resolve the tenant on every sign-in AND on user change — never reuse a cached
+    // tenant_id across sessions/users (shared-device reality).
+    if (session && (!was || uid !== wasUid)) { S.buildings = null; S.tenant = null; S.noAccess = false; loadTenantAndBuildings(); }
+    if (!session) { S.tenant = null; S.buildings = null; S.noAccess = false; }
     render();
   });
   sb.auth.getSession().then(function (r) {
     S.session = (r.data && r.data.session) || null;
+    S._uid = S.session && S.session.user ? S.session.user.id : null;
     if (S.session && S.buildings == null && !S.loading) loadTenantAndBuildings();
     render();
   });
