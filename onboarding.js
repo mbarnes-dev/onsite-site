@@ -759,7 +759,12 @@
     if(map){ try{ var b=L.geoJSON(z.geometry).getBounds(); map.panTo(b.getCenter()); }catch(e){} }
     openZoneSheet(c, z, z.geometry); }
   function delZone(id){ var c=cur(); if(!c) return; var dz=findZone(c,id); if(dz) zonePhotoIds(dz).forEach(photoDel); // M13: free the deleted zone's orphaned photo blobs
-    c.zones=(c.zones||[]).filter(function(z){return z.id!==id;}); save(); refreshZones(c); toast("Sone slettet"); }
+    c.zones=(c.zones||[]).filter(function(z){return z.id!==id;});
+    // M12 (review-1/2): a deleted priced zone must re-price the offer — same seam as zone SAVE — so no
+    // stale line/subtotal/total and no dangling zoneId survives. recomputeOffer computes + saves.
+    if(c.offer && c.offer.modules){ recomputeOffer(c); if(document.getElementById("ob-tiered")) refreshTiered(c); }
+    else { save(); }
+    refreshZones(c); toast("Sone slettet"); }
 
   /* ---- operational maps (read-only, board-grade) ---- */
   function destroyOpMaps(){ for(var k in opMaps){ try{ opMaps[k].remove(); }catch(e){} } opMaps={}; }
@@ -1141,10 +1146,10 @@
   function renovasjonCardHTML(c){
     var r=c&&c.renovasjon; if(!r || !r.kommunenr) return "";
     var ds=r.dates||[];
-    var rows = ds.length ? ds.map(function(f){ return '<div class="ob-renov-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px dashed var(--line)"><span>'+f.emoji+' '+esc(f.navn)+'</span><span class="ob-renov-date" style="font-weight:700">'+dateNO(f.next)+'</span></div>'; }).join("")
+    var rows = ds.length ? ds.map(function(f){ return '<div class="ob-renov-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px dashed var(--line)"><span>'+f.emoji+' '+esc(f.navn)+'</span><span class="ob-renov-date" style="font-weight:700">'+esc(dateNO(f.next))+'</span></div>'; }).join("")
       : '<div class="empty" style="margin:4px 0">'+(r.fetchedTs?'Ingen tømmedatoer funnet for adressen (kommunen bruker kanskje ikke Min Renovasjon).':'Ikke hentet ennå — trykk «Hent tømmedatoer».')+'</div>';
     var nx=nextCollection(c), ww=washWindow(c);
-    var suggest = (nx&&ww) ? '<div class="ob-renov-sug" style="background:var(--teal-l);border-radius:9px;padding:8px 10px;margin-top:8px;font-size:12.5px"><b>🚿 Vaskeforslag:</b> kommunen tømmer '+esc((nx.navn||"").toLowerCase())+' '+dateNO(nx.next)+' → foreslå dunkvask <b>'+dateNO(ww)+'</b> (tom + tilgjengelig)</div>' : '';
+    var suggest = (nx&&ww) ? '<div class="ob-renov-sug" style="background:var(--teal-l);border-radius:9px;padding:8px 10px;margin-top:8px;font-size:12.5px"><b>🚿 Vaskeforslag:</b> kommunen tømmer '+esc((nx.navn||"").toLowerCase())+' '+esc(dateNO(nx.next))+' → foreslå dunkvask <b>'+esc(dateNO(ww))+'</b> (tom + tilgjengelig)</div>' : '';
     return '<div class="card"><div class="ct">🗓️ Tømmekalender <span class="muted" style="font-weight:600">· '+esc(r.gatenavn||"")+' '+esc(r.husnr||"")+' · Min Renovasjon</span></div>'
       +'<div class="ob-renov-list">'+rows+'</div>'+suggest
       +'<div class="ob-bar" style="margin-top:8px"><button class="ob-btn ghost" data-ob="renovRefresh" data-arg="'+c.id+'">↻ Hent tømmedatoer</button></div></div>';
@@ -1418,9 +1423,9 @@
     setStage(c,"Offer sent");
     // snapshot the version the board sees (baseline for the diff)
     c.offerHistory=[{version:c.offer.version, at:nowStr(), lines:clone(c.offer.lines), total:offerTotal(c.offer), diff:[]}];
-    logEvent(c,"Offer sent + board access granted to "+(c.contacts[0]?c.contacts[0].email:"the board"));
+    logEvent(c,"Tilbud sendt til "+(c.contacts[0]?c.contacts[0].email:"styret")+" (demo — innlogging kommer i produktet)");
     save();
-    toast("Offer sent — board access granted (email + magic link)");
+    toast("Tilbud sendt — styret ser det i Board-visningen (demo — innlogging kommer i produktet)");   // M18: no fake magic-link claim; the REAL one lives in /app (1c)
     ui.openId=c.id; ui.step=3;
     OnSite.go("board");
   }
@@ -2193,7 +2198,9 @@
     return '<div class="card"><div class="ct">🗣️ Arbeidsinstruks · '+esc(ld.label)+' <span class="muted" style="font-weight:600">· '+esc(who||"—")+'</span></div>'
       +'<div class="ob-cocklang" style="display:flex;gap:6px;flex-wrap:wrap;margin:-2px 0 10px">'+langChips+'</div>'
       + rows
-      +'<p class="muted" style="font-size:11px;margin:4px 0 0">Instruksen på ditt språk — trykk 🔊 for å høre den opplest.'+(tts?'':' <b>(Tale ikke støttet i denne nettleseren)</b>')+' <span style="opacity:.6">// PROD: LLM-oversettelse på direkten</span></p></div>';
+      +'<p class="muted" style="font-size:11px;margin:4px 0 0">Instruksen på ditt språk — trykk 🔊 for å høre den opplest.'+(tts?'':' <b>(Tale ikke støttet i denne nettleseren)</b>')
+      +(lang!=="nb"?' <span style="color:var(--amber)">⚠ Maskinoversatt — under kontroll av morsmålsbruker.</span>':'')
+      +' <span style="opacity:.6">// PROD: LLM-oversettelse på direkten</span></p></div>';
   }
   function syncCockpitChip(){
     var inner=document.querySelector(".topbar .inner"); if(!inner) return;
@@ -4522,7 +4529,7 @@
   function washScheduleTie(entries){
     var e=entries[entries.length-1], ac=(e&&e.binwash&&e.binwash.afterCollection)||null;
     if(!ac || !ac.date) return "";
-    return "Vasket "+dateNO(iso(new Date(e.ts)))+" — dagen etter kommunal tømming ("+esc((ac.navn||"").toLowerCase())+") "+dateNO(ac.date)+".";
+    return "Vasket "+esc(dateNO(iso(new Date(e.ts))))+" — dagen etter kommunal tømming ("+esc((ac.navn||"").toLowerCase())+") "+esc(dateNO(ac.date))+".";
   }
   function washReportHTML(r){
     var c=cust(r.customerId); if(!c) return "";

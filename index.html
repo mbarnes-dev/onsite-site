@@ -111,7 +111,7 @@
     transition:opacity .2s,transform .2s;box-shadow:var(--shadow);max-width:90vw;text-align:center}
   #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 </style>
-<link rel="stylesheet" href="onboarding.css?v=17r">
+<link rel="stylesheet" href="onboarding.css?v=17s">
 </head>
 <body>
 
@@ -190,7 +190,7 @@
   "use strict";
   var LS_KEY = "onsite_day_v1";
 
-  var SCHEMA_VERSION = 12;
+  var SCHEMA_VERSION = 13;
 
   /* ---------- cloud persistence v1 (doc 64): Supabase state-blob sync, localStorage-cached ----------
      The anon key is PUBLIC-by-design (safe in the client). NEVER put the service_role key here.
@@ -248,6 +248,7 @@
     if(!Array.isArray(s.equipment)) s.equipment = [];  // v3: Phase 9 equipment/resource registry (onboarding.js seeds it)
     if(!Array.isArray(s.storage)) s.storage = [];
     if(!Array.isArray(s.intake)) s.intake = [];        // v7: Phase 13 omnichannel intake inbox (simulated channels; onboarding.js seeds it)
+    if(!s.crewLang || typeof s.crewLang!=="object") s.crewLang = {};   // v13: doc-75 per-crew-member language prefs
     function fixLine(l){ if(l && (!l.review || typeof l.review!=="object")) l.review = {decision:null, comment:""}; }
     s.customers.forEach(function(c){
       if(!Array.isArray(c.zones)) c.zones = [];
@@ -270,6 +271,9 @@
       if(!Array.isArray(c.inspections)) c.inspections = [];  // v10: doc-63 reactive→recurring inspection cadences (folded into scheduleLines → Årsplan)
       if(c.finance===undefined) c.finance = null;            // v11: doc-66 A4 association accounts (Regnskapsregisteret; entrance floors + property buildingPoints are nested-optional, read defensively)
       if(c.hazards===undefined) c.hazards = null;            // v12: doc-66 B3 radon/flom/skred aktsomhet flags (advisory, from aktsomhetskart GetFeatureInfo)
+      if(c.renovasjon===undefined) c.renovasjon = null;      // v13: doc-75 Min Renovasjon tømmekalender params + dates
+      c.assets.forEach(function(a){ if(a && a.bin===undefined) a.bin = null; });                  // v13: doc-75 bin-asset fields (avfall-bin)
+      c.completionLog.forEach(function(e){ if(e && e.binwash===undefined) e.binwash = null; });   // v13: doc-75 proof-of-clean extras (AqtiVann log + afterCollection)
       c.zones.forEach(function(z){ if(!Array.isArray(z.completionLog)) z.completionLog = []; if(!Array.isArray(z.photoIds)) z.photoIds = []; });
       if(c.offer && typeof c.offer==="object"){
         if(Array.isArray(c.offer.modules)) c.offer.modules.forEach(function(m){ if(Array.isArray(m.lines)) m.lines.forEach(fixLine); });
@@ -655,7 +659,7 @@
 <script src="vendor/leaflet/leaflet.js"></script>
 <!-- @onsite/core (doc-55 step 1): the pure engines as a committed static ESM bundle. Module defers
      (runs before DOMContentLoaded); onboarding.js delegates to window.OnSiteCore lazily (post-load). -->
-<script type="module">import * as Core from "./core.bundle.js?v=17r"; window.OnSiteCore = Core;</script>
-<script src="onboarding.js?v=17r"></script>
+<script type="module">import * as Core from "./core.bundle.js?v=17s"; window.OnSiteCore = Core;</script>
+<script src="onboarding.js?v=17s"></script>
 </body>
 </html>
