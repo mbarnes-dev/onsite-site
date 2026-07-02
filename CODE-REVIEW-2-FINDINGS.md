@@ -45,6 +45,26 @@ The prototype body is in better shape than at review #1 where it was touched by 
 
 ---
 
+## 1b. Remediation status — Gate-closing pass (2026-07-02)
+
+Scoped to the doc-79 gate blockers + the two discipline leftovers. Each item verified before ticking.
+
+- [x] **T1-1 (Critical) — origin isolation.** The prod app moved to its own deploy root `app/` and its own Vercel project on its own origin: **`https://onsite-prod-app.vercel.app`** (commits `ba974cd`, `46982f1`). Its own `vercel.json` copies the security headers then tightens: **`script-src 'self'` (no `'unsafe-inline'` — all JS external via `boot.mjs`)**, `connect-src` = the onsite-prod origin only, `geolocation=()`. The demo keeps `onsite-site.vercel.app` untouched; `/app`, `/app.html`, `/app/*` on the demo origin redirect to the new origin. *Verified live: new origin 200 with the strict CSP header; localStorage/token isolation now holds by origin (demo XSS can no longer read the prod session token); Vercel deployment-protection SSO disabled so the public app + magic-link redirects work.*
+- [x] **T1-2 (Major) — closed signup.** `signInWithOtp` sends `shouldCreateUser:false`; unknown email → "Ingen konto for denne adressen — kontakt administrator". *Verified live against onsite-prod: fake email → refusal shown, `auth.users` unchanged (1 user, 0 probes); known email still sends.*
+- [x] **T1-3 (Major) — deterministic tenancy.** All memberships fetched ordered by `created_at` asc (no bare `limit(1)`); 0 memberships → dedicated "Ingen tilgang" screen with sign-out; ≥2 → deterministic first + "· tilgang 1 av N" visible in the tenant chip; tenant re-resolved on every sign-in and on user change (`S._uid`), never cached across users. *Code-verified + refusal paths live-tested; the 0-membership end-to-end needs a throwaway dashboard user (Martin's checklist — no session can be minted client-side).*
+- [x] **T1-4 (Major) — surfaced auth failures.** Redirect error params (query + hash: `error`/`error_code`/`error_description`) parsed on boot → visible message with a send-ny-lenke path, URL cleaned; expired-session writes read "Økten er utløpt — logg inn på nytt (arbeidet ble IKKE lagret)". *Verified live: simulated `otp_expired` redirect → message + recovery form, URL cleaned.*
+- [x] **T1-5 (Major) — config as artifact.** `app/PROD-AUTH-CONFIG.md`: Site URL, redirect allowlist (app origin **only**), OTP expiry, rate limits, leaked-password protection — with a current-as-of block for Martin to initial. *Dashboard values themselves remain his checklist.*
+- [x] **T3-2 / review-1 M12 — `delZone` re-prices.** Deletion flows through the `computeOffer`/`syncOfferTotals` seam. *Verified end-to-end: Holtet 16 530 → delete snow-machine zone → 15 337 (exactly −1 193), line gone, 0 dangling zoneIds; reseeded Holtet → 16 530; core anchor green.*
+- [x] **T2-3 (discipline) — sv13.** `migrate()` backfills `c.renovasjon` / `assets[].bin` / `completionLog[].binwash` / `s.crewLang`; `SCHEMA_VERSION=13`. *Verified: hand-crafted sv12 blob → loads, migrates, all four backfilled, zero console errors.*
+- [x] **T3-1 (Minor) — the four `dateNO()` sinks now `esc()`d.**
+- [x] **Review-1 M18 (relabel half) — the demo toast/log no longer claim a magic link** ("demo — innlogging kommer i produktet"); the real magic-link auth is the `/app` product.
+- [x] **T3-12 (Minor) — pl/lt + AqtiVann HMS text visibly marked "⚠ Maskinoversatt — under kontroll av morsmålsbruker"** until native review.
+- [x] **T1-10 (part) — `onsite_prod_email` cleared on sign-out** (shared-device hygiene).
+
+Still open from the gate list (deliberately not this pass): T1-6 proxy auth/rate-limit · T2-1 atomic blob-sync conflict (CAS) · the Tier-3 structural set. **Remaining before real tenant data: Martin's dashboard clicks per `app/PROD-AUTH-CONFIG.md` + sign-off.**
+
+---
+
 ## 2. Tier 1 — production surface (reviewed at production severity)
 
 ### T1-1 · **Critical (gate)** — prod session token shares an origin with the demo's XSS surface
