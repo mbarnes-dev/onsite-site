@@ -56,6 +56,9 @@
     uploadPhoto: function (path, blob) { return sb.storage.from("photos").upload(path, blob, { contentType: "image/jpeg", upsert: false }); },
     removePhoto: function (path) { return sb.storage.from("photos").remove([path]); },
     signPhoto: function (path) { return sb.storage.from("photos").createSignedUrl(path, 3600); },
+    // 1c-2 item 3: offers — data jsonb carries the core modules/lines shape; totals re-derived by @onsite/core
+    listOffers: function (bid) { return sb.from("offers").select("*").eq("building_id", bid).order("version", { ascending: false }); },
+    updateOffer: function (id, patch) { return sb.from("offers").update(patch).eq("id", id).select().single(); },
     listAssets: function (bid) { return sb.from("assets").select("*").eq("building_id", bid).order("created_at", { ascending: true }); },
     createAsset: function (tenantId, bid, a) { var r = assetToRow(a); r.tenant_id = tenantId; r.building_id = bid; return sb.from("assets").insert(r).select().single(); },
     updateAsset: function (id, a) { return sb.from("assets").update(assetToRow(a)).eq("id", id).select().single(); },
@@ -437,9 +440,75 @@
     });
   }
 
-  /* ---- remaining section placeholder (item 3 replaces this) ---- */
-  function sectionOffersHTML(b) { return '<div class="card"><div class="ct">💰 Tilbud</div><div class="empty">Kommer (1c-2 · offers).</div></div>'; }
-  function loadOffers(id) {}
+  /* ============================ section: Tilbud (1c-2 item 3 — offers round-trip) ============================
+   * offers.data carries the SAME modules/lines shape @onsite/core computes; the app never trusts stored
+   * totals — it re-derives them through core (rebuildOfferFlat on a {offer} wrapper) and shows the match.
+   * Computing offers from zones/walkaround stays in later passes; this is persist/render + severability. */
+  function loadOffers(bid) {
+    S.secBusy.offers = true; S.secErr.offers = null;
+    prodDb.listOffers(bid).then(function (r) {
+      S.secBusy.offers = false;
+      if (r.error) { S.secErr.offers = friendly(r.error); } else { S.offers = r.data || []; }
+      render();
+    });
+  }
+  function kr(n) { return "kr " + (Math.round(n) || 0).toLocaleString("no"); }
+  function coreDerive(data) {   // re-derive totals from the stored shape via core; null if core not loaded yet
+    if (!coreReady() || !data || !data.modules) return null;
+    try { var w = { offer: JSON.parse(JSON.stringify(data)) }; window.OnSiteCore.rebuildOfferFlat(w); return w.offer; }
+    catch (e) { return null; }
+  }
+  function sectionOffersHTML(b) {
+    var body;
+    if (S.secBusy.offers && S.offers == null) body = '<div class="empty"><span class="spin"></span>Henter tilbud…</div>';
+    else if (!S.offers || !S.offers.length) body = '<div class="empty">Ingen tilbud for dette bygget ennå.</div>';
+    else {
+      var o = S.offers[0], data = o.data || {};
+      var derived = coreDerive(data);
+      var per = (o.period === "år") ? "år" : "mnd";
+      var head = derived
+        ? '<div style="font-size:21px;font-weight:800;letter-spacing:-.02em">' + kr(derived.totalMonthly) + ' <span class="muted" style="font-size:13px;font-weight:650">/' + per + '</span> · ' + kr(derived.totalYearly) + ' <span class="muted" style="font-size:13px;font-weight:650">/år</span></div>'
+        : '<div style="font-size:21px;font-weight:800">' + kr(o.total_monthly) + ' <span class="muted" style="font-size:13px;font-weight:650">/' + per + '</span></div>';
+      var verify = derived
+        ? (Math.round(derived.totalMonthly) === Math.round(o.total_monthly || 0)
+          ? '<div class="msg ok" style="margin:8px 0">✓ Totaler verifisert av @onsite/core etter DB-rundtur (' + kr(derived.totalMonthly) + '/mnd)</div>'
+          : '<div class="msg err" style="margin:8px 0">⚠ Avvik: DB ' + kr(o.total_monthly) + ' vs core ' + kr(derived.totalMonthly) + '</div>')
+        : '<div class="note">@onsite/core laster — totaler vises fra DB inntil verifisert…</div>';
+      var mods = (derived ? derived.modules : (data.modules || [])).map(function (m) {
+        return '<div class="bldg" style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
+          + '<span><span class="t">' + esc(m.title || m.service) + (m.included ? '' : ' <span class="muted">(valgt bort)</span>') + '</span>'
+          + '<span class="d">' + m.lines.length + ' linje' + (m.lines.length !== 1 ? 'r' : '') + ' · kan sies opp separat</span></span>'
+          + '<span style="display:flex;gap:10px;align-items:center;flex-shrink:0"><b>' + kr(m.subtotal) + '</b>'
+          + '<label style="display:flex;gap:5px;align-items:center;font-size:12px;margin:0"><input type="checkbox" data-act="offerModToggle" data-id="' + esc(o.id) + '" data-svc="' + esc(m.service) + '"' + (m.included ? ' checked' : '') + (coreReady() ? '' : ' disabled') + '> med</label></span></div>';
+      }).join("");
+      var opts = (data.optionLines || []).length
+        ? '<div class="note" style="margin-top:8px"><b>Opsjoner (utenfor grunnbeløpet):</b> ' + data.optionLines.map(function (l) { return esc(l.label) + ' (' + kr(l.final) + ')'; }).join(' · ') + '</div>'
+        : '';
+      body = head + verify + mods + opts
+        + (o.cover_note ? '<div class="note" style="margin-top:8px">' + esc(o.cover_note) + '</div>' : '')
+        + '<div class="note" style="margin-top:6px">v' + o.version + ' · status: ' + esc(o.status) + ' · offers.data (jsonb, core-form)</div>';
+    }
+    return '<div class="card"><div class="ct">💰 Tilbud <span class="muted" style="font-weight:600">· offers (RLS: kun din tenant)</span></div>'
+      + (S.secMsg.offers ? '<div class="msg ok">' + esc(S.secMsg.offers) + '</div>' : '')
+      + (S.secErr.offers ? '<div class="msg err">' + esc(S.secErr.offers) + '</div>' : '')
+      + body + '</div>';
+  }
+  function offerModToggle(el) {
+    var id = el.getAttribute("data-id"), svc = el.getAttribute("data-svc"), want = !!el.checked;
+    var o = (S.offers || []).filter(function (x) { return x.id === id; })[0]; if (!o || !o.data) return;
+    var data = JSON.parse(JSON.stringify(o.data));
+    (data.modules || []).forEach(function (m) { if (m.service === svc) m.included = want; });
+    var derived = coreDerive(data);
+    if (!derived) { S.secErr.offers = "@onsite/core ikke lastet — kan ikke beregne."; render(); return; }
+    S.secBusy.offers = true; S.secErr.offers = null; S.secMsg.offers = null; render();
+    // persist the toggled shape + core-derived totals; C1 — on error nothing pretends to have saved
+    prodDb.updateOffer(id, { data: derived, total_monthly: derived.totalMonthly, total_yearly: derived.totalYearly }).then(function (r) {
+      S.secBusy.offers = false;
+      if (r.error) { S.secErr.offers = friendly(r.error); render(); return; }
+      S.secMsg.offers = (want ? "Modul inkludert" : "Modul valgt bort — kan sies opp separat") + " · ny total " + kr(derived.totalMonthly) + "/mnd";
+      loadOffers(S.view.id);   // re-read: the UI shows what actually persisted
+    });
+  }
 
   /* ============================ building detail (1c-2 item 0) ============================
    * The container for the per-table sections: Eiendeler · Dokumentert arbeid · Tilbud. Tablet-first. */
@@ -475,7 +544,9 @@
     assetSave: assetSave,
     assetDel: function (el) { assetDelete(el.getAttribute("data-id")); },
     // item 2: proof
-    proofSave: proofSave
+    proofSave: proofSave,
+    // item 3: offers (severability toggle)
+    offerModToggle: offerModToggle
   };
   app.addEventListener("click", function (e) {
     var t = e.target.closest("[data-act]"); if (!t) return;
