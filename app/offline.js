@@ -87,8 +87,17 @@
 
   /* ---------- photo queue (two-phase) ---------- */
   function queuePhoto(p) {   // { path, userId, buildingId, dataUrl } — path IS the idempotency key
-    p.status = "queued"; p.attempts = 0; p.nextAt = 0; p.queuedAt = Date.now();
+    // field-findings #1: status "draft" = stored durably at ATTACH time but NOT uploadable yet — the
+    // proof op promotes it at queue time. What the sheet shows is what is in IDB, never a DOM file input.
+    p.status = p.status || "queued"; p.attempts = 0; p.nextAt = 0; p.queuedAt = Date.now();
     return tx("photoq", "readwrite", function (s) { s.put(p); }).then(function () { return p; });
+  }
+  function promotePhoto(path) {   // draft → queued (called when the op that references it is queued)
+    return getPhoto(path).then(function (p) {
+      if (!p) return null;
+      p.status = "queued"; p.attempts = 0; p.nextAt = 0;
+      return tx("photoq", "readwrite", function (s) { s.put(p); }).then(function () { return p; });
+    });
   }
   function setPhoto(p) { return tx("photoq", "readwrite", function (s) { s.put(p); }); }
   function delPhoto(path) { return tx("photoq", "readwrite", function (s) { s.delete(path); }); }
@@ -206,8 +215,14 @@
             if (now - (p.uploadedAt || 0) > PHOTO_GC_GRACE_MS) return delPhoto(p.path);
             return null;
           }
-          if (p.status === "rejected" || p.status === "held") return null;
+          if (p.status === "rejected" || p.status === "held" || p.status === "draft") return null;   // drafts belong to an open form
           if ((p.nextAt || 0) > now) return null;
+          if (!p.dataUrl || typeof p.dataUrl !== "string" || p.dataUrl.indexOf("data:") !== 0) {
+            // belt-and-braces (field-findings #1c): a queued photo whose blob is gone/corrupt is
+            // surfaced as avvist in the outbox — never a silent skip, never an infinite retry
+            p.status = "rejected"; p.lastError = "foto-data mangler på enheten";
+            return setPhoto(p).then(function () { if (onChange) onChange(); });
+          }
           p.status = "sending"; p.sendingAt = Date.now();
           return setPhoto(p)
             .then(function () { return sb.storage.from("photos").upload(p.path, dataUrlToBlob(p.dataUrl), { contentType: "image/jpeg", upsert: true }); })
@@ -262,7 +277,7 @@
     persistedIdentity: persistedIdentity,
     cachePut: cachePut, cacheGet: cacheGet,
     uuid: uuid, queueOp: queueOp, listOps: listOps, delOp: delOp, setOp: setOp,
-    queuePhoto: queuePhoto, listPhotos: listPhotos, getPhoto: getPhoto, delPhoto: delPhoto,
+    queuePhoto: queuePhoto, promotePhoto: promotePhoto, listPhotos: listPhotos, getPhoto: getPhoto, delPhoto: delPhoto,
     listReview: listReview, delReview: delReview,   // v1.5: the LWW-loser surface
     countPending: countPending, drain: drain, retryHeld: retryHeld, discardAll: discardAll,
     registerSW: registerSW, applyUpdate: applyUpdate

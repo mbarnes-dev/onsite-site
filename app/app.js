@@ -29,6 +29,9 @@
     contacts: null, editContact: null, installEvt: null,
     // OTP pass: the email a code was sent to — verifyOtp must target IT, not a later-edited input
     otpEmail: null,
+    // field-findings #1: the proof photo lives in IDB from the moment it is picked ({path, dataUrl
+    // read BACK from the store}) — never in a DOM file input, which any background render wipes
+    proofPhoto: null,
     // offline v1 (doc-80): offline identity + read-cache stamps + pending (outbox) state + SW update hint
     offlineIdent: null, offline: !navigator.onLine, snapTs: null, listTs: null,
     pending: { total: 0, ops: 0, photos: 0, rejected: 0 }, pendingOps: [], pendingPhotos: [], updateReg: null,
@@ -284,13 +287,18 @@
 
   /* ============================ render ============================ */
   function buildingById(id) { return (S.buildings || []).filter(function (b) { return b.id === id; })[0] || null; }
+  function discardProofDraft() {   // an abandoned draft photo never lingers in the queue store
+    if (S.proofPhoto) { try { OFF.delPhoto(S.proofPhoto.path); } catch (e) {} }
+    S.proofPhoto = null; S.proofDraft = null;
+  }
   function openBuilding(id) {
+    discardProofDraft();
     S.view = { name: "building", id: id };
     S.assets = null; S.proof = null; S.offers = null; S.contacts = null; S.editAsset = null; S.editContact = null; S.secErr = {}; S.secMsg = {}; S.msg = null; S.error = null; S.snapTs = null;
     render();
     loadBuildingSections(id);   // cache-first paint, then background refresh; each section surfaces its own errors (C1)
   }
-  function closeBuilding() { S.view = { name: "list" }; S.editAsset = null; S.msg = null; S.error = null; render(); }
+  function closeBuilding() { discardProofDraft(); S.view = { name: "list" }; S.editAsset = null; S.msg = null; S.error = null; render(); }
   function loadBuildingSections(id) {
     var uid = userId();
     var start = function () { refreshPending(); if (!S.session || !navigator.onLine) { render(); return; } loadAssets(id); loadContacts(id); loadProof(id); loadOffers(id); };
@@ -361,7 +369,7 @@
         + (o.status === "rejected" ? '<span style="display:block;margin-top:6px"><button class="btn ghost" style="padding:7px 10px" data-act="discardOp" data-id="' + esc(o.opId) + '">Forkast denne</button></span>' : '')
         + '</div>';
     }).join("");
-    var prows = (S.pendingPhotos || []).filter(function (p) { return p.status !== "uploaded"; }).map(function (p) {
+    var prows = (S.pendingPhotos || []).filter(function (p) { return p.status !== "uploaded" && p.status !== "draft"; }).map(function (p) {   // a draft belongs to its open form, not the outbox
       var st = p.status === "sending" ? '<span class="chip s">synkes…</span>'
         : p.status === "rejected" ? '<span class="chip err">avvist</span>'
         : p.status === "held" ? '<span class="chip warn">får ikke synket</span>'
@@ -906,7 +914,38 @@
     return ' <span class="chip warn">⚠ enhetsklokke avvek ' + Math.round(skewMs / 3600000) + ' t</span>';
   }
   function pendingPhotoPaths() {
-    var m = {}; (S.pendingPhotos || []).forEach(function (p) { if (p.status !== "uploaded") m[p.path] = p; }); return m;
+    var m = {}; (S.pendingPhotos || []).forEach(function (p) { if (p.status !== "uploaded" && p.status !== "draft") m[p.path] = p; }); return m;
+  }
+  /* field-findings #1 (iPad, 3 Jul): the photo picker BACKGROUNDS the page; returning fires
+   * visibilitychange → drainAll → render(), and app.innerHTML rebuilds the <input type=file> EMPTY —
+   * so the picked file silently vanished before save (desktop dialogs don't background → invisible in
+   * dev). Fix: capture to IDB the moment the file is chosen (status "draft" — the upload queue skips
+   * it), show the thumbnail from the READ-BACK blob, and let save reference only blobs that exist. */
+  function attachProofPhoto(el) {
+    var b = buildingById(S.view.id); if (!b) return;
+    var uid = userId(), tenantId = S.tenant && S.tenant.id;
+    var file = el.files && el.files[0];
+    if (!file) return;   // picker cancelled — nothing chosen, nothing claimed
+    if (!uid || !tenantId) { S.secErr.proof = "Mangler tenant/bruker — åpne appen på nett én gang først."; render(); return; }
+    var oldPath = S.proofPhoto && S.proofPhoto.path;
+    S.secErr.proof = null; S.secMsg.proof = null;
+    compressImage(file, function (dataUrl) {
+      if (!dataUrl) { S.secErr.proof = "⚠ Kunne IKKE lagre foto — det følger ikke med registreringen (kunne ikke lese/komprimere bildet). Prøv et annet."; render(); return; }
+      var path = tenantId + "/" + b.id + "/" + OFF.uuid() + ".jpg";
+      OFF.queuePhoto({ path: path, userId: uid, buildingId: b.id, dataUrl: dataUrl, status: "draft" })
+        .then(function () { return OFF.getPhoto(path); })   // read BACK: the thumbnail shows what is STORED
+        .then(function (stored) {
+          if (!stored || !stored.dataUrl) throw new Error("lagret foto kunne ikke leses tilbake");
+          S.proofPhoto = { path: path, dataUrl: stored.dataUrl };
+          if (oldPath) OFF.delPhoto(oldPath);
+          render();
+        })
+        .catch(function (e) {   // IDB refused (quota / private mode) — LOUD; nothing is claimed (C1)
+          S.proofPhoto = null;
+          S.secErr.proof = "⚠ Kunne IKKE lagre foto — det følger ikke med registreringen (" + ((e && e.message) || "lagringsfeil") + "). Fullfør uten foto, eller frigjør plass og prøv igjen.";
+          render();
+        });
+    });
   }
   function sectionProofHTML(b) {
     var body = "";
@@ -950,8 +989,12 @@
       + '<label>Hva ble gjort</label><input id="pf_title" value="' + esc(d.title || "") + '" placeholder="f.eks. Dunkvask + AqtiVann-desinfeksjon">'
       + '<label>Notat</label><input id="pf_note" value="' + esc(d.note || "") + '" placeholder="valgfritt">'
       + '<label>Eiendel (valgfritt)</label><select id="pf_asset">' + assetOpts + '</select>'
-      + '<label>Bilde (valgfritt — komprimeres til ≤1280px)</label><input type="file" id="pf_photo" accept="image/*">'
-      + (d.photoLost ? '<div class="msg err">Velg bildet på nytt (skjemaet ble gjenopprettet etter feil).</div>' : '')
+      + '<label>Bilde (valgfritt — komprimeres til ≤1280px)</label>'
+      + (S.proofPhoto
+        ? '<div class="thumbrow"><img class="proofimg" style="margin-top:0" src="' + S.proofPhoto.dataUrl + '" alt="valgt bilde (lagret på enheten)">'
+          + '<button class="btn ghost" style="padding:7px 10px" data-act="proofPhotoRemove">✕ Fjern</button></div>'
+          + '<div class="note">Bildet er lagret på enheten og følger med registreringen.</div>'
+        : '<input type="file" id="pf_photo" accept="image/*">')
       + '<div class="bar"><button class="btn" data-act="proofSave"' + (S.secBusy.proof ? ' disabled' : '') + '>' + (S.secBusy.proof ? '<span class="spin"></span>Lagrer…' : '✓ Dokumentér i onsite-prod') + '</button></div></div>';
     return '<div class="card"><div class="ct">📋 Dokumentert arbeid <span class="muted" style="font-weight:600">· ' + (S.proof ? S.proof.length : '…') + ' · completion_proof + photos-bucket</span></div>'
       + (S.secMsg.proof ? '<div class="msg ok">' + esc(S.secMsg.proof) + '</div>' : '')
@@ -967,27 +1010,31 @@
     var uid = userId();
     var tenantId = (S.tenant && S.tenant.id) || null;
     if (!uid || !tenantId) { S.secErr.proof = "Mangler tenant/bruker (åpne appen på nett én gang først)."; render(); return; }
-    // read EVERYTHING from the live DOM first — a re-render clears the file input
     var title = val("pf_title") || "Utført arbeid", note = val("pf_note"), assetId = val("pf_asset");
-    var fileEl = document.getElementById("pf_photo"), file = fileEl && fileEl.files && fileEl.files[0];
     var asset = (S.assets || []).filter(function (a) { return a.id === assetId; })[0] || null;
-    S.secBusy.proof = true; S.secErr.proof = null; S.secMsg.proof = null; S.proofDraft = null; render();
-    function fail(msg) { S.secBusy.proof = false; S.secErr.proof = msg; S.proofDraft = { title: title, note: note, photoLost: !!file }; render(); }
-    function queueIt(photoDataUrl) {
-      var rowId = OFF.uuid();
-      var photoPath = photoDataUrl ? (tenantId + "/" + b.id + "/" + OFF.uuid() + ".jpg") : null;   // fixed idempotent path (doc-80 §4)
-      var payload = { id: rowId, tenant_id: tenantId, building_id: b.id, title: title, note: note || null,
+    var draft = S.proofPhoto;   // field-findings #1: the photo comes from STATE+IDB, never a file input
+    S.secBusy.proof = true; S.secErr.proof = null; S.secMsg.proof = null; render();
+    function fail(msg) { S.secBusy.proof = false; S.secErr.proof = msg; S.proofDraft = { title: title, note: note }; render(); }
+    // the op may only reference photo_ids whose blob verifiably exists in IDB RIGHT NOW (findings #1c)
+    (draft ? OFF.getPhoto(draft.path) : Promise.resolve(null)).then(function (stored) {
+      if (draft && (!stored || !stored.dataUrl)) {
+        S.proofPhoto = null;   // the thumbnail lied only until this check — never let the op lie
+        fail("⚠ Bildet er borte fra enhetens lager — registreringen ble IKKE sendt. Legg ved bildet på nytt, eller fullfør uten.");
+        return;
+      }
+      var photoPath = stored ? draft.path : null;
+      var payload = { id: OFF.uuid(), tenant_id: tenantId, building_id: b.id, title: title, note: note || null,
         by_name: userEmail() || "innlogget", service: "prod-app",
         extra: asset ? { asset_id: asset.id, asset_label: asset.label || assetTypeDef(asset.type).label } : null,
         photo_ids: photoPath ? [photoPath] : null,
         captured_at: new Date().toISOString() };   // device time, honest label; server created_at is server-truth
       var op = { entity: "completion_proof", op: "insert", payload: payload, baseUpdatedAt: null,
         tenantId: tenantId, buildingId: b.id, userId: uid, title: title };
-      var q = photoPath
-        ? OFF.queuePhoto({ path: photoPath, userId: uid, buildingId: b.id, dataUrl: photoDataUrl }).then(function () { return OFF.queueOp(op); })
-        : OFF.queueOp(op);
+      // the draft blob is already durable — queuing the op just PROMOTES it into the upload queue
+      var q = photoPath ? OFF.promotePhoto(photoPath).then(function () { return OFF.queueOp(op); }) : OFF.queueOp(op);
       q.then(function () {
         S.secBusy.proof = false;
+        S.proofPhoto = null; S.proofDraft = null;
         // honesty copy: only `synket ✓` means the board can see it (doc-80 §6)
         S.secMsg.proof = "Lagret på enheten — synlig for styret først når den viser «synket ✓».";
         refreshPending(function () { render(); });
@@ -996,11 +1043,6 @@
         // C1 at its hardest: the capture could NOT be durably queued — fail LOUDLY, never a fake ✓
         fail("⚠ Kunne IKKE lagre på enheten (" + ((e && e.message) || "lagringsfeil") + ") — registreringen er IKKE trygg. Frigjør plass og prøv igjen.");
       });
-    }
-    if (!file) { queueIt(null); return; }
-    compressImage(file, function (dataUrl) {
-      if (!dataUrl) { fail("Kunne ikke lese/komprimere bildet — prøv et annet."); return; }
-      queueIt(dataUrl);
     });
   }
 
@@ -1172,6 +1214,10 @@
     a2hsDismiss: function () { try { localStorage.setItem(A2HS_KEY, "1"); } catch (e) {} render(); },
     // item 2: proof
     proofSave: proofSave,
+    proofPhotoRemove: function () {
+      var p = S.proofPhoto; S.proofPhoto = null;
+      if (p) OFF.delPhoto(p.path).then(function () { render(); }); else render();
+    },
     // item 3: offers (severability toggle)
     offerModToggle: offerModToggle
   };
@@ -1185,7 +1231,35 @@
       if (S.editAsset) { var d = assetTypeDef(S.editAsset.type); if (!S.editAsset.id) S.editAsset.area = d.area; }
       render();
     }
+    if (e.target && e.target.id === "pf_photo") attachProofPhoto(e.target);   // findings #1: durable at ATTACH time
   });
+  // findings #1 (same wipe class): typed proof text survives background renders via a live state mirror
+  app.addEventListener("input", function (e) {
+    var id = e.target && e.target.id;
+    if (id === "pf_title" || id === "pf_note") {
+      S.proofDraft = S.proofDraft || {};
+      S.proofDraft[id === "pf_title" ? "title" : "note"] = e.target.value;
+    }
+  });
+  /* findings #2: iPad landscape keyboard leaves a sliver. Scroll the focused field into view after the
+   * keyboard animation, and collapse the chrome while typing in landscape so the form owns the height. */
+  app.addEventListener("focusin", function (e) {
+    var t = e.target;
+    if (!t || !/^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName) || t.type === "file") return;
+    setTimeout(function () {
+      if (document.activeElement === t && t.scrollIntoView) t.scrollIntoView({ block: "center", behavior: "smooth" });
+    }, 300);
+  });
+  (function keyboardChrome() {
+    var vv = window.visualViewport; if (!vv) return;   // progressive enhancement — desktop unaffected
+    function sync() {
+      var kbUp = vv.height < window.innerHeight * 0.75;
+      var land = window.innerWidth > window.innerHeight;
+      document.body.classList.toggle("kb-land", kbUp && land);
+    }
+    vv.addEventListener("resize", sync);
+    window.addEventListener("orientationchange", function () { setTimeout(sync, 300); });
+  })();
   app.addEventListener("keydown", function (ev) {
     if (ev.key === "Enter" && ev.target && ev.target.id === "li_email") { var e = val("li_email"); rememberEmail(e); sendMagicLink(e); }
     if (ev.key === "Enter" && ev.target && ev.target.id === "li_code") { verifyCode(); }

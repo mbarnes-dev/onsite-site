@@ -13,7 +13,8 @@ h1{font-size:22px;letter-spacing:-.02em;margin:0}
 .card{background:var(--card);border-radius:15px;box-shadow:var(--shadow);padding:16px;margin-bottom:14px}
 .ct{font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);margin-bottom:10px}
 label{display:block;font-size:12.5px;font-weight:650;color:var(--muted);margin:11px 0 5px}
-input{width:100%;border:1px solid var(--line);border-radius:11px;padding:12px;font-size:15px;font-family:inherit;background:#fff;color:var(--ink)}
+/* ≥16px stops the iOS focus auto-zoom jump (field-findings #2); selects styled the same */
+input,select{width:100%;border:1px solid var(--line);border-radius:11px;padding:12px;font-size:16px;font-family:inherit;background:#fff;color:var(--ink)}
 .btn{border:none;border-radius:12px;padding:13px 18px;font-size:14.5px;font-weight:700;cursor:pointer;background:var(--teal);color:#fff}
 .btn.ghost{background:#fff;border:1px solid var(--line);color:var(--ink)}
 .btn:disabled{opacity:.5;cursor:not-allowed}
@@ -51,3 +52,7 @@ input{width:100%;border:1px solid var(--line);border-radius:11px;padding:12px;fo
 @keyframes sp{to{transform:rotate(360deg)}}
 .empty{font-size:13px;color:var(--muted);padding:8px 2px}
 a{color:var(--teal-d)}
+/* field-findings #1: the attached-photo thumbnail row (read back from IDB) */
+.thumbrow{display:flex;align-items:flex-start;gap:8px;margin-top:7px}
+/* field-findings #2: keyboard up in landscape → collapse chrome, the form owns the height */
+body.kb-land .top,body.kb-land .bhead,body.kb-land .ct{display:none}
