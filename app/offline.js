@@ -1,4 +1,4 @@
-/* OnSite offline core — doc-80 v1 (capture-first). window.OnsiteOffline.
+/* OnSite offline core — doc-80 v1.5 (capture-first + class-B edits). window.OnsiteOffline.
  *
  * Implements the C3a contract for /app:
  *  - per-USER IndexedDB read-cache (kv snapshots) — field reads local, board reads truth (doc-80 §0)
@@ -17,7 +17,7 @@
  * ever reports true states). C1: queue failures REJECT loudly — the caller must never fake a ✓. */
 (function () {
   "use strict";
-  var DB_NAME = "onsite-app-offline", DB_VER = 1;
+  var DB_NAME = "onsite-app-offline", DB_VER = 2;   // v2 (doc-80 v1.5): + review store ("trenger gjennomsyn")
   var ATTEMPT_CAP = 8;              // then status 'held' — kept visibly, manual retry
   var BACKOFF_BASE_MS = 5000, BACKOFF_MAX_MS = 5 * 60 * 1000;
   var PHOTO_GC_GRACE_MS = 60 * 60 * 1000;   // local blob kept ≥1 h after confirmed upload
@@ -32,6 +32,7 @@
         if (!d.objectStoreNames.contains("kv")) d.createObjectStore("kv");                    // key: userId + ":" + name
         if (!d.objectStoreNames.contains("outbox")) d.createObjectStore("outbox", { keyPath: "opId" });
         if (!d.objectStoreNames.contains("photoq")) d.createObjectStore("photoq", { keyPath: "path" });
+        if (!d.objectStoreNames.contains("review")) d.createObjectStore("review", { keyPath: "reviewId" });   // v1.5: LWW losers, device-local
       };
       rq.onsuccess = function () { _db = rq.result; _db.onversionchange = function () { try { _db.close(); } catch (e) {} _db = null; }; res(_db); };
       rq.onerror = function () { rej(rq.error || new Error("IndexedDB åpnet ikke")); };
@@ -104,6 +105,19 @@
     return new Blob([arr], { type: mime });
   }
 
+  /* ---------- "trenger gjennomsyn" (doc-80 §1 class B: the LWW loser, kept device-local, never silent) ---------- */
+  function queueReview(item) {
+    item.reviewId = item.reviewId || uuid(); item.ts = item.ts || new Date().toISOString();
+    return tx("review", "readwrite", function (s) { s.put(item); }).then(function () { return item; });
+  }
+  function listReview(userId) {
+    return getAll("review").then(function (all) {
+      return (all || []).filter(function (r) { return r.userId === userId; })
+        .sort(function (a, b) { return (a.ts || "") < (b.ts || "") ? -1 : 1; });
+    });
+  }
+  function delReview(reviewId) { return tx("review", "readwrite", function (s) { s.delete(reviewId); }); }
+
   /* ---------- pending counts (the header chip) ---------- */
   function countPending(userId) {
     return Promise.all([listOps(userId), listPhotos(userId)]).then(function (r) {
@@ -140,13 +154,35 @@
           o.status = "sending"; o.sendingAt = Date.now();
           return setOp(o).then(function () { if (onChange) onChange(); })
             .then(function () {
-              if (o.entity === "completion_proof" && o.op === "insert") {
-                return sb.from("completion_proof").upsert(o.payload, { onConflict: "id" });   // idempotent on the client uuid
+              if (o.op === "insert") {
+                // append/insert (class A + class-B creates): client uuid = idempotency key
+                return sb.from(o.entity).upsert(o.payload, { onConflict: "id" });
+              }
+              if (o.op === "update") {
+                // v1.5 LWW with base-version check (doc-80 §1 class B): the update only applies if the
+                // server row is still the version the edit was based on. 0 rows affected = CONFLICT
+                // (not an error): server wins; the losing edit goes to "trenger gjennomsyn".
+                var fields = {}; for (var k in o.payload) if (k !== "id") fields[k] = o.payload[k];
+                return sb.from(o.entity).update(fields).eq("id", o.payload.id).eq("updated_at", o.baseUpdatedAt).select()
+                  .then(function (r) {
+                    if (r.error) return r;                                    // real error → normal classification below
+                    if ((r.data || []).length > 0) return { error: null };    // base matched → applied
+                    return sb.from(o.entity).select("*").eq("id", o.payload.id).maybeSingle().then(function (cur) {
+                      if (cur && cur.error) return cur;   // couldn't SEE the winning row (network died) → retry op later, no review yet
+                      return queueReview({
+                        userId: o.userId, entity: o.entity, recordId: o.payload.id,
+                        buildingId: o.buildingId, tenantId: o.tenantId, recordName: o.title || o.entity,
+                        fields: fields, baseUpdatedAt: o.baseUpdatedAt,
+                        serverRow: (cur && cur.data) || null,                 // null = row gone server-side
+                        serverUpdatedAt: (cur && cur.data && cur.data.updated_at) || null
+                      }).then(function () { return { error: null, conflicted: true }; });   // op is DONE (resolved as a conflict)
+                    });   // (op stays queued if queueReview itself rejects — the .then chain propagates to retry)
+                  });
               }
               return { error: { message: "ukjent op-type: " + o.entity + "/" + o.op } };
             })
             .then(function (r) {
-              if (!r || !r.error) { return delOp(o.opId).then(note); }   // acked → the server row IS the record
+              if (!r || !r.error) { return delOp(o.opId).then(note); }   // acked (or conflict-resolved) → the server is truth
               if (classifyError(r.error) === "rejected") { o.status = "rejected"; o.lastError = (r.error.message || "avvist"); return setOp(o).then(note); }
               o.attempts = (o.attempts || 0) + 1; o.lastError = (r.error.message || "nettverksfeil");
               o.status = o.attempts >= ATTEMPT_CAP ? "held" : "queued";
@@ -227,6 +263,7 @@
     cachePut: cachePut, cacheGet: cacheGet,
     uuid: uuid, queueOp: queueOp, listOps: listOps, delOp: delOp, setOp: setOp,
     queuePhoto: queuePhoto, listPhotos: listPhotos, getPhoto: getPhoto, delPhoto: delPhoto,
+    listReview: listReview, delReview: delReview,   // v1.5: the LWW-loser surface
     countPending: countPending, drain: drain, retryHeld: retryHeld, discardAll: discardAll,
     registerSW: registerSW, applyUpdate: applyUpdate
   };

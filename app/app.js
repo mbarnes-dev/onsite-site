@@ -1,8 +1,10 @@
-/* OnSite PRODUCTION app — slice 1c + gate pass (doc 78/79, review-2). Talks to onsite-prod (real
- * multi-tenant backend). Magic-link auth + tenant-isolated buildings. Everything goes through the
- * authenticated client; RLS scopes reads/writes to the user's tenant. NO service_role in the client.
- * Lives in app/ and deploys as its OWN Vercel project on its OWN ORIGIN (review-2 T1-1) so the prod
- * session token never shares an origin with the demo's innerHTML surface. Demo: onsite-site.vercel.app. */
+/* OnSite PRODUCTION app — slice 1c + gate pass + offline v1.5 (doc 78/79/80, review-2). Talks to
+ * onsite-prod (real multi-tenant backend). Magic-link auth + tenant-isolated buildings. Everything goes
+ * through the authenticated client; RLS scopes reads/writes to the user's tenant. NO service_role in the
+ * client. v1.5 (doc-80 §2/§3): ALL class-B writes (buildings/assets) go through the outbox — online and
+ * offline are the same path; drains are base-version-checked (server wins, losers land in «Trenger
+ * gjennomsyn»); reads are delta pulls on per-table watermarks, tombstones ride the same delta.
+ * Own Vercel project on its OWN ORIGIN (review-2 T1-1). Demo: onsite-site.vercel.app, untouched. */
 (function () {
   "use strict";
 
@@ -25,7 +27,9 @@
     view: { name: "list" }, assets: null, proof: null, offers: null, editAsset: null, secBusy: {}, secErr: {}, secMsg: {},
     // offline v1 (doc-80): offline identity + read-cache stamps + pending (outbox) state + SW update hint
     offlineIdent: null, offline: !navigator.onLine, snapTs: null, listTs: null,
-    pending: { total: 0, ops: 0, photos: 0, rejected: 0 }, pendingOps: [], pendingPhotos: [], updateReg: null };
+    pending: { total: 0, ops: 0, photos: 0, rejected: 0 }, pendingOps: [], pendingPhotos: [], updateReg: null,
+    // offline v1.5 (doc-80 §2): device-local conflict store — a lost LWW race is reviewed, never toasted
+    review: [] };
 
   // effective identity: the live session, else the persisted one when OFFLINE (doc-80 §5 — never force
   // sign-out in a basement; reads come from cache, writes queue under this user and drain after re-auth)
@@ -57,24 +61,27 @@
     // gate item 3 (review-2 T1-3): fetch ALL memberships, deterministically ordered — never a bare limit(1).
     myMemberships: function () { return sb.from("memberships").select("tenant_id, role, created_at").order("created_at", { ascending: true }); },
     tenantName: function (tid) { return sb.from("tenants").select("name").eq("id", tid).maybeSingle(); },
-    listBuildings: function () { return sb.from("buildings").select("*").is("deleted_at", null).order("name", { ascending: true }); },   // v1: tombstones filtered in every pull (doc-80 §3)
-    createBuilding: function (tenantId, b) { return sb.from("buildings").insert(coreToRow(tenantId, b)).select().single(); },
-    updateBuilding: function (id, b) { return sb.from("buildings").update(coreToRow(null, b)).eq("id", id).select().single(); },
-    // 1c-2 item 1: assets — RLS scopes to the tenant; tenant_id set from the resolved membership on insert
-    // 1c-2 item 2: completion proof + the private photos bucket (path MUST start with tenant_id — storage RLS)
-    listProof: function (bid) { return sb.from("completion_proof").select("*").eq("building_id", bid).order("ts", { ascending: false }); },
-    createProof: function (tenantId, bid, p) { p.tenant_id = tenantId; p.building_id = bid; return sb.from("completion_proof").insert(p).select().single(); },
-    uploadPhoto: function (path, blob) { return sb.storage.from("photos").upload(path, blob, { contentType: "image/jpeg", upsert: false }); },
-    removePhoto: function (path) { return sb.storage.from("photos").remove([path]); },
-    signPhoto: function (path) { return sb.storage.from("photos").createSignedUrl(path, 3600); },
-    // 1c-2 item 3: offers — data jsonb carries the core modules/lines shape; totals re-derived by @onsite/core
-    listOffers: function (bid) { return sb.from("offers").select("*").eq("building_id", bid).order("version", { ascending: false }); },
-    updateOffer: function (id, patch) { return sb.from("offers").update(patch).eq("id", id).select().single(); },
+    // v1.5 (doc-80 §2/§3): READS ONLY — every class-B write (buildings/assets) goes through the outbox,
+    // online or offline, one path. Full pulls filter tombstones; DELTA pulls must NOT (tombstones ride
+    // the same delta: soft-delete is an UPDATE → trigger bumps updated_at → the delta returns the row
+    // with deleted_at set → the cache drops it).
+    listBuildings: function () { return sb.from("buildings").select("*").is("deleted_at", null).order("name", { ascending: true }); },
+    listBuildingsDelta: function (wm) { return sb.from("buildings").select("*").gt("updated_at", wm); },
     listAssets: function (bid) { return sb.from("assets").select("*").eq("building_id", bid).is("deleted_at", null).order("created_at", { ascending: true }); },
-    createAsset: function (tenantId, bid, a) { var r = assetToRow(a); r.tenant_id = tenantId; r.building_id = bid; return sb.from("assets").insert(r).select().single(); },
-    updateAsset: function (id, a) { return sb.from("assets").update(assetToRow(a)).eq("id", id).select().single(); },
-    deleteAsset: function (id) { return sb.from("assets").delete().eq("id", id); }
+    listAssetsDelta: function (bid, wm) { return sb.from("assets").select("*").eq("building_id", bid).gt("updated_at", wm); },
+    listProof: function (bid) { return sb.from("completion_proof").select("*").eq("building_id", bid).order("ts", { ascending: false }); },
+    signPhoto: function (path) { return sb.storage.from("photos").createSignedUrl(path, 3600); },
+    // offers stay online-only writes this pass (class D-ish until v2 intents) — severability toggles direct
+    listOffers: function (bid) { return sb.from("offers").select("*").eq("building_id", bid).order("version", { ascending: false }); },
+    updateOffer: function (id, patch) { return sb.from("offers").update(patch).eq("id", id).select().single(); }
   };
+  // watermarks advance ONLY from returned server rows — never the device clock (doc-80 §3)
+  function maxUpdatedAt(rows, current) {
+    var m = current || "";
+    (rows || []).forEach(function (r) { if (r.updated_at && r.updated_at > m) m = r.updated_at; });
+    return m;
+  }
+  function validWm(v) { return typeof v === "string" && /^\d{4}-\d{2}-\d{2}T/.test(v); }   // corrupted watermark → full snapshot
 
   /* ---- asset mapping: DB row ↔ the Phase-10 asset shape the demo/core already understand ---- */
   var ASSET_TYPES = [
@@ -159,14 +166,44 @@
       return prodDb.tenantName(m.tenant_id).then(function (tr) {
         if (tr.data) S.tenant.name = tr.data.name;
         OFF.cachePut(uid, "meta", S.tenant);   // the offline day needs the tenant (writes are keyed to it)
-        return prodDb.listBuildings();
-      }).then(function (br) {
-        if (br.error) throw br.error;
-        S.buildings = (br.data || []).map(rowToCore); S.listTs = Date.now();
-        OFF.cachePut(uid, "buildings", br.data || []);
+        return pullBuildings(uid);
+      }).then(function (rows2) {
+        S.buildings = rows2.map(rowToCore); S.listTs = Date.now();
         S.loading = false; render();
       });
     }).catch(function (e) { S.loading = false; S.error = friendly(e); render(); });
+  }
+  /* v1.5 delta pull, buildings (doc-80 §3): watermark = max server updated_at seen. Delta pulls take
+   * `updated_at > wm` WITHOUT the deleted_at filter — tombstones must arrive to be dropped from the
+   * cache. Full snapshot only on first login / cleared cache / corrupted watermark. Resolves to the
+   * merged RAW rows (live only) and persists cache + watermark. */
+  function pullBuildings(uid) {
+    return OFF.cacheGet(uid, "wm:buildings").then(function (wm) {
+      var mark = wm && wm.v;
+      if (!validWm(mark)) return fullPullBuildings(uid);
+      return Promise.all([prodDb.listBuildingsDelta(mark), OFF.cacheGet(uid, "buildings")]).then(function (r) {
+        var dr = r[0], cached = (r[1] && r[1].v) || null;
+        if (dr.error) throw dr.error;
+        if (cached == null) return fullPullBuildings(uid);   // watermark without a cache = corrupted state
+        var byId = {}; cached.forEach(function (row) { byId[row.id] = row; });
+        (dr.data || []).forEach(function (row) { if (row.deleted_at) delete byId[row.id]; else byId[row.id] = row; });
+        var rows = Object.keys(byId).map(function (k) { return byId[k]; });
+        rows.sort(function (x, y) { return (x.name || "") < (y.name || "") ? -1 : 1; });
+        var nm = maxUpdatedAt(dr.data, mark);
+        return Promise.all([OFF.cachePut(uid, "buildings", rows),
+          nm !== mark ? OFF.cachePut(uid, "wm:buildings", nm) : Promise.resolve()]).then(function () { return rows; });
+      });
+    });
+  }
+  function fullPullBuildings(uid) {
+    return prodDb.listBuildings().then(function (br) {
+      if (br.error) throw br.error;
+      var rows = br.data || [];
+      var nm = maxUpdatedAt(rows, "");
+      // nm from server rows, or null when empty — a full pull always leaves a CLEAN watermark state
+      return Promise.all([OFF.cachePut(uid, "buildings", rows),
+        OFF.cachePut(uid, "wm:buildings", nm || null)]).then(function () { return rows; });
+    });
   }
   function snapshotBuilding(bid) {   // write the per-building snapshot after any section refresh
     var uid = userId(); if (!uid) return;
@@ -174,19 +211,34 @@
     S.snapTs = Date.now();
   }
 
+  /* v1.5 (doc-80 §2): new building = client-UUID insert THROUGH THE OUTBOX — online and offline are the
+   * same path. Optimistic row into state+cache immediately (chip says `lagret på enheten` until acked);
+   * the post-drain delta pull replaces it with the server row. */
   function addBuilding() {
     var b = { name: val("nb_name"), addr: val("nb_addr"), gnr: val("nb_gnr"), bnr: val("nb_bnr") };
     if (!b.name) { S.error = "Bygg-navn må fylles ut."; S.msg = null; render(); return; }
-    if (!S.tenant || !S.tenant.id) { S.error = "Mangler tenant."; render(); return; }
-    S.loading = true; S.error = null; S.msg = null; render();
-    prodDb.createBuilding(S.tenant.id, b).then(function (r) {
-      S.loading = false;
-      if (r.error) { S.error = friendly(r.error); render(); return; }
-      S.buildings.push(rowToCore(r.data));
-      S.buildings.sort(function (x, y) { return (x.name || "") < (y.name || "") ? -1 : 1; });
-      S.msg = "✅ Lagret i onsite-prod: " + r.data.name;
-      render();
-    });
+    var uid = userId();
+    if (!S.tenant || !S.tenant.id || !uid) { S.error = "Mangler tenant/bruker (åpne appen på nett én gang først)."; render(); return; }
+    var row = coreToRow(S.tenant.id, b); row.id = OFF.uuid();
+    S.error = null; S.msg = null;
+    OFF.queueOp({ entity: "buildings", op: "insert", payload: row, baseUpdatedAt: null,
+      tenantId: S.tenant.id, buildingId: row.id, userId: uid, title: "Nytt bygg: " + row.name })
+      .then(function () {
+        S.buildings = (S.buildings || []); S.buildings.push(rowToCore(row));
+        S.buildings.sort(function (x, y) { return (x.name || "") < (y.name || "") ? -1 : 1; });
+        return OFF.cacheGet(uid, "buildings").then(function (c) {
+          return OFF.cachePut(uid, "buildings", ((c && c.v) || []).concat([row]));
+        });
+      })
+      .then(function () {
+        S.msg = "Lagret på enheten: " + row.name + " — synkes.";
+        refreshPending(function () { render(); });
+        drainAll();
+      })
+      .catch(function (e) {   // C1: durable queueing failed — loud, never a fake ✓
+        S.error = "⚠ Kunne IKKE lagre på enheten (" + ((e && e.message) || "lagringsfeil") + ") — bygget er IKKE lagret.";
+        render();
+      });
   }
   function friendly(e) { var m = (e && e.message) || String(e); if (/JWT|not authenticated|session missing|401/i.test(m)) return "Økten er utløpt — logg inn på nytt (arbeidet ble IKKE lagret)."; return m; }
   function val(id) { var el = document.getElementById(id); return el ? el.value.trim() : ""; }
@@ -213,9 +265,9 @@
 
   /* ---------- offline plumbing: pending state + drain (doc-80 §2/§6) ---------- */
   function refreshPending(cb) {
-    var uid = userId(); if (!uid) { S.pending = { total: 0, ops: 0, photos: 0, rejected: 0 }; S.pendingOps = []; S.pendingPhotos = []; if (cb) cb(); return; }
-    Promise.all([OFF.countPending(uid), OFF.listOps(uid), OFF.listPhotos(uid)]).then(function (r) {
-      S.pending = r[0]; S.pendingOps = r[1]; S.pendingPhotos = r[2];
+    var uid = userId(); if (!uid) { S.pending = { total: 0, ops: 0, photos: 0, rejected: 0 }; S.pendingOps = []; S.pendingPhotos = []; S.review = []; if (cb) cb(); return; }
+    Promise.all([OFF.countPending(uid), OFF.listOps(uid), OFF.listPhotos(uid), OFF.listReview(uid)]).then(function (r) {
+      S.pending = r[0]; S.pendingOps = r[1]; S.pendingPhotos = r[2]; S.review = r[3] || [];
       if (cb) cb();
     }).catch(function () { if (cb) cb(); });
   }
@@ -225,7 +277,13 @@
     OFF.drain(sb, uid, function () { refreshPending(function () { render(); }); }).then(function (changed) {
       refreshPending(function () {
         render();
-        if (changed && S.view.name === "building") loadProof(S.view.id);   // acked ops → pull the server rows into timeline/cache
+        if (!changed) return;
+        // acked (or conflict-resolved) ops → the DELTA pull brings server truth into the cache, chips flip
+        if (S.view.name === "building") { loadAssets(S.view.id); loadProof(S.view.id); }
+        var u2 = userId();
+        if (u2 && S.session && navigator.onLine) {
+          pullBuildings(u2).then(function (rows) { S.buildings = rows.map(rowToCore); S.listTs = Date.now(); render(); }).catch(function () {});
+        }
       });
     });
   }
@@ -233,8 +291,23 @@
     var out = "";
     if (S.offline) out += ' <span class="chip q">frakoblet</span>';   // a NORMAL state — neutral, no red panic (doc 62)
     if (S.pending.total > 0) out += ' <button class="chip pendbtn" data-act="openOutbox">● ' + S.pending.total + ' usendte</button>';
+    // doc-80 §2: a lost LWW race is NEVER a mid-field-day error toast — a quiet, neutral badge
+    if ((S.review || []).length > 0) out += ' <button class="chip q pendbtn" data-act="openReview">⚑ ' + S.review.length + ' trenger gjennomsyn</button>';
     if (S.updateReg) out += ' <button class="chip s pendbtn" data-act="applyUpdate">ny versjon — last på nytt</button>';
     return out;
+  }
+  // v1.5 honesty chips (doc-80 §6): a record with a queued class-B op wears its sync state on the row
+  function pendingOpByRecord(entity) {
+    var m = {};
+    (S.pendingOps || []).forEach(function (o) { if (o.entity === entity && o.payload && o.payload.id) m[o.payload.id] = o; });
+    return m;
+  }
+  function opChip(o) {
+    if (!o) return "";
+    return o.status === "sending" ? ' <span class="chip s">synkes…</span>'
+      : o.status === "rejected" ? ' <span class="chip err">avvist</span>'
+      : o.status === "held" ? ' <span class="chip warn">får ikke synket</span>'
+      : ' <span class="chip q">lagret på enheten</span>';
   }
   function renderOutbox() {
     var rows = (S.pendingOps || []).map(function (o) {
@@ -267,6 +340,45 @@
       + (rows || prows ? rows + prows : '<div class="empty">Ingenting i kø — alt er synket ✓</div>')
       + '<div class="bar">' + (anyHeld ? '<button class="btn" data-act="retryHeld">Prøv igjen nå</button>' : '') + '</div>';
   }
+  /* v1.5 «Trenger gjennomsyn» (doc-80 §2): the device-local store of lost LWW races. Server won and
+   * stands; each item shows your value vs the server's, both timestamps, and two honest exits:
+   * «Bruk min likevel» = a NEW edit on top of the CURRENT server base (through the outbox, base-checked
+   * again) — «Forkast min» = drop it. Never an error toast mid-field-day. */
+  var FIELD_LABELS = { label: "Navn/merking", type: "Type", area: "Område", access: "Tilgang", notes: "Notat",
+    bin: "Dunk-detaljer", lat: "Posisjon (lat)", lon: "Posisjon (lon)", compliance_link: "Kravlenke",
+    deleted_at: "Sletting", name: "Navn", address: "Adresse", org_nr: "Org.nr", gnr: "gnr", bnr: "bnr", kommunenr: "Kommunenr" };
+  function fmtFieldVal(k, v) {
+    if (k === "deleted_at") return v ? "slettet" : "ikke slettet";
+    if (v == null || v === "") return "—";
+    if (typeof v === "object") { try { var parts = []; for (var key in v) if (v[key] != null && v[key] !== "") parts.push(key + ": " + v[key]); return parts.join(", ") || "—"; } catch (e) { return JSON.stringify(v); } }
+    return String(v);
+  }
+  function fmtWhen(ts) { if (!ts) return ""; try { return new Date(ts).toLocaleString("no", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); } catch (e) { return ""; } }
+  function renderReview() {
+    var rows = (S.review || []).map(function (r) {
+      var b = buildingById(r.buildingId);
+      var gone = !r.serverRow;
+      var diffs = Object.keys(r.fields || {}).filter(function (k) { return k !== "id"; }).map(function (k) {
+        var mine = fmtFieldVal(k, r.fields[k]);
+        var srv = gone ? "(raden finnes ikke lenger på serveren)" : fmtFieldVal(k, r.serverRow[k]);
+        return '<span class="d" style="margin-top:3px"><b>' + esc(FIELD_LABELS[k] || k) + ':</b> din: «' + esc(mine) + '» · på serveren: «' + esc(srv) + '»</span>';
+      }).join("");
+      return '<div class="bldg"><span class="t">⚑ ' + esc(r.recordName || r.entity) + ' <span class="chip q">serveren står</span></span>'
+        + '<span class="d">' + esc(b ? b.name : "") + (b ? ' · ' : '') + 'din endring ' + esc(fmtWhen(r.ts))
+        + (r.serverUpdatedAt ? ' · serverens versjon ' + esc(fmtWhen(r.serverUpdatedAt)) : '') + '</span>'
+        + diffs
+        + '<span style="display:flex;gap:8px;margin-top:9px">'
+        + '<button class="btn" style="padding:8px 12px" data-act="reviewUseMine" data-id="' + esc(r.reviewId) + '"' + (gone ? ' disabled' : '') + '>Bruk min likevel</button>'
+        + '<button class="btn ghost" style="padding:8px 12px" data-act="reviewDiscard" data-id="' + esc(r.reviewId) + '">Forkast min</button>'
+        + '</span>' + (gone ? '<span class="d" style="margin-top:5px">Raden er slettet på serveren — endringen kan bare forkastes.</span>' : '') + '</div>';
+    }).join("");
+    app.innerHTML =
+      '<div class="top"><div><span class="logo">● ONSITE</span><span class="prodtag">prod</span>' + headerChipsHTML() + '</div>'
+      + '<div style="display:flex;gap:8px;align-items:center"><span class="who">' + esc(userEmail()) + '</span><button class="btn ghost" data-act="signout" style="padding:8px 12px">Logg av</button></div></div>'
+      + '<div class="bhead"><button class="btn ghost" data-act="back" style="padding:9px 13px">← Tilbake</button><div><h1>Trenger gjennomsyn</h1>'
+      + '<div class="note">Noen andre endret det samme før deg — serverens versjon står. Velg per endring.</div></div></div>'
+      + (rows || '<div class="empty">Ingenting å gjennomgå.</div>');
+  }
   // doc-80 §5: sign-out with a non-empty outbox blocks — sync first, discard explicitly, or cancel.
   function renderSignoutGuard() {
     app.innerHTML =
@@ -285,6 +397,7 @@
     if (!S.session && !S.offlineIdent) { renderLogin(); }
     else if (S.view.name === "signoutGuard") { renderSignoutGuard(); }
     else if (S.view.name === "outbox") { renderOutbox(); }
+    else if (S.view.name === "review") { renderReview(); }
     else if (S.noAccess) { renderNoAccess(); }
     else if (S.view.name === "building" && buildingById(S.view.id)) { renderBuilding(buildingById(S.view.id)); hydrateProofPhotos(); }
     else { S.view = { name: "list" }; renderApp(); }
@@ -325,9 +438,10 @@
     if (S.loading && S.buildings == null) { list = '<div class="empty"><span class="spin"></span>Henter bygg fra onsite-prod…</div>'; }
     else if (!S.buildings || !S.buildings.length) { list = '<div class="empty">Ingen bygg ennå for denne tenanten. Legg til det første nedenfor.</div>'; }
     else {
+      var bPend = pendingOpByRecord("buildings");
       list = S.buildings.map(function (b) {
         var meta = [b.addr, (b.gnr ? 'gnr ' + b.gnr : ''), (b.bnr ? 'bnr ' + b.bnr : '')].filter(Boolean).join(' · ');
-        return '<button class="bldg click" data-act="openBuilding" data-id="' + esc(b.id) + '"><span><span class="t">🏢 ' + esc(b.name) + '</span>' + (meta ? '<span class="d">' + esc(meta) + '</span>' : '') + '</span><span class="chev">›</span></button>';
+        return '<button class="bldg click" data-act="openBuilding" data-id="' + esc(b.id) + '"><span><span class="t">🏢 ' + esc(b.name) + opChip(bPend[b.id]) + '</span>' + (meta ? '<span class="d">' + esc(meta) + '</span>' : '') + '</span><span class="chev">›</span></button>';
       }).join("");
     }
 
@@ -342,8 +456,8 @@
       + '<label>Navn *</label><input id="nb_name" placeholder="f.eks. Sameiet Solsiden">'
       + '<label>Adresse</label><input id="nb_addr" placeholder="Gate 1, 0123 Oslo">'
       + '<div class="row2"><div style="flex:1"><label>gnr</label><input id="nb_gnr"></div><div style="flex:1"><label>bnr</label><input id="nb_bnr"></div></div>'
-      + '<div class="bar"><button class="btn" data-act="addBuilding"' + (S.loading ? ' disabled' : '') + '>' + (S.loading ? '<span class="spin"></span>Lagrer…' : 'Lagre i onsite-prod →') + '</button></div>'
-      + '<p class="note" style="margin-bottom:0">tenant_id settes fra din membership; RLS <code>with check</code> håndhever at det er din tenant.</p>'
+      + '<div class="bar"><button class="btn" data-act="addBuilding">Lagre bygg →</button></div>'
+      + '<p class="note" style="margin-bottom:0">Lagres på enheten og synkes — tenant_id settes fra din membership; RLS <code>with check</code> håndhever at det er din tenant.</p>'
       + '</div>';
 
     var coreCard = '<p class="note">@onsite/core: ' + (coreReady() ? (Object.keys(window.OnSiteCore).length + ' motorer lastet — DB-rader mappes til samme plain-JS-form demoen bruker (rowToCore/coreToRow).') : 'laster…') + '</p>';
@@ -351,13 +465,40 @@
     app.innerHTML = head + buildingsCard + addCard + coreCard;
   }
   /* ============================ section: Eiendeler (1c-2 item 1 — assets) ============================ */
+  /* v1.5 delta pull, assets (doc-80 §3): per-building watermark `wm:assets:<bid>`. Delta WITHOUT the
+   * deleted_at filter — a tombstone arrives as a normal delta row (trigger bumped updated_at) and is
+   * dropped from the cache/UI here. Full snapshot on first visit / no cache / corrupted watermark. */
   function loadAssets(bid) {
     S.secBusy.assets = true; S.secErr.assets = null;
-    prodDb.listAssets(bid).then(function (r) {
-      S.secBusy.assets = false;
-      if (r.error) { S.secErr.assets = friendly(r.error); } else { S.assets = (r.data || []).map(assetRowToCore); snapshotBuilding(bid); }
-      render();
-    });
+    var uid = userId();
+    var done = function (coreList) { S.secBusy.assets = false; S.assets = coreList; snapshotBuilding(bid); render(); };
+    var fail = function (e) { S.secBusy.assets = false; S.secErr.assets = friendly(e); render(); };
+    var full = function () {
+      return prodDb.listAssets(bid).then(function (r) {
+        if (r.error) return fail(r.error);
+        var rows = r.data || [];
+        var nm = maxUpdatedAt(rows, "");
+        // nm from server rows, or null when the table is empty — never leave a corrupted marker behind
+        if (uid) OFF.cachePut(uid, "wm:assets:" + bid, nm || null);
+        done(rows.map(assetRowToCore));
+      });
+    };
+    if (!uid) { full().catch(fail); return; }
+    OFF.cacheGet(uid, "wm:assets:" + bid).then(function (wm) {
+      var mark = wm && wm.v;
+      if (!validWm(mark) || S.assets == null) return full();   // no watermark / no cached list → snapshot
+      return prodDb.listAssetsDelta(bid, mark).then(function (r) {
+        if (r.error) return fail(r.error);
+        var delta = r.data || [];
+        var byId = {}; (S.assets || []).forEach(function (a) { byId[a.id] = a; });
+        delta.forEach(function (row) { if (row.deleted_at) delete byId[row.id]; else byId[row.id] = assetRowToCore(row); });
+        var merged = Object.keys(byId).map(function (k) { return byId[k]; });
+        merged.sort(function (x, y) { return (((x._row && x._row.created_at) || "")) < (((y._row && y._row.created_at) || "")) ? -1 : 1; });
+        var nm = maxUpdatedAt(delta, mark);
+        if (nm !== mark) OFF.cachePut(uid, "wm:assets:" + bid, nm);
+        done(merged);
+      });
+    }).catch(fail);
   }
   function assetFormHTML(a) {
     var d = assetTypeDef(a.type);
@@ -404,14 +545,14 @@
     var body;
     if (S.secBusy.assets && S.assets == null) body = '<div class="empty"><span class="spin"></span>Henter eiendeler…</div>';
     else if (!S.assets || !S.assets.length) body = '<div class="empty">Ingen eiendeler registrert ennå.</div>';
-    else body = S.assets.map(function (a) {
+    else { var aPend = pendingOpByRecord("assets"); body = S.assets.map(function (a) {
       var d = assetTypeDef(a.type), bin = a.bin || {};
       var meta = [a.area, bin.fraction, bin.binType, bin.capacity, bin.supplier, a.access].filter(Boolean).join(' · ');
-      return '<div class="bldg"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><span><span class="t">' + d.emoji + ' ' + esc(a.label || d.label) + '</span>'
+      return '<div class="bldg"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><span><span class="t">' + d.emoji + ' ' + esc(a.label || d.label) + opChip(aPend[a.id]) + '</span>'
         + (meta ? '<span class="d">' + esc(meta) + '</span>' : '') + (a.notes ? '<span class="d">' + esc(a.notes) + '</span>' : '') + '</span>'
         + '<span style="display:flex;gap:6px;flex-shrink:0"><button class="btn ghost" style="padding:7px 10px" data-act="assetEdit" data-id="' + esc(a.id) + '">✎</button>'
         + '<button class="btn ghost" style="padding:7px 10px" data-act="assetDel" data-id="' + esc(a.id) + '">🗑</button></span></div></div>';
-    }).join("");
+    }).join(""); }
     return '<div class="card"><div class="ct">🧰 Eiendeler <span class="muted" style="font-weight:600">· ' + (S.assets ? S.assets.length : '…') + ' · assets (RLS: kun din tenant)</span></div>'
       + (S.secMsg.assets ? '<div class="msg ok">' + esc(S.secMsg.assets) + '</div>' : '')
       + (S.secErr.assets ? '<div class="msg err">' + esc(S.secErr.assets) + '</div>' : '')
@@ -419,28 +560,87 @@
       + (S.editAsset ? assetFormHTML(S.editAsset) : '<div class="bar"><button class="btn ghost" data-act="assetNew">＋ Legg til eiendel</button></div>')
       + '</div>';
   }
+  /* v1.5 (doc-80 §2): class-B asset writes go through the outbox — one path, online or offline.
+   * Edit → `update` op with ONLY the changed fields + baseUpdatedAt = the updated_at the edit was
+   * built on (cached verbatim). New → client-UUID `insert` (idempotent upsert). A row that has never
+   * synced (no server updated_at yet) is re-upserted whole instead — there is no base to check against. */
   function assetSave() {
     syncAssetForm();
     var a = S.editAsset, b = buildingById(S.view.id); if (!a || !b) return;
-    if (!S.tenant || !S.tenant.id) { S.secErr.assets = "Mangler tenant."; render(); return; }
-    S.secBusy.assets = true; S.secErr.assets = null; S.secMsg.assets = null; render();
-    var q = a.id ? prodDb.updateAsset(a.id, a) : prodDb.createAsset(S.tenant.id, b.id, a);
-    q.then(function (r) {
-      S.secBusy.assets = false;
-      if (r.error) { S.secErr.assets = friendly(r.error); render(); return; }   // C1: nothing fakes success
-      S.secMsg.assets = "✅ Lagret i onsite-prod: " + (r.data.label || "eiendel");
+    var uid = userId();
+    if (!S.tenant || !S.tenant.id || !uid) { S.secErr.assets = "Mangler tenant/bruker (åpne appen på nett én gang først)."; render(); return; }
+    S.secErr.assets = null; S.secMsg.assets = null;
+    var row = assetToRow(a), op, coreAfter;
+    if (a.id) {
+      var orig = (S.assets || []).filter(function (x) { return x.id === a.id; })[0];
+      var base = (orig && orig._row) || {};
+      var merged = {}; for (var mk in base) merged[mk] = base[mk]; for (var rk in row) merged[rk] = row[rk]; merged.id = a.id;
+      coreAfter = assetRowToCore(merged);
+      if (base.updated_at) {
+        var fields = { id: a.id }, changed = false;
+        for (var k in row) {
+          var oldV = base[k] == null ? null : base[k], newV = row[k] == null ? null : row[k];
+          if (JSON.stringify(oldV) !== JSON.stringify(newV)) { fields[k] = row[k]; changed = true; }
+        }
+        if (!changed) { S.editAsset = null; S.secMsg.assets = "Ingen endringer."; render(); return; }
+        op = { entity: "assets", op: "update", payload: fields, baseUpdatedAt: base.updated_at,
+          tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: a.label || assetTypeDef(a.type).label };
+      } else {
+        // local row, never acked — full re-upsert under the same client id (nobody else has seen it)
+        var re = {}; for (var pk in row) re[pk] = row[pk];
+        re.id = a.id; re.tenant_id = S.tenant.id; re.building_id = b.id;
+        op = { entity: "assets", op: "insert", payload: re, baseUpdatedAt: null,
+          tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: a.label || assetTypeDef(a.type).label };
+      }
+    } else {
+      row.id = OFF.uuid(); row.tenant_id = S.tenant.id; row.building_id = b.id;
+      op = { entity: "assets", op: "insert", payload: row, baseUpdatedAt: null,
+        tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: row.label };
+      coreAfter = assetRowToCore(row);
+    }
+    OFF.queueOp(op).then(function () {
+      // optimistic: state + snapshot take the edit NOW; the chip says `lagret på enheten` until acked
+      if (a.id) S.assets = (S.assets || []).map(function (x) { return x.id === a.id ? coreAfter : x; });
+      else S.assets = (S.assets || []).concat([coreAfter]);
       S.editAsset = null;
-      loadAssets(b.id);   // re-read from the DB — the list shows what actually persisted
+      S.secMsg.assets = "Lagret på enheten: " + (coreAfter.label || "eiendel") + " — synlig for andre når den viser «synket ✓».";
+      snapshotBuilding(b.id);
+      refreshPending(function () { render(); });
+      drainAll();
+    }).catch(function (e) {   // C1: durable queueing failed — loud, optimistic state NOT applied
+      S.secErr.assets = "⚠ Kunne IKKE lagre på enheten (" + ((e && e.message) || "lagringsfeil") + ") — endringen er IKKE trygg.";
+      render();
     });
   }
+  /* v1.5 (doc-80 §3): SOFT delete replaces hard delete — `update set deleted_at` through the outbox,
+   * base-version-checked like any other class-B edit. The server row survives as a tombstone; other
+   * devices drop it when the tombstone rides their next delta pull. */
   function assetDelete(id) {
     var a = (S.assets || []).filter(function (x) { return x.id === id; })[0];
     if (!a || !window.confirm("Slette «" + (a.label || "eiendel") + "»?")) return;
-    S.secBusy.assets = true; S.secErr.assets = null; render();
-    prodDb.deleteAsset(id).then(function (r) {
-      S.secBusy.assets = false;
-      if (r.error) { S.secErr.assets = friendly(r.error); render(); return; }
-      S.secMsg.assets = "Slettet."; loadAssets(S.view.id);
+    var uid = userId(), b = buildingById(S.view.id);
+    if (!uid || !b || !S.tenant || !S.tenant.id) return;
+    var base = a._row || {}, op;
+    var title = "Slett: " + (a.label || assetTypeDef(a.type).label);
+    if (base.updated_at) {
+      op = { entity: "assets", op: "update", payload: { id: id, deleted_at: new Date().toISOString() },
+        baseUpdatedAt: base.updated_at, tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: title };
+    } else {
+      // never synced — upsert it born-dead under the same client id (works whether or not the insert drained)
+      var row = assetToRow(a); row.id = id; row.tenant_id = S.tenant.id; row.building_id = b.id;
+      row.deleted_at = new Date().toISOString();
+      op = { entity: "assets", op: "insert", payload: row, baseUpdatedAt: null,
+        tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: title };
+    }
+    OFF.queueOp(op).then(function () {
+      S.assets = (S.assets || []).filter(function (x) { return x.id !== id; });
+      S.secMsg.assets = "Slettet — lagret på enheten, synkes.";
+      snapshotBuilding(b.id);
+      refreshPending(function () { render(); });
+      drainAll();
+    }).catch(function (e) {
+      S.secErr.assets = "⚠ Kunne ikke lagre slettingen på enheten (" + ((e && e.message) || "lagringsfeil") + ").";
+      render();
     });
   }
 
@@ -713,6 +913,23 @@
     },
     guardCancel: function () { S.view = S._prevView || { name: "list" }; S.error = null; render(); },
     openOutbox: function () { S._prevView = S.view; S.view = { name: "outbox" }; refreshPending(function () { render(); }); },
+    openReview: function () { S._prevView = S.view; S.view = { name: "review" }; refreshPending(function () { render(); }); },
+    // «Bruk min likevel»: re-apply the lost fields as a NEW edit on the CURRENT server base — through the
+    // outbox, base-version-checked again (if the server moved meanwhile, it lands back here honestly).
+    reviewUseMine: function (el) {
+      var id = el.getAttribute("data-id");
+      var r = (S.review || []).filter(function (x) { return x.reviewId === id; })[0]; if (!r) return;
+      if (!r.serverRow || !r.serverUpdatedAt) return;   // button is disabled for these; belt and braces
+      var uid = userId(); if (!uid) return;
+      var payload = { id: r.recordId }; for (var k in (r.fields || {})) if (k !== "id") payload[k] = r.fields[k];
+      OFF.queueOp({ entity: r.entity, op: "update", payload: payload, baseUpdatedAt: r.serverUpdatedAt,
+        tenantId: r.tenantId, buildingId: r.buildingId, userId: uid, title: r.recordName || r.entity })
+        .then(function () { return OFF.delReview(id); })
+        .then(function () { refreshPending(function () { render(); }); drainAll(); });
+    },
+    reviewDiscard: function (el) {
+      OFF.delReview(el.getAttribute("data-id")).then(function () { refreshPending(function () { render(); }); });
+    },
     retryHeld: function () { OFF.retryHeld(userId()).then(function () { refreshPending(function () { render(); drainAll(); }); }); },
     discardOp: function (el) {
       if (!window.confirm("Forkaste denne avviste registreringen?")) return;
@@ -722,7 +939,7 @@
     addBuilding: addBuilding,
     openBuilding: function (el) { openBuilding(el.getAttribute("data-id")); },
     back: function () {
-      if (S.view.name === "outbox") { S.view = S._prevView && S._prevView.name === "building" ? S._prevView : { name: "list" }; render(); if (S.view.name === "building") loadBuildingSections(S.view.id); return; }
+      if (S.view.name === "outbox" || S.view.name === "review") { S.view = S._prevView && S._prevView.name === "building" ? S._prevView : { name: "list" }; render(); if (S.view.name === "building") loadBuildingSections(S.view.id); return; }
       closeBuilding();
     },
     // item 1: assets
