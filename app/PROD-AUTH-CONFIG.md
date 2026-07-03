@@ -24,6 +24,7 @@ The 1c app's login loop depends on dashboard settings that live outside the repo
 | **Email OTP / magic-link expiry** | ≤ 3600 s (1 h) — default acceptable, shorter preferred | Limits the window a forwarded/leaked link is usable. |
 | **Rate limits** (Auth → Rate Limits) | Keep defaults or tighter for "Email sent" | The login form is public; sending is our email quota. |
 | **Leaked password protection** | **Enable** | Free; flagged by the Supabase security advisor. Moot for magic-link-only today, harmless to enable. |
+| **Magic Link email template** (Auth → Emails → Magic Link) | Add the 6-digit code to the body: e.g. `<p>Kode: {{ .Token }}</p>` (keep `{{ .ConfirmationURL }}`) | **OTP pass (2026-07-03):** the app's primary login is now the emailed code (`verifyOtp` — works in the installed iOS app where the link opens in Safari instead). Until the template carries `{{ .Token }}`, the email has no code — the app degrades to the link path with an in-UI hint, but the standalone-iOS fix is inert. |
 
 ## Verification steps (after saving the settings)
 
@@ -35,4 +36,4 @@ The 1c app's login loop depends on dashboard settings that live outside the repo
 ## Current as of
 
 - **2026-07-02 (Claude, code side):** app deployed on the origin above; `shouldCreateUser:false` live; redirect-error surfacing live. Dashboard values below **unconfirmed** — fill in when set:
-- **Site URL set:** ☐ _______  · **Redirect allowlist set:** ☐ _______  · **OTP expiry:** ☐ _______  · **Rate limits reviewed:** ☐ _______  · **Leaked-password protection on:** ☐ _______  (Martin: date + initial each)
+- **Site URL set:** ☐ _______  · **Redirect allowlist set:** ☐ _______  · **OTP expiry:** ☐ _______  · **Rate limits reviewed:** ☐ _______  · **Leaked-password protection on:** ☐ _______  · **`{{ .Token }}` in Magic Link template:** ☐ _______  (Martin: date + initial each)

@@ -27,6 +27,8 @@
     view: { name: "list" }, assets: null, proof: null, offers: null, editAsset: null, secBusy: {}, secErr: {}, secMsg: {},
     // contacts port (small pass): second class-B table riding the SAME v1.5 outbox/LWW/delta machinery
     contacts: null, editContact: null, installEvt: null,
+    // OTP pass: the email a code was sent to — verifyOtp must target IT, not a later-edited input
+    otpEmail: null,
     // offline v1 (doc-80): offline identity + read-cache stamps + pending (outbox) state + SW update hint
     offlineIdent: null, offline: !navigator.onLine, snapTs: null, listTs: null,
     pending: { total: 0, ops: 0, photos: 0, rejected: 0 }, pendingOps: [], pendingPhotos: [], updateReg: null,
@@ -126,9 +128,37 @@
       .then(function (r) {
         S.loading = false;
         if (r.error) { S.error = authHint(r.error); }
-        else { S.msg = "📧 Vi sendte en innloggingslenke til " + email + ". Åpne den på denne enheten."; }
+        else {
+          // OTP pass: the same email carries a 6-digit code ({{ .Token }} in the template) AND the link.
+          // The code is the path that works in an installed iOS app (the link opens in Safari, whose
+          // storage the standalone app can't see — the 2-Jul wrong-browser failure class).
+          S.otpEmail = email;
+          S.msg = "📧 E-post sendt til " + email + " — skriv inn koden under" + (isStandalone() ? "." : ", eller åpne lenken på denne enheten.");
+        }
         render();
+        var ce = document.getElementById("li_code"); if (ce) ce.focus();
       });
+  }
+  function verifyCode() {
+    var code = (val("li_code") || "").replace(/\D/g, "");
+    var email = S.otpEmail;
+    if (!email) { S.error = "Send en kode først."; S.msg = null; render(); return; }
+    if (!/^\d{6}$/.test(code)) { S.error = "Koden er 6 sifre — sjekk e-posten."; render(); return; }
+    S.loading = true; S.error = null; render();
+    // fully in-app: no redirect, no PKCE verifier handoff — works in standalone iOS and any browser.
+    // shouldCreateUser stays enforced upstream: an unknown email never got a code, and verifyOtp
+    // cannot create users (confirmed live: 403 otp_expired, auth.users unchanged).
+    sb.auth.verifyOtp({ email: email, token: code, type: "email" }).then(function (r) {
+      S.loading = false;
+      if (r.error) { S.error = otpHint(r.error); render(); return; }
+      S.msg = null; S.error = null; S.otpEmail = null;   // session lands via onAuthStateChange — same path as the redirect login
+    });
+  }
+  function otpHint(err) {
+    var m = (err && err.message) || "ukjent feil";
+    if (/rate limit|too many/i.test(m)) return "For mange forsøk — vent et minutt og prøv igjen.";
+    if (/expired|invalid/i.test(m)) return "Feil kode — prøv igjen, eller send en ny e-post hvis koden er utløpt.";
+    return "Innlogging feilet: " + m;
   }
   function authHint(err) {
     var m = (err && err.message) || "ukjent feil";
@@ -140,7 +170,11 @@
   function signOut() {
     sb.auth.signOut().then(function () {
       try { localStorage.removeItem("onsite_prod_email"); } catch (e) {}   // shared-device hygiene: no email crumb after sign-out
-      S.tenant = null; S.buildings = null; S.msg = null; S.error = null; S.noAccess = false; render();
+      S.tenant = null; S.buildings = null; S.msg = null; S.error = null; S.noAccess = false;
+      // OTP pass: reset the VIEW too — the code login has no page reload (unlike the redirect), so a
+      // stale signoutGuard/building view would otherwise resurface after the next in-app sign-in.
+      S.view = { name: "list" }; S._prevView = null;
+      render();
     });
   }
 
@@ -420,14 +454,29 @@
       + '</div>';
   }
   function renderLogin() {
+    // OTP pass: the CODE is the primary path (it works everywhere, incl. the installed iOS app where
+    // the magic link would open in Safari instead). The link stays as the alternative.
+    var codeBlock = "";
+    if (S.otpEmail) {
+      codeBlock =
+        '<label>Skriv inn 6-sifret kode fra e-posten</label>'
+        + '<input id="li_code" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="6" placeholder="123456" style="letter-spacing:.3em;font-size:19px;font-weight:700">'
+        + '<div class="bar"><button class="btn" data-act="verifyCode"' + (S.loading ? ' disabled' : '') + '>' + (S.loading ? '<span class="spin"></span>Sjekker…' : 'Logg inn med kode →') + '</button></div>'
+        + '<p class="note" style="margin-bottom:0">'
+        + (isStandalone()
+          ? 'I den installerte appen er <b>koden</b> veien inn — lenken i e-posten åpner i nettleseren, ikke her.'
+          : '…eller klikk lenken i e-posten <b>på denne enheten</b>.')
+        + ' Ser du ingen kode? E-posten inneholder også en innloggingslenke.</p>';
+    }
     app.innerHTML =
       '<div class="top"><div><span class="logo">● ONSITE</span><span class="prodtag">prod</span></div></div>'
       + '<div class="card"><div class="ct">Logg inn</div>'
-      + '<p class="note" style="margin-top:-2px">Produksjonsappen mot <b>onsite-prod</b>. Ingen passord — vi sender en engangslenke til e-posten din (magic link).</p>'
-      + '<label>E-post</label><input id="li_email" type="email" inputmode="email" autocomplete="email" placeholder="deg@firma.no" value="' + esc(lastEmail()) + '">'
+      + '<p class="note" style="margin-top:-2px">Produksjonsappen mot <b>onsite-prod</b>. Ingen passord — vi sender en e-post med engangskode (6 siffer) og innloggingslenke.</p>'
+      + '<label>E-post</label><input id="li_email" type="email" inputmode="email" autocomplete="email" placeholder="deg@firma.no" value="' + esc(S.otpEmail || lastEmail()) + '">'
       + (S.msg ? '<div class="msg ok">' + esc(S.msg) + '</div>' : '')
       + (S.error ? '<div class="msg err">' + esc(S.error) + '</div>' : '')
-      + '<div class="bar"><button class="btn" data-act="login"' + (S.loading ? ' disabled' : '') + '>' + (S.loading ? '<span class="spin"></span>Sender…' : 'Send innloggingslenke →') + '</button></div>'
+      + '<div class="bar"><button class="btn' + (S.otpEmail ? ' ghost' : '') + '" data-act="login"' + (S.loading ? ' disabled' : '') + '>' + (S.loading && !S.otpEmail ? '<span class="spin"></span>Sender…' : (S.otpEmail ? 'Send ny e-post' : 'Send kode →')) + '</button></div>'
+      + codeBlock
       + '</div>'
       + '<p class="note">Demoen (Ren Dunk) ligger uendret på <a href="https://onsite-site.vercel.app">onsite-site.vercel.app</a>. Denne appen kjører på sitt eget domene (origin-isolert fra demoen) og snakker med den ekte, tenant-isolerte backenden.</p>';
   }
@@ -448,7 +497,7 @@
     }
     if (isIOS()) {
       return '<div class="card" style="padding:11px 14px;display:flex;justify-content:space-between;gap:10px;align-items:center">'
-        + '<span class="note" style="margin:0">📲 Legg til på Hjem-skjerm for rask tilgang: trykk <b>Del</b> (firkanten med pil ↑), velg <b>«Legg til på Hjem-skjerm»</b>.</span>'
+        + '<span class="note" style="margin:0">📲 Legg til på Hjem-skjerm for rask tilgang: trykk <b>Del</b> (firkanten med pil ↑), velg <b>«Legg til på Hjem-skjerm»</b> — og logg inn i appen med koden fra e-posten.</span>'
         + '<button class="btn ghost" style="padding:8px 10px;flex-shrink:0" data-act="a2hsDismiss" aria-label="Ikke nå">✕</button></div>';
     }
     return "";
@@ -1051,6 +1100,7 @@
   /* one delegated dispatcher (replaces per-render bind) — sections add cases, not listeners */
   var ACTIONS = {
     login: function () { var e = val("li_email"); rememberEmail(e); sendMagicLink(e); },
+    verifyCode: verifyCode,
     // doc-80 §5: sign-out with a non-empty outbox blocks with count + choices — never silent loss,
     // never draining user A's proof under user B's session (attribution is integrity).
     signout: function () {
@@ -1138,6 +1188,7 @@
   });
   app.addEventListener("keydown", function (ev) {
     if (ev.key === "Enter" && ev.target && ev.target.id === "li_email") { var e = val("li_email"); rememberEmail(e); sendMagicLink(e); }
+    if (ev.key === "Enter" && ev.target && ev.target.id === "li_code") { verifyCode(); }
   });
   function bind() {} // retained no-op — render() calls it; all wiring is delegated above
 
@@ -1169,6 +1220,7 @@
     // user A's queued ops never drain here under user B — drain() filters by userId.
     if (session && (!was || uid !== wasUid)) {
       S.buildings = null; S.tenant = null; S.noAccess = false;
+      S.msg = null; S.error = null; S.otpEmail = null;   // login-screen residue never bleeds into the app view
       loadTenantAndBuildings();
       refreshPending(function () { render(); drainAll(); });   // same user back online → their queue drains
     }
