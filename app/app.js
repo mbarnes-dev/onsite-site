@@ -25,6 +25,8 @@
   var S = { session: null, tenant: null, buildings: null, loading: false, error: null, msg: null, noAccess: false, _uid: null,
     // 1c-2: view routing — the building detail is the container for the per-table sections (assets/proof/offers)
     view: { name: "list" }, assets: null, proof: null, offers: null, editAsset: null, secBusy: {}, secErr: {}, secMsg: {},
+    // contacts port (small pass): second class-B table riding the SAME v1.5 outbox/LWW/delta machinery
+    contacts: null, editContact: null, installEvt: null,
     // offline v1 (doc-80): offline identity + read-cache stamps + pending (outbox) state + SW update hint
     offlineIdent: null, offline: !navigator.onLine, snapTs: null, listTs: null,
     pending: { total: 0, ops: 0, photos: 0, rejected: 0 }, pendingOps: [], pendingPhotos: [], updateReg: null,
@@ -69,6 +71,8 @@
     listBuildingsDelta: function (wm) { return sb.from("buildings").select("*").gt("updated_at", wm); },
     listAssets: function (bid) { return sb.from("assets").select("*").eq("building_id", bid).is("deleted_at", null).order("created_at", { ascending: true }); },
     listAssetsDelta: function (bid, wm) { return sb.from("assets").select("*").eq("building_id", bid).gt("updated_at", wm); },
+    listContacts: function (bid) { return sb.from("contacts").select("*").eq("building_id", bid).is("deleted_at", null).order("created_at", { ascending: true }); },
+    listContactsDelta: function (bid, wm) { return sb.from("contacts").select("*").eq("building_id", bid).gt("updated_at", wm); },
     listProof: function (bid) { return sb.from("completion_proof").select("*").eq("building_id", bid).order("ts", { ascending: false }); },
     signPhoto: function (path) { return sb.storage.from("photos").createSignedUrl(path, 3600); },
     // offers stay online-only writes this pass (class D-ish until v2 intents) — severability toggles direct
@@ -207,7 +211,7 @@
   }
   function snapshotBuilding(bid) {   // write the per-building snapshot after any section refresh
     var uid = userId(); if (!uid) return;
-    OFF.cachePut(uid, "b:" + bid, { assets: S.assets, proof: S.proof, offers: S.offers });
+    OFF.cachePut(uid, "b:" + bid, { assets: S.assets, proof: S.proof, offers: S.offers, contacts: S.contacts });
     S.snapTs = Date.now();
   }
 
@@ -248,17 +252,17 @@
   function buildingById(id) { return (S.buildings || []).filter(function (b) { return b.id === id; })[0] || null; }
   function openBuilding(id) {
     S.view = { name: "building", id: id };
-    S.assets = null; S.proof = null; S.offers = null; S.editAsset = null; S.secErr = {}; S.secMsg = {}; S.msg = null; S.error = null; S.snapTs = null;
+    S.assets = null; S.proof = null; S.offers = null; S.contacts = null; S.editAsset = null; S.editContact = null; S.secErr = {}; S.secMsg = {}; S.msg = null; S.error = null; S.snapTs = null;
     render();
     loadBuildingSections(id);   // cache-first paint, then background refresh; each section surfaces its own errors (C1)
   }
   function closeBuilding() { S.view = { name: "list" }; S.editAsset = null; S.msg = null; S.error = null; render(); }
   function loadBuildingSections(id) {
     var uid = userId();
-    var start = function () { refreshPending(); if (!S.session || !navigator.onLine) { render(); return; } loadAssets(id); loadProof(id); loadOffers(id); };
+    var start = function () { refreshPending(); if (!S.session || !navigator.onLine) { render(); return; } loadAssets(id); loadContacts(id); loadProof(id); loadOffers(id); };
     if (!uid) { start(); return; }
     OFF.cacheGet(uid, "b:" + id).then(function (snap) {
-      if (snap && snap.v) { S.assets = snap.v.assets; S.proof = snap.v.proof; S.offers = snap.v.offers; S.snapTs = snap.ts; render(); }
+      if (snap && snap.v) { S.assets = snap.v.assets; S.proof = snap.v.proof; S.offers = snap.v.offers; S.contacts = snap.v.contacts || null; S.snapTs = snap.ts; render(); }
       start();
     }).catch(start);
   }
@@ -279,7 +283,7 @@
         render();
         if (!changed) return;
         // acked (or conflict-resolved) ops → the DELTA pull brings server truth into the cache, chips flip
-        if (S.view.name === "building") { loadAssets(S.view.id); loadProof(S.view.id); }
+        if (S.view.name === "building") { loadAssets(S.view.id); loadContacts(S.view.id); loadProof(S.view.id); }
         var u2 = userId();
         if (u2 && S.session && navigator.onLine) {
           pullBuildings(u2).then(function (rows) { S.buildings = rows.map(rowToCore); S.listTs = Date.now(); render(); }).catch(function () {});
@@ -346,7 +350,8 @@
    * again) — «Forkast min» = drop it. Never an error toast mid-field-day. */
   var FIELD_LABELS = { label: "Navn/merking", type: "Type", area: "Område", access: "Tilgang", notes: "Notat",
     bin: "Dunk-detaljer", lat: "Posisjon (lat)", lon: "Posisjon (lon)", compliance_link: "Kravlenke",
-    deleted_at: "Sletting", name: "Navn", address: "Adresse", org_nr: "Org.nr", gnr: "gnr", bnr: "bnr", kommunenr: "Kommunenr" };
+    deleted_at: "Sletting", name: "Navn", address: "Adresse", org_nr: "Org.nr", gnr: "gnr", bnr: "bnr", kommunenr: "Kommunenr",
+    role: "Rolle", phone: "Telefon", email: "E-post" };
   function fmtFieldVal(k, v) {
     if (k === "deleted_at") return v ? "slettet" : "ikke slettet";
     if (v == null || v === "") return "—";
@@ -426,6 +431,28 @@
       + '</div>'
       + '<p class="note">Demoen (Ren Dunk) ligger uendret på <a href="https://onsite-site.vercel.app">onsite-site.vercel.app</a>. Denne appen kjører på sitt eget domene (origin-isolert fra demoen) og snakker med den ekte, tenant-isolerte backenden.</p>';
   }
+  /* ---- add-to-home-screen (doc 81, small pass): a quiet one-line hint on the LIST only — never during
+   * capture (doc 62), never in standalone, dismissal remembered. iOS = manual steps; Android = the
+   * captured beforeinstallprompt. ---- */
+  var A2HS_KEY = "onsite_a2hs_dismissed";
+  function isStandalone() { try { return (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone === true; } catch (e) { return false; } }
+  function isIOS() { return /iPad|iPhone|iPod/.test(navigator.userAgent || ""); }
+  function a2hsDismissed() { try { return localStorage.getItem(A2HS_KEY) === "1"; } catch (e) { return true; } }
+  function installHintHTML() {
+    if (isStandalone() || a2hsDismissed()) return "";
+    if (S.installEvt) {
+      return '<div class="card" style="padding:11px 14px;display:flex;justify-content:space-between;align-items:center;gap:10px">'
+        + '<span class="note" style="margin:0">📲 Installer OnSite for rask tilgang fra Hjem-skjermen.</span>'
+        + '<span style="display:flex;gap:8px;flex-shrink:0"><button class="btn" style="padding:8px 12px" data-act="a2hsInstall">Installer</button>'
+        + '<button class="btn ghost" style="padding:8px 10px" data-act="a2hsDismiss" aria-label="Ikke nå">✕</button></span></div>';
+    }
+    if (isIOS()) {
+      return '<div class="card" style="padding:11px 14px;display:flex;justify-content:space-between;gap:10px;align-items:center">'
+        + '<span class="note" style="margin:0">📲 Legg til på Hjem-skjerm for rask tilgang: trykk <b>Del</b> (firkanten med pil ↑), velg <b>«Legg til på Hjem-skjerm»</b>.</span>'
+        + '<button class="btn ghost" style="padding:8px 10px;flex-shrink:0" data-act="a2hsDismiss" aria-label="Ikke nå">✕</button></div>';
+    }
+    return "";
+  }
   function renderApp() {
     var email = userEmail() || "innlogget";
     var head =
@@ -462,7 +489,7 @@
 
     var coreCard = '<p class="note">@onsite/core: ' + (coreReady() ? (Object.keys(window.OnSiteCore).length + ' motorer lastet — DB-rader mappes til samme plain-JS-form demoen bruker (rowToCore/coreToRow).') : 'laster…') + '</p>';
 
-    app.innerHTML = head + buildingsCard + addCard + coreCard;
+    app.innerHTML = head + installHintHTML() + buildingsCard + addCard + coreCard;
   }
   /* ============================ section: Eiendeler (1c-2 item 1 — assets) ============================ */
   /* v1.5 delta pull, assets (doc-80 §3): per-building watermark `wm:assets:<bid>`. Delta WITHOUT the
@@ -640,6 +667,141 @@
       drainAll();
     }).catch(function (e) {
       S.secErr.assets = "⚠ Kunne ikke lagre slettingen på enheten (" + ((e && e.message) || "lagringsfeil") + ").";
+      render();
+    });
+  }
+
+  /* ============================ section: Kontakter (small pass — the SECOND class-B table) ============================
+   * The point of this section: it is pure REGISTRATION into the v1.5 machinery. Same outbox ops, same
+   * LWW drain, same watermark delta, same review surface — no new concepts. PII discipline (doc 60):
+   * work contacts only — name · role · one phone · one email; nothing else gets a field. */
+  function loadContacts(bid) {
+    S.secBusy.contacts = true; S.secErr.contacts = null;
+    var uid = userId();
+    var done = function (rows) { S.secBusy.contacts = false; S.contacts = rows; snapshotBuilding(bid); render(); };
+    var fail = function (e) { S.secBusy.contacts = false; S.secErr.contacts = friendly(e); render(); };
+    var full = function () {
+      return prodDb.listContacts(bid).then(function (r) {
+        if (r.error) return fail(r.error);
+        var rows = r.data || [];
+        var nm = maxUpdatedAt(rows, "");
+        if (uid) OFF.cachePut(uid, "wm:contacts:" + bid, nm || null);
+        done(rows);
+      });
+    };
+    if (!uid) { full().catch(fail); return; }
+    OFF.cacheGet(uid, "wm:contacts:" + bid).then(function (wm) {
+      var mark = wm && wm.v;
+      if (!validWm(mark) || S.contacts == null) return full();
+      return prodDb.listContactsDelta(bid, mark).then(function (r) {
+        if (r.error) return fail(r.error);
+        var delta = r.data || [];
+        var byId = {}; (S.contacts || []).forEach(function (c) { byId[c.id] = c; });
+        delta.forEach(function (row) { if (row.deleted_at) delete byId[row.id]; else byId[row.id] = row; });
+        var merged = Object.keys(byId).map(function (k) { return byId[k]; });
+        merged.sort(function (x, y) { return ((x.created_at || "")) < ((y.created_at || "")) ? -1 : 1; });
+        var nm = maxUpdatedAt(delta, mark);
+        if (nm !== mark) OFF.cachePut(uid, "wm:contacts:" + bid, nm);
+        done(merged);
+      });
+    }).catch(fail);
+  }
+  function contactFormHTML(c) {
+    return '<div class="aform">'
+      + '<label>Navn *</label><input id="ct_name" value="' + esc(c.name || "") + '" placeholder="f.eks. Kari Nordmann">'
+      + '<label>Rolle</label><input id="ct_role" value="' + esc(c.role || "") + '" placeholder="styreleder / vaktmester / rørlegger">'
+      + '<div class="row2"><div style="flex:1"><label>Telefon (jobb)</label><input id="ct_phone" inputmode="tel" value="' + esc(c.phone || "") + '"></div>'
+      + '<div style="flex:1"><label>E-post (jobb)</label><input id="ct_email" inputmode="email" value="' + esc(c.email || "") + '"></div></div>'
+      + '<div class="bar"><button class="btn" data-act="contactSave">' + (c.id ? 'Lagre endringer' : 'Lagre kontakt') + ' →</button>'
+      + '<button class="btn ghost" data-act="contactCancel">Avbryt</button></div></div>';
+  }
+  function sectionContactsHTML(b) {
+    var body;
+    if (S.secBusy.contacts && S.contacts == null) body = '<div class="empty"><span class="spin"></span>Henter kontakter…</div>';
+    else if (!S.contacts || !S.contacts.length) body = '<div class="empty">Ingen kontakter for dette bygget ennå.</div>';
+    else { var cPend = pendingOpByRecord("contacts"); body = S.contacts.map(function (c) {
+      var meta = [c.role, c.phone, c.email].filter(Boolean).join(' · ');
+      return '<div class="bldg"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><span><span class="t">👤 ' + esc(c.name || "(uten navn)") + opChip(cPend[c.id]) + '</span>'
+        + (meta ? '<span class="d">' + esc(meta) + '</span>' : '') + '</span>'
+        + '<span style="display:flex;gap:6px;flex-shrink:0"><button class="btn ghost" style="padding:7px 10px" data-act="contactEdit" data-id="' + esc(c.id) + '">✎</button>'
+        + '<button class="btn ghost" style="padding:7px 10px" data-act="contactDel" data-id="' + esc(c.id) + '">🗑</button></span></div></div>';
+    }).join(""); }
+    return '<div class="card"><div class="ct">👥 Kontakter <span class="muted" style="font-weight:600">· ' + (S.contacts ? S.contacts.length : '…') + ' · kun arbeidskontakter</span></div>'
+      + (S.secMsg.contacts ? '<div class="msg ok">' + esc(S.secMsg.contacts) + '</div>' : '')
+      + (S.secErr.contacts ? '<div class="msg err">' + esc(S.secErr.contacts) + '</div>' : '')
+      + body
+      + (S.editContact ? contactFormHTML(S.editContact) : '<div class="bar"><button class="btn ghost" data-act="contactNew">＋ Legg til kontakt</button></div>')
+      + '<p class="note" style="margin-bottom:0">Kun arbeidskontakter: navn, rolle, jobbtelefon, jobb-e-post — ingen personopplysninger utover det.</p>'
+      + '</div>';
+  }
+  function contactSave() {
+    var ec = S.editContact, b = buildingById(S.view.id); if (!ec || !b) return;
+    var uid = userId();
+    if (!S.tenant || !S.tenant.id || !uid) { S.secErr.contacts = "Mangler tenant/bruker (åpne appen på nett én gang først)."; render(); return; }
+    var row = { name: val("ct_name"), role: val("ct_role") || null, phone: val("ct_phone") || null, email: val("ct_email") || null };
+    if (!row.name) { S.secErr.contacts = "Navn må fylles ut."; render(); return; }
+    S.secErr.contacts = null; S.secMsg.contacts = null;
+    var op, after;
+    if (ec.id) {
+      var base = (S.contacts || []).filter(function (x) { return x.id === ec.id; })[0] || {};
+      after = {}; for (var mk in base) after[mk] = base[mk]; for (var rk in row) after[rk] = row[rk]; after.id = ec.id;
+      if (base.updated_at) {
+        var fields = { id: ec.id }, changed = false;
+        for (var k in row) {
+          var oldV = base[k] == null ? null : base[k], newV = row[k] == null ? null : row[k];
+          if (oldV !== newV) { fields[k] = row[k]; changed = true; }
+        }
+        if (!changed) { S.editContact = null; S.secMsg.contacts = "Ingen endringer."; render(); return; }
+        op = { entity: "contacts", op: "update", payload: fields, baseUpdatedAt: base.updated_at,
+          tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: row.name };
+      } else {
+        var re = {}; for (var pk in row) re[pk] = row[pk];
+        re.id = ec.id; re.tenant_id = S.tenant.id; re.building_id = b.id;
+        op = { entity: "contacts", op: "insert", payload: re, baseUpdatedAt: null,
+          tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: row.name };
+      }
+    } else {
+      row.id = OFF.uuid(); row.tenant_id = S.tenant.id; row.building_id = b.id;
+      op = { entity: "contacts", op: "insert", payload: row, baseUpdatedAt: null,
+        tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: row.name };
+      after = row;
+    }
+    OFF.queueOp(op).then(function () {
+      if (ec.id) S.contacts = (S.contacts || []).map(function (x) { return x.id === ec.id ? after : x; });
+      else S.contacts = (S.contacts || []).concat([after]);
+      S.editContact = null;
+      S.secMsg.contacts = "Lagret på enheten: " + after.name + " — synkes.";
+      snapshotBuilding(b.id);
+      refreshPending(function () { render(); });
+      drainAll();
+    }).catch(function (e) {
+      S.secErr.contacts = "⚠ Kunne IKKE lagre på enheten (" + ((e && e.message) || "lagringsfeil") + ") — kontakten er IKKE trygg.";
+      render();
+    });
+  }
+  function contactDelete(id) {
+    var c = (S.contacts || []).filter(function (x) { return x.id === id; })[0];
+    if (!c || !window.confirm("Slette «" + (c.name || "kontakt") + "»?")) return;
+    var uid = userId(), b = buildingById(S.view.id);
+    if (!uid || !b || !S.tenant || !S.tenant.id) return;
+    var op, title = "Slett: " + (c.name || "kontakt");
+    if (c.updated_at) {
+      op = { entity: "contacts", op: "update", payload: { id: id, deleted_at: new Date().toISOString() },
+        baseUpdatedAt: c.updated_at, tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: title };
+    } else {
+      var row = { id: id, tenant_id: S.tenant.id, building_id: b.id, name: c.name || null, role: c.role || null,
+        phone: c.phone || null, email: c.email || null, deleted_at: new Date().toISOString() };
+      op = { entity: "contacts", op: "insert", payload: row, baseUpdatedAt: null,
+        tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: title };
+    }
+    OFF.queueOp(op).then(function () {
+      S.contacts = (S.contacts || []).filter(function (x) { return x.id !== id; });
+      S.secMsg.contacts = "Slettet — lagret på enheten, synkes.";
+      snapshotBuilding(b.id);
+      refreshPending(function () { render(); });
+      drainAll();
+    }).catch(function (e) {
+      S.secErr.contacts = "⚠ Kunne ikke lagre slettingen på enheten (" + ((e && e.message) || "lagringsfeil") + ").";
       render();
     });
   }
@@ -878,6 +1040,7 @@
       + '<div><h1>🏢 ' + esc(b.name) + '</h1><div class="note">' + esc(meta) + esc(synk) + '</div></div></div>'
       + (S.error ? '<div class="msg err">' + esc(S.error) + '</div>' : '')
       + sectionAssetsHTML(b)
+      + sectionContactsHTML(b)
       + sectionProofHTML(b)
       + sectionOffersHTML(b);
   }
@@ -948,6 +1111,15 @@
     assetCancel: function () { S.editAsset = null; render(); },
     assetSave: assetSave,
     assetDel: function (el) { assetDelete(el.getAttribute("data-id")); },
+    // small pass: contacts — the second class-B table, same dispatcher pattern
+    contactNew: function () { S.editContact = { id: null, name: "", role: "", phone: "", email: "" }; S.secMsg.contacts = null; render(); },
+    contactEdit: function (el) { var c = (S.contacts || []).filter(function (x) { return x.id === el.getAttribute("data-id"); })[0]; if (c) { S.editContact = JSON.parse(JSON.stringify(c)); S.secMsg.contacts = null; render(); } },
+    contactCancel: function () { S.editContact = null; render(); },
+    contactSave: contactSave,
+    contactDel: function (el) { contactDelete(el.getAttribute("data-id")); },
+    // small pass: add-to-home-screen (doc 81)
+    a2hsInstall: function () { var e = S.installEvt; S.installEvt = null; render(); if (e && e.prompt) e.prompt(); },
+    a2hsDismiss: function () { try { localStorage.setItem(A2HS_KEY, "1"); } catch (e) {} render(); },
     // item 2: proof
     proofSave: proofSave,
     // item 3: offers (severability toggle)
@@ -1031,6 +1203,12 @@
     if (S.session && S.view.name === "building") loadBuildingSections(S.view.id);
   });
   window.addEventListener("offline", function () { S.offline = true; render(); });
+  // Android/Chromium install prompt: capture, show the quiet button on the list (doc 81)
+  window.addEventListener("beforeinstallprompt", function (e) {
+    e.preventDefault();
+    S.installEvt = e;
+    if (S.view.name === "list") render();
+  });
   document.addEventListener("visibilitychange", function () { if (document.visibilityState === "visible") drainAll(); });
 
   render(); // immediate paint (login screen / cached shell) while getSession resolves

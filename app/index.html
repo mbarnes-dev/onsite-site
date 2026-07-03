@@ -9,6 +9,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>OnSite — produksjon</title>
+<!-- small pass (doc 81): installability — manifest is the beforeinstallprompt prerequisite on Android;
+     iOS reads the icon/title for Legg til på Hjem-skjerm. NB standalone iOS + magic-LINK login is a known
+     wrinkle (the link opens in Safari, not the installed app) — login-code flow is the v2 fix if it bites. -->
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0f766e">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-title" content="OnSite">
 <link rel="stylesheet" href="app.css?v=4">
 </head>
 <body>
@@ -19,6 +26,6 @@
 <script type="module" src="boot.mjs?v=2"></script>
 <!-- offline v1.5 (doc-80): IDB cache + outbox + photo queue + review store + SW registration — MUST load before app.js -->
 <script src="offline.js?v=2"></script>
-<script src="app.js?v=6"></script>
+<script src="app.js?v=7"></script>
 </body>
 </html>
