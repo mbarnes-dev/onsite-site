@@ -20,11 +20,11 @@ The 1c app's login loop depends on dashboard settings that live outside the repo
 | Setting | Required value | Why |
 |---|---|---|
 | Email provider (magic link / OTP) | **Enabled** (done — verified live 2026-07-01) | The only login method the app offers. |
-| **Signups** | Client sends `shouldCreateUser:false` (gate item 2, in code). Dashboard "Allow new users to sign up" can stay on or off — the client refuses regardless; turning it **off** adds defense-in-depth for other clients/keys. | Invite-only until self-serve tenant creation ships (doc 78). |
-| **Email OTP / magic-link expiry** | ≤ 3600 s (1 h) — default acceptable, shorter preferred | Limits the window a forwarded/leaked link is usable. |
-| **Rate limits** (Auth → Rate Limits) | Keep defaults or tighter for "Email sent" | The login form is public; sending is our email quota. |
-| **Leaked password protection** | **Enable** | Free; flagged by the Supabase security advisor. Moot for magic-link-only today, harmless to enable. |
-| **Magic Link email template** (Auth → Emails → Magic Link) | Add the 6-digit code to the body: e.g. `<p>Kode: {{ .Token }}</p>` (keep `{{ .ConfirmationURL }}`) | **OTP pass (2026-07-03):** the app's primary login is now the emailed code (`verifyOtp` — works in the installed iOS app where the link opens in Safari instead). Until the template carries `{{ .Token }}`, the email has no code — the app degrades to the link path with an in-UI hint, but the standalone-iOS fix is inert. |
+| **Signups** | `disable_signup: true` — **set via Management API 2026-07-03.** Client also sends `shouldCreateUser:false` (gate item 2). | Server-side enforcement of invite-only (defense-in-depth beyond the client). Blocks new-user creation, **not** existing-user sign-in. |
+| **Email OTP / magic-link expiry** | ≤ 3600 s (1 h) | `mailer_otp_exp: 3600` — **confirmed already compliant 2026-07-03**, left unchanged. |
+| **Rate limits** (Auth → Rate Limits) | Keep defaults or tighter for "Email sent" | The login form is public; sending is our email quota. (`rate_limit_otp: 30`, default.) |
+| **Leaked password protection** (`password_hibp_enabled`) | **Enable** — but **PRO-PLAN-GATED** | Attempted via Management API 2026-07-03 → **HTTP 402** "available on Pro Plans and up." Cosmetic for magic-link-only (no passwords to leak); the security-advisor WARN persists until Pro. |
+| **Magic Link email template** (`mailer_templates_magic_link_content` + `mailer_subjects_magic_link`) | Body must carry the code (`{{ .Token }}`) + keep `{{ .ConfirmationURL }}`; subject `Logg inn i OnSite` | Attempted via Management API 2026-07-03 → **HTTP 400: "Email template modification is not available for free tier projects using the default email provider. Please upgrade your plan or configure a custom SMTP provider."** **BLOCKED** — this is the headline OTP-in-email goal. Until unblocked, the email is the default link-only template, so the app's `verifyOtp` code path has no code to enter and the standalone-iOS login fix is inert. Note: `mailer_otp_length` is **8** — when the template is unblocked, the emitted code is 8 digits (the app OTP input must accept 8, or set `mailer_otp_length: 6` in the same pass). |
 
 ## Verification steps (after saving the settings)
 
@@ -35,5 +35,20 @@ The 1c app's login loop depends on dashboard settings that live outside the repo
 
 ## Current as of
 
-- **2026-07-02 (Claude, code side):** app deployed on the origin above; `shouldCreateUser:false` live; redirect-error surfacing live. Dashboard values below **unconfirmed** — fill in when set:
-- **Site URL set:** ☐ _______  · **Redirect allowlist set:** ☐ _______  · **OTP expiry:** ☐ _______  · **Rate limits reviewed:** ☐ _______  · **Leaked-password protection on:** ☐ _______  · **`{{ .Token }}` in Magic Link template:** ☐ _______  (Martin: date + initial each)
+- **2026-07-02 (Claude, code side):** app deployed on the origin above; `shouldCreateUser:false` live; redirect-error surfacing live.
+
+- **2026-07-03 (Claude, via Supabase Management API `PATCH /v1/projects/btneqhrqnxmggwowboei/config/auth`):** read the live config and applied what the Free plan allows. Access via a short-lived personal access token in `SUPABASE_ACCESS_TOKEN` (never committed).
+
+  | Setting | API key | Before | After | How |
+  |---|---|---|---|---|
+  | Server-side signup lock | `disable_signup` | `false` | **`true`** ✅ | Management API — landed |
+  | Magic-link expiry | `mailer_otp_exp` | `3600` | `3600` (unchanged) | already compliant |
+  | Site URL | `site_url` | app origin | unchanged ✅ | already correct |
+  | Redirect allowlist | `uri_allow_list` | `…/**` (app origin) | unchanged ✅ | already correct |
+  | Leaked-password protection | `password_hibp_enabled` | `false` | **`false` (BLOCKED)** ⛔ | HTTP 402 — Pro plan only |
+  | Magic-link subject | `mailer_subjects_magic_link` | default | **default (BLOCKED)** ⛔ | HTTP 400 — Free-tier + default provider |
+  | Magic-link template (`{{ .Token }}`) | `mailer_templates_magic_link_content` | default (link-only) | **default (BLOCKED)** ⛔ | HTTP 400 — Free-tier + default provider |
+
+  **Headline goal NOT achieved:** the emailed code (`{{ .Token }}`) requires **either a Pro plan upgrade or a custom SMTP provider** — email-template customization is disabled on Free tier with the default email sender. Until then the magic-link email is link-only, so the app's `verifyOtp` code path has no code and the installed-iOS login problem is unresolved. `mailer_otp_length` is **8** (reconcile with the app's OTP-input length when the template is unblocked). Advisor after this pass: the single security WARN is still `auth_leaked_password_protection` ([remediation](https://supabase.com/docs/guides/auth/password-security#password-strength-and-leaked-password-protection)) — cosmetic for passwordless.
+
+- **Martin — live proof after any settings change:** request login from the app; confirm existing-user sign-in still works with `disable_signup:true`. Date + initials: ______________
