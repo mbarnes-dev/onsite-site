@@ -16,7 +16,9 @@
 <meta name="theme-color" content="#0f766e">
 <link rel="apple-touch-icon" href="icon-192.png">
 <meta name="apple-mobile-web-app-title" content="OnSite">
-<link rel="stylesheet" href="app.css?v=5">
+<!-- onboarding B: vendored Leaflet (no CDN — strict CSP script-src 'self'); Kartverket tiles via img-src -->
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+<link rel="stylesheet" href="app.css?v=6">
 </head>
 <body>
 <div class="wrap"><div id="app"></div></div>
@@ -25,7 +27,8 @@
 <!-- @onsite/core: same committed static ESM bundle as the demo, built into app/ by packages/core/build.mjs -->
 <script type="module" src="boot.mjs?v=2"></script>
 <!-- offline v1.5 (doc-80): IDB cache + outbox + photo queue + review store + SW registration — MUST load before app.js -->
+<script src="vendor/leaflet/leaflet.js"></script>
 <script src="offline.js?v=3"></script>
-<script src="app.js?v=10"></script>
+<script src="app.js?v=11"></script>
 </body>
 </html>

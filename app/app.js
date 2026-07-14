@@ -27,6 +27,8 @@
     view: { name: "list" }, assets: null, proof: null, offers: null, editAsset: null, secBusy: {}, secErr: {}, secMsg: {},
     // contacts port (small pass): second class-B table riding the SAME v1.5 outbox/LWW/delta machinery
     contacts: null, editContact: null, installEvt: null,
+    // onboarding B: zones (class B) + the drafted zone photo
+    zones: null, editZone: null, zonePhoto: null,
     // onboarding A (doc-82): the Step-0 registry-prefill wizard state (search → confirm → create)
     nb: null,
     // OTP pass: the email a code was sent to — verifyOtp must target IT, not a later-edited input
@@ -250,7 +252,7 @@
   }
   function snapshotBuilding(bid) {   // write the per-building snapshot after any section refresh
     var uid = userId(); if (!uid) return;
-    OFF.cachePut(uid, "b:" + bid, { assets: S.assets, proof: S.proof, offers: S.offers, contacts: S.contacts });
+    OFF.cachePut(uid, "b:" + bid, { assets: S.assets, proof: S.proof, offers: S.offers, contacts: S.contacts, zones: S.zones });
     S.snapTs = Date.now();
   }
 
@@ -300,6 +302,15 @@
     return (s || "").toLowerCase().replace(/(^|[\s\-\/])([a-zà-ÿ])/g, function (m, p, c) { return p + c.toUpperCase(); })
       .replace(/\bAs\b/g, "AS").replace(/\bUsbl\b/g, "USBL").replace(/\bObos\b/g, "OBOS")
       .replace(/\bKpmg\b/g, "KPMG").replace(/\bBbl\b/g, "BBL").replace(/\bBrl\b/g, "BRL").replace(/\bSa\b/g, "SA").replace(/\bDa\b/g, "DA");
+  }
+  // registry-name normalisation (housekeeping, live artifact 14 Jul: "…9a, 9b Og9c" → "…9A, 9B og 9C"):
+  // title-case real words, house-number letters UPPER (9a→9A), conjunctions og/i/på/ved lowercase mid-name,
+  // split a conjunction glued to a number (Og9c→og 9C), spaces preserved.
+  function normOrgName(s) {
+    return titleCase(s)
+      .replace(/\b(og|i|på|ved)(\d)/gi, function (m, w, d) { return w + " " + d; })
+      .replace(/(\d)([a-zæøå])\b/g, function (m, d, c) { return d + c.toUpperCase(); })
+      .replace(/(\S\s+)(Og|I|På|Ved)\b/g, function (m, pre, w) { return pre + w.toLowerCase(); });
   }
   function personName(p) { var n = (p && p.navn) || {}; return [n.fornavn, n.mellomnavn, n.etternavn].filter(Boolean).join(" "); }
   function brregSearch(name, cb) {
@@ -379,7 +390,7 @@
   // the real street + 📍 Geokod resolves gnr/bnr/coords.
   function prefillFromBrreg(e) {
     var of = (e.organisasjonsform || {});
-    return { source: "Brønnøysund", name: titleCase(e.navn), orgnr: e.organisasjonsnummer || "", orgform: (of.beskrivelse || of.kode || ""),
+    return { source: "Brønnøysund", name: normOrgName(e.navn), orgnr: e.organisasjonsnummer || "", orgform: (of.beskrivelse || of.kode || ""),
       addr: "", postnummer: "", poststed: "", kommunenavn: "", kommunenummer: "", gnr: "", bnr: "", lat: null, lon: null, units: 0,
       forvalter: "", styreleder: "", entrances: null, oppgangLoading: false };
   }
@@ -475,22 +486,23 @@
   function buildingById(id) { return (S.buildings || []).filter(function (b) { return b.id === id; })[0] || null; }
   function discardProofDraft() {   // an abandoned draft photo never lingers in the queue store
     if (S.proofPhoto) { try { OFF.delPhoto(S.proofPhoto.path); } catch (e) {} }
-    S.proofPhoto = null; S.proofDraft = null;
+    if (S.zonePhoto) { try { OFF.delPhoto(S.zonePhoto.path); } catch (e) {} }
+    S.proofPhoto = null; S.proofDraft = null; S.zonePhoto = null;
   }
   function openBuilding(id) {
     discardProofDraft();
     S.view = { name: "building", id: id };
-    S.assets = null; S.proof = null; S.offers = null; S.contacts = null; S.editAsset = null; S.editContact = null; S.secErr = {}; S.secMsg = {}; S.msg = null; S.error = null; S.snapTs = null;
+    S.assets = null; S.proof = null; S.offers = null; S.contacts = null; S.zones = null; S.editAsset = null; S.editContact = null; S.editZone = null; S.secErr = {}; S.secMsg = {}; S.msg = null; S.error = null; S.snapTs = null;
     render();
     loadBuildingSections(id);   // cache-first paint, then background refresh; each section surfaces its own errors (C1)
   }
   function closeBuilding() { discardProofDraft(); S.view = { name: "list" }; S.editAsset = null; S.msg = null; S.error = null; render(); }
   function loadBuildingSections(id) {
     var uid = userId();
-    var start = function () { refreshPending(); if (!S.session || !navigator.onLine) { render(); return; } loadAssets(id); loadContacts(id); loadProof(id); loadOffers(id); };
+    var start = function () { refreshPending(); if (!S.session || !navigator.onLine) { render(); return; } loadAssets(id); loadContacts(id); loadZones(id); loadProof(id); loadOffers(id); };
     if (!uid) { start(); return; }
     OFF.cacheGet(uid, "b:" + id).then(function (snap) {
-      if (snap && snap.v) { S.assets = snap.v.assets; S.proof = snap.v.proof; S.offers = snap.v.offers; S.contacts = snap.v.contacts || null; S.snapTs = snap.ts; render(); }
+      if (snap && snap.v) { S.assets = snap.v.assets; S.proof = snap.v.proof; S.offers = snap.v.offers; S.contacts = snap.v.contacts || null; S.zones = snap.v.zones || null; S.snapTs = snap.ts; render(); }
       start();
     }).catch(start);
   }
@@ -511,7 +523,7 @@
         render();
         if (!changed) return;
         // acked (or conflict-resolved) ops → the DELTA pull brings server truth into the cache, chips flip
-        if (S.view.name === "building") { loadAssets(S.view.id); loadContacts(S.view.id); loadProof(S.view.id); }
+        if (S.view.name === "building") { loadAssets(S.view.id); loadContacts(S.view.id); loadZones(S.view.id); loadProof(S.view.id); }
         var u2 = userId();
         if (u2 && S.session && navigator.onLine) {
           pullBuildings(u2).then(function (rows) { S.buildings = rows.map(rowToCore); S.listTs = Date.now(); render(); }).catch(function () {});
@@ -764,7 +776,7 @@
         : items.map(function (it, i) {
           if (nb.results.type === "brreg") {
             var of = (it.organisasjonsform || {});
-            return '<button class="bldg click" data-act="nbPick" data-idx="' + i + '"><span><span class="t">🏢 ' + esc(titleCase(it.navn || "")) + '</span><span class="d">org ' + esc(it.organisasjonsnummer || "") + (of.beskrivelse ? ' · ' + esc(of.beskrivelse) : '') + '</span></span><span class="chev">›</span></button>';
+            return '<button class="bldg click" data-act="nbPick" data-idx="' + i + '"><span><span class="t">🏢 ' + esc(normOrgName(it.navn || "")) + '</span><span class="d">org ' + esc(it.organisasjonsnummer || "") + (of.beskrivelse ? ' · ' + esc(of.beskrivelse) : '') + '</span></span><span class="chev">›</span></button>';
           }
           var pa = parseAddr(it);
           return '<button class="bldg click" data-act="nbPick" data-idx="' + i + '"><span><span class="t">📍 ' + esc(pa.adressetekst) + '</span><span class="d">' + esc([pa.poststed, (pa.gnr ? 'gnr ' + pa.gnr + '/' + pa.bnr : '')].filter(Boolean).join(' · ')) + '</span></span><span class="chev">›</span></button>';
@@ -1114,6 +1126,307 @@
     });
   }
 
+  /* ============================ section: Kart + soner (onboarding B — zones, class B) ============================
+   * The tagged service zone is the product's central object (won→run→grow). Drawn on a Kartverket-tiled
+   * Leaflet map, measured with the same geodesic math as the demo/@onsite/core, persisted through the v1.5
+   * class-B machinery (outbox/LWW/tombstones/deltas) exactly like assets/contacts — this is UI + geometry,
+   * not new sync. Map lifecycle: the app re-renders innerHTML wholesale, so the map rebuilds per render with
+   * the view preserved in module vars; draw interaction updates map layers directly (never triggers render). */
+  var ZONE_SERVICES = [
+    { key: "snow", label: "Snø / vinter", swatch: "❄️", stroke: "#1d4ed8" },
+    { key: "grass", label: "Gress / plen", swatch: "🌿", stroke: "#15803d" },
+    { key: "greenery", label: "Grønt / bed / hekk", swatch: "🌳", stroke: "#b5790b" },
+    { key: "cleaning-ext", label: "Utvendig renhold", swatch: "🧼", stroke: "#0369a1" },
+    { key: "other", label: "Annet", swatch: "▫️", stroke: "#6b7670" }
+  ];
+  var ZONE_METHODS = { snow: [{ key: "machine", label: "Maskin" }, { key: "hand", label: "Hånd / manuell" }],
+    grass: [{ key: "mow", label: "Klipping" }, { key: "edge", label: "Kantklipp" }, { key: "gartner", label: "Gartner / bed" }],
+    greenery: [{ key: "gartner", label: "Beskjæring / bed" }], "cleaning-ext": [{ key: "wash", label: "Vask" }], other: [] };
+  var ZONE_CONSTRAINTS = [{ key: "none", label: "Ingen" }, { key: "delicate", label: "Ømtålig" }, { key: "no-go", label: "Ikke kjør / no-go" }, { key: "access-tight", label: "Trang adkomst" }];
+  function zoneSvcDef(k) { return ZONE_SERVICES.filter(function (s) { return s.key === k; })[0] || ZONE_SERVICES[4]; }
+  function zoneMethodLabel(z) { var ms = ZONE_METHODS[z.service] || []; var m = ms.filter(function (x) { return x.key === z.method; })[0]; return m ? m.label : ""; }
+  function zoneDefaultMethod(s) { var ms = ZONE_METHODS[s] || []; return ms.length ? ms[0].key : null; }
+  // geodesic measurement — identical math to @onsite/core's node-tested geoArea/geoLength (kept inline so it
+  // never depends on the deferred core bundle's load timing; the demo keeps its own copy for the same reason).
+  function zGeoArea(pts) { if (pts.length < 3) return 0; var R = 6378137, lat0 = 0; pts.forEach(function (p) { lat0 += p[0]; }); lat0 = (lat0 / pts.length) * Math.PI / 180;
+    var xy = pts.map(function (p) { return [R * (p[1] * Math.PI / 180) * Math.cos(lat0), R * (p[0] * Math.PI / 180)]; });
+    var a = 0; for (var i = 0; i < xy.length; i++) { var j = (i + 1) % xy.length; a += xy[i][0] * xy[j][1] - xy[j][0] * xy[i][1]; } return Math.abs(a) / 2; }
+  function zHav(a, b) { var R = 6378137, dLat = (b[0] - a[0]) * Math.PI / 180, dLon = (b[1] - a[1]) * Math.PI / 180, la1 = a[0] * Math.PI / 180, la2 = b[0] * Math.PI / 180;
+    var h = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(la1) * Math.cos(la2) * Math.sin(dLon / 2) * Math.sin(dLon / 2); return 2 * R * Math.asin(Math.sqrt(h)); }
+  function zGeoLength(pts) { var d = 0; for (var i = 1; i < pts.length; i++) d += zHav(pts[i - 1], pts[i]); return d; }
+  function ringLL(coords) { return coords.map(function (p) { return [p[1], p[0]]; }); }   // GeoJSON [lng,lat] → Leaflet [lat,lng]
+  function toLL(latlngs) { return latlngs.map(function (p) { return [p.lat, p.lng]; }); }
+  function centroidLL(ll) { var la = 0, lo = 0; ll.forEach(function (p) { la += p[0]; lo += p[1]; }); return [la / ll.length, lo / ll.length]; }
+  function fmtArea(n) { return Math.round(n).toLocaleString("no") + " m²"; }
+  function fmtLen(n) { return Math.round(n).toLocaleString("no") + " m"; }
+  function zoneRecompute(z) {
+    if (z.geometry.type === "Polygon") { z.area_m2 = Math.round(zGeoArea(ringLL(z.geometry.coordinates[0]))); z.length_m = null; }
+    else if (z.geometry.type === "LineString") { z.length_m = Math.round(zGeoLength(ringLL(z.geometry.coordinates))); z.area_m2 = null; }
+    else { z.area_m2 = null; z.length_m = null; }
+    return z;
+  }
+  function zoneMeasureStr(z) { return z.area_m2 != null ? fmtArea(z.area_m2) : z.length_m != null ? fmtLen(z.length_m) : "punkt"; }
+  function ZONE_COLOR(z) {
+    if (z.constraint === "no-go") return { stroke: "#b3261e", fill: "#b3261e" };
+    if (z.service === "snow") return z.method === "hand" ? { stroke: "#ca8a04", fill: "#eab308" } : { stroke: "#1d4ed8", fill: "#1d4ed8" };
+    if (z.service === "grass") return z.method === "edge" ? { stroke: "#0f766e", fill: "#0f766e" } : z.method === "gartner" ? { stroke: "#b5790b", fill: "#f59e0b" } : { stroke: "#15803d", fill: "#22c55e" };
+    if (z.service === "greenery") return { stroke: "#b5790b", fill: "#f59e0b" };
+    if (z.service === "cleaning-ext") return { stroke: "#0369a1", fill: "#38bdf8" };
+    return { stroke: "#6b7670", fill: "#9ca3af" };
+  }
+  function zoneStyle(z) { var c = ZONE_COLOR(z); var poly = z.geometry.type === "Polygon";
+    return { color: c.stroke, weight: 2, opacity: 1, fillColor: c.fill, fillOpacity: poly ? 0.32 : 0, dashArray: (z.constraint === "no-go" || z.constraint === "delicate") ? "6 4" : null }; }
+  function zoneSwatchHTML(z) { var c = ZONE_COLOR(z); return '<span style="display:inline-block;width:11px;height:11px;border-radius:3px;background:' + c.fill + ';border:1.5px solid ' + c.stroke + ';vertical-align:-1px"></span>'; }
+  /* row ↔ core (note: DB column is constraint_note; the drawn shape uses `constraint`) */
+  function zoneRowToCore(row) {
+    return { id: row.id, service: row.service || "other", method: row.method || null, geometry: row.geometry || null,
+      area_m2: row.area_m2, length_m: row.length_m, priority: row.priority, constraint: row.constraint_note || "none",
+      label: row.label || "", notes: row.notes || "", photoIds: row.photo_ids || [], _row: row };
+  }
+  function zoneToRow(z) {
+    return { service: z.service, method: z.method || null, geometry: z.geometry, area_m2: z.area_m2 != null ? z.area_m2 : null,
+      length_m: z.length_m != null ? z.length_m : null, priority: z.priority != null ? z.priority : null,
+      constraint_note: z.constraint || "none", label: (z.label || "").trim() || null, notes: (z.notes || "").trim() || null,
+      photo_ids: (z.photoIds && z.photoIds.length) ? z.photoIds : null };
+  }
+  /* delta pull, zones (doc-80 §3): per-building watermark wm:zones:<bid>, tombstones ride the delta */
+  function loadZones(bid) {
+    S.secBusy.zones = true; S.secErr.zones = null;
+    var uid = userId();
+    var done = function (list) { S.secBusy.zones = false; S.zones = list; snapshotBuilding(bid); render(); };
+    var fail = function (e) { S.secBusy.zones = false; S.secErr.zones = friendly(e); render(); };
+    var full = function () {
+      return sb.from("zones").select("*").eq("building_id", bid).is("deleted_at", null).order("created_at", { ascending: true }).then(function (r) {
+        if (r.error) return fail(r.error);
+        var rows = r.data || []; var nm = maxUpdatedAt(rows, "");
+        if (uid) OFF.cachePut(uid, "wm:zones:" + bid, nm || null);
+        done(rows.map(zoneRowToCore));
+      });
+    };
+    if (!uid) { full().catch(fail); return; }
+    OFF.cacheGet(uid, "wm:zones:" + bid).then(function (wm) {
+      var mark = wm && wm.v;
+      if (!validWm(mark) || S.zones == null) return full();
+      return sb.from("zones").select("*").eq("building_id", bid).gt("updated_at", mark).then(function (r) {
+        if (r.error) return fail(r.error);
+        var delta = r.data || [], byId = {}; (S.zones || []).forEach(function (z) { byId[z.id] = z; });
+        delta.forEach(function (row) { if (row.deleted_at) delete byId[row.id]; else byId[row.id] = zoneRowToCore(row); });
+        var merged = Object.keys(byId).map(function (k) { return byId[k]; });
+        merged.sort(function (x, y) { return (((x._row && x._row.created_at) || "")) < (((y._row && y._row.created_at) || "")) ? -1 : 1; });
+        var nm = maxUpdatedAt(delta, mark); if (nm !== mark) OFF.cachePut(uid, "wm:zones:" + bid, nm);
+        done(merged);
+      });
+    }).catch(fail);
+  }
+
+  /* ---- Leaflet map lifecycle (rebuild-per-render, view preserved) ---- */
+  var KARTVERKET = "https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/{z}/{y}/{x}.png";
+  var zmap = null, zmapBid = null, zmapView = null, zoneLayer = null;
+  var drawMode = null, drawPts = [], drawTemp = null, drawVert = null;
+  function renderZoneLayers() {
+    if (!zmap) return;
+    if (zoneLayer) zoneLayer.clearLayers(); else zoneLayer = L.layerGroup().addTo(zmap);
+    (S.zones || []).forEach(function (z) {
+      if (!z.geometry) return;
+      if (z.geometry.type === "Polygon") {
+        var ll = ringLL(z.geometry.coordinates[0]); var poly = L.polygon(ll, zoneStyle(z)); poly.bindTooltip(zoneTip(z), { sticky: true }); poly.addTo(zoneLayer);
+        if (z.service === "snow" && z.priority) L.marker(centroidLL(ll), { interactive: false, icon: L.divIcon({ className: "", html: '<div class="ob-zprio">' + z.priority + '</div>', iconSize: [22, 22], iconAnchor: [11, 11] }) }).addTo(zoneLayer);
+      } else if (z.geometry.type === "LineString") {
+        var pl = L.polyline(ringLL(z.geometry.coordinates), zoneStyle(z)); pl.bindTooltip(zoneTip(z), { sticky: true }); pl.addTo(zoneLayer);
+      } else if (z.geometry.type === "Point") {
+        var p = z.geometry.coordinates; L.marker([p[1], p[0]], { icon: L.divIcon({ className: "", html: '<div class="ob-zpt">📍</div>', iconSize: [26, 26], iconAnchor: [13, 13] }) }).bindTooltip(zoneTip(z), {}).addTo(zoneLayer);
+      }
+    });
+  }
+  function zoneTip(z) { return esc(z.label || zoneMethodLabel(z) || z.service) + " · " + zoneMeasureStr(z) + (z.priority ? " · P" + z.priority : ""); }
+  function mountKartMap(b) {
+    var el = document.getElementById("kart-map");
+    if (!el) { if (zmap) { try { zmap.remove(); } catch (e) {} zmap = null; } return; }
+    if (b.lat == null || b.lon == null || !window.L) return;   // empty-state / no-leaflet handled in HTML
+    if (zmap) { try { zmap.remove(); } catch (e) {} zmap = null; }
+    var view = (zmapBid === b.id && zmapView) ? zmapView : { center: [b.lat, b.lon], zoom: 18 };
+    zmapBid = b.id;
+    try { zmap = L.map(el, { zoomControl: true }).setView(view.center, view.zoom); } catch (e) { zmap = null; return; }
+    L.tileLayer(KARTVERKET, { attribution: "© Kartverket", maxZoom: 20, maxNativeZoom: 18 }).addTo(zmap);
+    zoneLayer = L.layerGroup().addTo(zmap); renderZoneLayers();
+    zmap.on("moveend", function () { try { var c = zmap.getCenter(); zmapView = { center: [c.lat, c.lng], zoom: zmap.getZoom() }; } catch (e) {} });
+    zmap.on("click", function (e) { if (drawMode) handleDrawClick(e.latlng); });
+    zmap.on("dblclick", function () { if (drawMode && drawMode !== "point") finishDraw(); });
+    if (drawMode) { try { zmap.doubleClickZoom.disable(); } catch (e) {} el.style.cursor = "crosshair"; if (drawPts.length) updateDrawTemp(); }
+    setTimeout(function () { if (zmap) zmap.invalidateSize(); }, 60);
+  }
+  /* ---- draw interaction (direct map/DOM updates — never render(), so the map stays stable mid-draw) ---- */
+  function setDrawTools() { var el = document.getElementById("kart-drawtools"); if (el) el.innerHTML = drawToolbarHTML(); }
+  function drawToolbarHTML() {
+    function b(m, l) { return '<button class="chip pendbtn' + (drawMode === m ? " s" : " q") + '" data-act="zoneDraw" data-arg="' + m + '" style="border:none;cursor:pointer">' + l + '</button>'; }
+    return '<span class="note" style="margin:0;font-weight:700">✏️ Tegn sone:</span> ' + b("polygon", "▰ Flate") + " " + b("line", "／ Linje") + " " + b("point", "• Punkt");
+  }
+  function setReadout(html) { var el = document.getElementById("kart-readout"); if (el) el.innerHTML = html || ""; }
+  function startDraw(mode) {
+    if (!zmap) { S.secErr.zones = "Kartet er ikke klart."; render(); return; }
+    cancelDraw(true); drawMode = mode; drawPts = [];
+    try { zmap.doubleClickZoom.disable(); } catch (e) {} zmap.getContainer().style.cursor = "crosshair"; setDrawTools();
+    if (mode === "point") setReadout('<span class="chip q">Klikk på kartet for å plassere punktet</span> <button class="chip pendbtn q" data-act="zoneDrawCancel" style="border:none;cursor:pointer">Avbryt</button>');
+    else setReadout('<span class="chip q">Klikk hjørnene…</span> <button class="chip pendbtn q" data-act="zoneDrawCancel" style="border:none;cursor:pointer">Avbryt</button>');
+  }
+  function endDrawMode() {
+    drawMode = null; drawPts = [];
+    if (drawTemp) { try { zmap.removeLayer(drawTemp); } catch (e) {} drawTemp = null; }
+    if (drawVert) { try { zmap.removeLayer(drawVert); } catch (e) {} drawVert = null; }
+    if (zmap) { zmap.getContainer().style.cursor = ""; try { zmap.doubleClickZoom.enable(); } catch (e) {} }
+    setReadout(""); setDrawTools();
+  }
+  function cancelDraw(silent) { if (drawMode || drawPts.length) endDrawMode(); }
+  function handleDrawClick(latlng) {
+    if (drawMode === "point") { var geom = { type: "Point", coordinates: [latlng.lng, latlng.lat] }; endDrawMode(); openZoneSheet(null, geom); return; }
+    drawPts.push(latlng); updateDrawTemp();
+  }
+  function updateDrawTemp() {
+    if (drawTemp) { try { zmap.removeLayer(drawTemp); } catch (e) {} drawTemp = null; }
+    if (drawVert) drawVert.clearLayers(); else drawVert = L.layerGroup().addTo(zmap);
+    if (drawMode === "polygon" && drawPts.length >= 3) drawTemp = L.polygon(drawPts, { color: "#0f766e", weight: 2, dashArray: "5 4", fillOpacity: 0.12 }).addTo(zmap);
+    else if (drawPts.length >= 1) drawTemp = L.polyline(drawPts, { color: "#0f766e", weight: 2, dashArray: "5 4" }).addTo(zmap);
+    drawPts.forEach(function (p) { L.circleMarker(p, { radius: 4, color: "#0f766e", fillColor: "#fff", fillOpacity: 1, weight: 2 }).addTo(drawVert); });
+    var txt;
+    if (drawMode === "polygon") txt = drawPts.length >= 3 ? ("Areal: " + fmtArea(zGeoArea(toLL(drawPts)))) : ("Sett " + (3 - drawPts.length) + " punkt(er) til");
+    else txt = drawPts.length >= 2 ? ("Lengde: " + fmtLen(zGeoLength(toLL(drawPts)))) : "Sett minst 2 punkter";
+    setReadout('<span class="chip s">' + txt + '</span> <button class="chip pendbtn ok" data-act="zoneDrawFinish" style="border:none;cursor:pointer">✓ Fullfør</button> <button class="chip pendbtn q" data-act="zoneDrawCancel" style="border:none;cursor:pointer">Avbryt</button>');
+  }
+  function finishDraw() {
+    if (!drawMode || drawMode === "point") return;
+    if (drawMode === "line" && drawPts.length < 2) { setReadout('<span class="chip warn">Linje trenger minst 2 punkter</span>'); return; }
+    if (drawMode === "polygon" && drawPts.length < 3) { setReadout('<span class="chip warn">Flate trenger minst 3 punkter</span>'); return; }
+    var type = drawMode === "line" ? "LineString" : "Polygon";
+    var coords = drawPts.map(function (p) { return [p.lng, p.lat]; });
+    var geom = { type: type, coordinates: type === "Polygon" ? [coords.concat([coords[0]])] : coords };
+    endDrawMode(); openZoneSheet(null, geom);
+  }
+  /* ---- tag sheet (inline form in the Kart section) ---- */
+  function openZoneSheet(zone, geom) {
+    S.editZone = zone ? JSON.parse(JSON.stringify(zone))
+      : { id: null, service: "snow", method: zoneDefaultMethod("snow"), priority: null, constraint: "none", label: "", notes: "", geometry: geom, photoIds: [] };
+    zoneRecompute(S.editZone); S.zonePhoto = null; S.secErr.zones = null; render();
+  }
+  function zoneFormHTML(z) {
+    var ms = ZONE_METHODS[z.service] || [];
+    var methodSel = ms.length ? '<label>Metode</label><select id="z_method">' + ms.map(function (m) { return '<option value="' + m.key + '"' + (z.method === m.key ? " selected" : "") + '>' + esc(m.label) + '</option>'; }).join("") + '</select>' : '';
+    var prio = z.service === "snow" ? '<label>Prioritet (ryddrekkefølge)</label><input id="z_priority" type="number" min="1" step="1" value="' + (z.priority || "") + '" placeholder="1">' : '';
+    var gtype = { Polygon: "Flate", LineString: "Linje", Point: "Punkt" }[z.geometry.type] || z.geometry.type;
+    var measEdit = z.geometry.type === "Polygon" ? '<label>Areal (m²) — målt, kan justeres</label><input id="z_area" type="number" min="0" value="' + (z.area_m2 || 0) + '">'
+      : z.geometry.type === "LineString" ? '<label>Lengde (m) — målt, kan justeres</label><input id="z_len" type="number" min="0" value="' + (z.length_m || 0) + '">' : '';
+    var thumb = S.zonePhoto ? '<div class="thumbrow"><img class="proofimg" style="margin-top:0" src="' + S.zonePhoto.dataUrl + '" alt="valgt bilde (lagret på enheten)"><button class="btn ghost" style="padding:7px 10px" data-act="zonePhotoRemove">✕ Fjern</button></div>'
+      : '<input type="file" id="z_photo" accept="image/*">';
+    return '<div class="aform"><div class="note" style="font-weight:800;text-transform:uppercase;font-size:10.5px;letter-spacing:.03em">' + (z.id ? "Rediger sone" : "Ny sone") + ' · ' + gtype + ' · ' + zoneMeasureStr(z) + '</div>'
+      + '<label>Tjeneste</label><select id="z_service" data-zsvc="1">' + ZONE_SERVICES.map(function (s) { return '<option value="' + s.key + '"' + (z.service === s.key ? " selected" : "") + '>' + s.swatch + ' ' + esc(s.label) + '</option>'; }).join("") + '</select>'
+      + methodSel + prio + measEdit
+      + '<label>Begrensning</label><select id="z_constraint">' + ZONE_CONSTRAINTS.map(function (k) { return '<option value="' + k.key + '"' + (z.constraint === k.key ? " selected" : "") + '>' + esc(k.label) + '</option>'; }).join("") + '</select>'
+      + '<label>Etikett</label><input id="z_label" value="' + esc(z.label || "") + '" placeholder="f.eks. Hovedplen vest / Deponi">'
+      + '<label>Notat</label><input id="z_notes" value="' + esc(z.notes || "") + '" placeholder="metode, art/skjøtsel, adkomst…">'
+      + '<label>Bilde (valgfritt)</label>' + thumb
+      + '<div class="bar"><button class="btn" data-act="zoneSave">' + (z.id ? "Lagre endringer" : "Lagre sone") + ' →</button><button class="btn ghost" data-act="zoneCancel">Avbryt</button></div></div>';
+  }
+  function zoneSyncForm() {
+    var z = S.editZone; if (!z) return;
+    z.service = val("z_service") || z.service;
+    var msel = document.getElementById("z_method"); z.method = msel ? msel.value : (ZONE_METHODS[z.service] && ZONE_METHODS[z.service][0] ? null : null);
+    var psel = document.getElementById("z_priority"); z.priority = psel && psel.value ? parseInt(psel.value, 10) : null;
+    z.constraint = val("z_constraint") || "none"; z.label = val("z_label"); z.notes = val("z_notes");
+    zoneRecompute(z);
+    var av = val("z_area"); if (av !== "" && z.geometry.type === "Polygon") z.area_m2 = Math.round(parseFloat(av) || 0);
+    var lv = val("z_len"); if (lv !== "" && z.geometry.type === "LineString") z.length_m = Math.round(parseFloat(lv) || 0);
+  }
+  function zoneSave() {
+    zoneSyncForm();
+    var z = S.editZone, b = buildingById(S.view.id); if (!z || !b) return;
+    var uid = userId();
+    if (!S.tenant || !S.tenant.id || !uid) { S.secErr.zones = "Mangler tenant/bruker (åpne appen på nett én gang først)."; render(); return; }
+    if (S.zonePhoto) { z.photoIds = (z.photoIds || []).concat([S.zonePhoto.path]); }   // append the drafted photo
+    var row = zoneToRow(z), op, after, draftPath = S.zonePhoto && S.zonePhoto.path;
+    if (z.id) {
+      var orig = (S.zones || []).filter(function (x) { return x.id === z.id; })[0];
+      var base = (orig && orig._row) || {};
+      var merged = {}; for (var mk in base) merged[mk] = base[mk]; for (var rk in row) merged[rk] = row[rk]; merged.id = z.id;
+      after = zoneRowToCore(merged);
+      if (base.updated_at) {
+        var fields = { id: z.id }, changed = false;
+        for (var k in row) { if (JSON.stringify(base[k] == null ? null : base[k]) !== JSON.stringify(row[k] == null ? null : row[k])) { fields[k] = row[k]; changed = true; } }
+        if (!changed && !draftPath) { S.editZone = null; S.secMsg.zones = "Ingen endringer."; render(); return; }
+        op = { entity: "zones", op: "update", payload: fields, baseUpdatedAt: base.updated_at, tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: z.label || zoneSvcDef(z.service).label };
+      } else {
+        var re = {}; for (var pk in row) re[pk] = row[pk]; re.id = z.id; re.tenant_id = S.tenant.id; re.building_id = b.id;
+        op = { entity: "zones", op: "insert", payload: re, baseUpdatedAt: null, tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: z.label || zoneSvcDef(z.service).label };
+      }
+    } else {
+      row.id = OFF.uuid(); row.tenant_id = S.tenant.id; row.building_id = b.id;
+      op = { entity: "zones", op: "insert", payload: row, baseUpdatedAt: null, tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: z.label || zoneSvcDef(z.service).label };
+      z.id = row.id; after = zoneRowToCore(row);
+    }
+    var commit = draftPath ? OFF.promotePhoto(draftPath).then(function () { return OFF.queueOp(op); }) : OFF.queueOp(op);
+    commit.then(function () {
+      if (z.id && (S.zones || []).some(function (x) { return x.id === z.id; })) S.zones = S.zones.map(function (x) { return x.id === z.id ? after : x; });
+      else S.zones = (S.zones || []).concat([after]);
+      S.editZone = null; S.zonePhoto = null;
+      S.secMsg.zones = "Lagret på enheten: " + (after.label || zoneSvcDef(after.service).label) + " · " + zoneMeasureStr(after) + " — synkes.";
+      snapshotBuilding(b.id); refreshPending(function () { render(); }); drainAll();
+    }).catch(function (e) { S.secErr.zones = "⚠ Kunne IKKE lagre på enheten (" + ((e && e.message) || "lagringsfeil") + ") — sonen er IKKE trygg."; render(); });
+  }
+  function zoneDelete(id) {
+    var z = (S.zones || []).filter(function (x) { return x.id === id; })[0];
+    if (!z || !window.confirm("Slette sonen «" + (z.label || zoneSvcDef(z.service).label) + "»?")) return;
+    var uid = userId(), b = buildingById(S.view.id);
+    if (!uid || !b || !S.tenant || !S.tenant.id) return;
+    var base = z._row || {}, op, title = "Slett sone: " + (z.label || zoneSvcDef(z.service).label);
+    if (base.updated_at) op = { entity: "zones", op: "update", payload: { id: id, deleted_at: new Date().toISOString() }, baseUpdatedAt: base.updated_at, tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: title };
+    else { var row = zoneToRow(z); row.id = id; row.tenant_id = S.tenant.id; row.building_id = b.id; row.deleted_at = new Date().toISOString(); op = { entity: "zones", op: "insert", payload: row, baseUpdatedAt: null, tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: title }; }
+    OFF.queueOp(op).then(function () {
+      S.zones = (S.zones || []).filter(function (x) { return x.id !== id; });
+      S.secMsg.zones = "Sone slettet — lagret på enheten, synkes."; snapshotBuilding(b.id); refreshPending(function () { render(); }); drainAll();
+    }).catch(function (e) { S.secErr.zones = "⚠ Kunne ikke lagre slettingen (" + ((e && e.message) || "lagringsfeil") + ")."; render(); });
+  }
+  function attachZonePhoto(el) {
+    var b = buildingById(S.view.id); if (!b) return;
+    var uid = userId(), tenantId = S.tenant && S.tenant.id, file = el.files && el.files[0];
+    if (!file) return;
+    if (!uid || !tenantId) { S.secErr.zones = "Mangler tenant/bruker."; render(); return; }
+    var oldPath = S.zonePhoto && S.zonePhoto.path; S.secErr.zones = null;
+    compressImage(file, function (dataUrl) {
+      if (!dataUrl) { S.secErr.zones = "⚠ Kunne IKKE lagre foto — det følger ikke med sonen (kunne ikke lese bildet)."; render(); return; }
+      var path = tenantId + "/" + b.id + "/" + OFF.uuid() + ".jpg";
+      OFF.queuePhoto({ path: path, userId: uid, buildingId: b.id, dataUrl: dataUrl, status: "draft" })
+        .then(function () { return OFF.getPhoto(path); })
+        .then(function (stored) { if (!stored || !stored.dataUrl) throw new Error("lagret foto kunne ikke leses tilbake"); S.zonePhoto = { path: path, dataUrl: stored.dataUrl }; if (oldPath) OFF.delPhoto(oldPath); render(); })
+        .catch(function (e) { S.zonePhoto = null; S.secErr.zones = "⚠ Kunne IKKE lagre foto — det følger ikke med sonen (" + ((e && e.message) || "lagringsfeil") + ")."; render(); });
+    });
+  }
+  function sectionKartHTML(b) {
+    var hasGeo = b.lat != null && b.lon != null;
+    var zPend = pendingOpByRecord("zones");
+    var mapBox = !hasGeo
+      ? '<div class="empty">Ingen koordinater ennå — sett dem via 📍 Geokod i bygg-oppsettet for å tegne soner på kart.</div>'
+      : '<div id="kart-drawtools" class="bar" style="margin:0 0 8px">' + drawToolbarHTML() + '</div>'
+        + '<div id="kart-readout" style="min-height:20px;margin-bottom:6px"></div>'
+        + '<div id="kart-map" class="kart-map"></div>'
+        + (S.offline ? '<div class="note" style="margin-top:6px">🗺️ Kartbakgrunn utilgjengelig uten nett — sonelisten under er fullt brukbar; tegning lagres og synkes.</div>' : '')
+        + '<div class="note" style="margin-top:6px;font-size:11px">Kartdata © Kartverket</div>';
+    var list;
+    if (S.secBusy.zones && S.zones == null) list = '<div class="empty"><span class="spin"></span>Henter soner…</div>';
+    else if (!S.zones || !S.zones.length) list = '<div class="empty">Ingen tegnede soner ennå — bruk <b>Tegn sone</b> over kartet.</div>';
+    else list = ZONE_SERVICES.filter(function (s) { return (S.zones || []).some(function (z) { return z.service === s.key; }); }).map(function (s) {
+      var rows = S.zones.filter(function (z) { return z.service === s.key; }).map(function (z) {
+        var meta = [zoneMethodLabel(z), z.priority ? "P" + z.priority : "", (z.constraint && z.constraint !== "none" ? z.constraint : ""), (z.photoIds && z.photoIds.length ? "📷 " + z.photoIds.length : "")].filter(Boolean).join(" · ");
+        return '<div class="bldg"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><span><span class="t">' + zoneSwatchHTML(z) + ' ' + esc(z.label || zoneMethodLabel(z) || zoneSvcDef(z.service).label) + ' <span class="muted" style="font-weight:600">· ' + zoneMeasureStr(z) + '</span>' + opChip(zPend[z.id]) + '</span>' + (meta ? '<span class="d">' + esc(meta) + '</span>' : '') + '</span>'
+          + '<span style="display:flex;gap:6px;flex-shrink:0"><button class="btn ghost" style="padding:7px 10px" data-act="zoneEdit" data-id="' + esc(z.id) + '">✎</button><button class="btn ghost" style="padding:7px 10px" data-act="zoneDel" data-id="' + esc(z.id) + '">🗑</button></span></div></div>';
+      }).join("");
+      return '<div class="ct" style="color:' + s.stroke + ';margin-top:8px">' + s.swatch + ' ' + esc(s.label) + '</div>' + rows;
+    }).join("");
+    return '<div class="card"><div class="ct">🗺️ Kart + soner <span class="muted" style="font-weight:600">· ' + (S.zones ? S.zones.length : "…") + ' · zones (RLS: kun din tenant)</span></div>'
+      + (S.secMsg.zones ? '<div class="msg ok">' + esc(S.secMsg.zones) + '</div>' : '')
+      + (S.secErr.zones ? '<div class="msg err">' + esc(S.secErr.zones) + '</div>' : '')
+      + mapBox
+      + (S.editZone ? zoneFormHTML(S.editZone) : '')
+      + '<div style="margin-top:10px">' + list + '</div></div>';
+  }
+
   /* ============================ section: Dokumentert arbeid (1c-2 item 2 — completion_proof + photos) ============================ */
   // same pipeline as the demo: FileReader → canvas ≤1280px → JPEG q0.6. Data-URL path keeps the strict CSP
   // (img-src 'self' data: …); the canvas re-encode also strips EXIF/GPS — a relied-upon privacy property.
@@ -1381,10 +1694,12 @@
       + '<div class="bhead"><button class="btn ghost" data-act="back" style="padding:9px 13px">← Bygg</button>'
       + '<div><h1>🏢 ' + esc(b.name) + '</h1><div class="note">' + esc(meta) + esc(synk) + '</div></div></div>'
       + (S.error ? '<div class="msg err">' + esc(S.error) + '</div>' : '')
+      + sectionKartHTML(b)
       + sectionAssetsHTML(b)
       + sectionContactsHTML(b)
       + sectionProofHTML(b)
       + sectionOffersHTML(b);
+    mountKartMap(b);   // (re)attach Leaflet into the fresh #kart-map node after innerHTML is set
   }
 
   function lastEmail() { try { return localStorage.getItem("onsite_prod_email") || ""; } catch (e) { return ""; } }
@@ -1464,6 +1779,15 @@
     contactCancel: function () { S.editContact = null; render(); },
     contactSave: contactSave,
     contactDel: function (el) { contactDelete(el.getAttribute("data-id")); },
+    // onboarding B: zones — draw controls do DIRECT map/DOM updates (no render, map stays stable)
+    zoneDraw: function (el) { startDraw(el.getAttribute("data-arg")); },
+    zoneDrawCancel: function () { cancelDraw(); },
+    zoneDrawFinish: function () { finishDraw(); },
+    zoneEdit: function (el) { var z = (S.zones || []).filter(function (x) { return x.id === el.getAttribute("data-id"); })[0]; if (z) openZoneSheet(z, z.geometry); },
+    zoneCancel: function () { discardProofDraft(); S.editZone = null; render(); },
+    zoneSave: zoneSave,
+    zoneDel: function (el) { zoneDelete(el.getAttribute("data-id")); },
+    zonePhotoRemove: function () { var p = S.zonePhoto; S.zonePhoto = null; if (p) OFF.delPhoto(p.path).then(function () { render(); }); else render(); },
     // small pass: add-to-home-screen (doc 81)
     a2hsInstall: function () { var e = S.installEvt; S.installEvt = null; render(); if (e && e.prompt) e.prompt(); },
     a2hsDismiss: function () { try { localStorage.setItem(A2HS_KEY, "1"); } catch (e) {} render(); },
@@ -1487,6 +1811,10 @@
       render();
     }
     if (e.target && e.target.id === "pf_photo") attachProofPhoto(e.target);   // findings #1: durable at ATTACH time
+    if (e.target && e.target.id === "z_photo") attachZonePhoto(e.target);      // onboarding B: zone photo, same draft pipeline
+    if (e.target && e.target.getAttribute && e.target.getAttribute("data-zsvc")) {   // service change → method options change
+      if (S.editZone) { S.editZone.service = e.target.value; S.editZone.method = zoneDefaultMethod(e.target.value); render(); }
+    }
   });
   // findings #1 (same wipe class): typed proof text survives background renders via a live state mirror
   app.addEventListener("input", function (e) {
