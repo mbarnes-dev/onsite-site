@@ -29,6 +29,8 @@
     contacts: null, editContact: null, installEvt: null,
     // onboarding B: zones (class B) + the drafted zone photo
     zones: null, editZone: null, zonePhoto: null,
+    // onboarding C: the befaring checklist (working copy; persisted on the building row) + offer authoring
+    checklist: null, clOpen: {}, offerBusy: false,
     // onboarding A (doc-82): the Step-0 registry-prefill wizard state (search → confirm → create)
     nb: null,
     // OTP pass: the email a code was sent to — verifyOtp must target IT, not a later-edited input
@@ -55,7 +57,11 @@
   function rowToCore(row) {
     return { id: row.id, name: row.name, orgnr: row.org_nr || "", addr: row.address || "",
       gnr: row.gnr || "", bnr: row.bnr || "", kommunenr: row.kommunenr || "",
-      lat: row.lat, lon: row.lon, createdAt: row.created_at, _row: row };
+      lat: row.lat, lon: row.lon, createdAt: row.created_at,
+      // onboarding C: the befaring checklist rides the building row (buildings.checklist jsonb) — stored
+      // AS the core shape (a plain array of items), so computeOffer reads it with no translation layer.
+      checklist: row.checklist || null,
+      _row: row };
   }
   function coreToRow(tenantId, b) {
     var row = { name: (b.name || "").trim(), org_nr: b.orgnr || null, address: b.addr || null,
@@ -84,9 +90,10 @@
     listContactsDelta: function (bid, wm) { return sb.from("contacts").select("*").eq("building_id", bid).gt("updated_at", wm); },
     listProof: function (bid) { return sb.from("completion_proof").select("*").eq("building_id", bid).order("ts", { ascending: false }); },
     signPhoto: function (path) { return sb.storage.from("photos").createSignedUrl(path, 3600); },
-    // offers stay online-only writes this pass (class D-ish until v2 intents) — severability toggles direct
-    listOffers: function (bid) { return sb.from("offers").select("*").eq("building_id", bid).order("version", { ascending: false }); },
-    updateOffer: function (id, patch) { return sb.from("offers").update(patch).eq("id", id).select().single(); }
+    // onboarding C: offers are READS here too — every offer write (a computed version, a severability
+    // toggle, a hand-set price) now goes through the outbox like any other class-B row, so the win flow
+    // survives a basement. offers has no deleted_at: a version is inserted, never overwritten (doc-82).
+    listOffers: function (bid) { return sb.from("offers").select("*").eq("building_id", bid).order("version", { ascending: false }); }
   };
   // watermarks advance ONLY from returned server rows — never the device clock (doc-80 §3)
   function maxUpdatedAt(rows, current) {
@@ -493,10 +500,13 @@
     discardProofDraft();
     S.view = { name: "building", id: id };
     S.assets = null; S.proof = null; S.offers = null; S.contacts = null; S.zones = null; S.editAsset = null; S.editContact = null; S.editZone = null; S.secErr = {}; S.secMsg = {}; S.msg = null; S.error = null; S.snapTs = null;
+    // onboarding C: the befaring is a working copy held in state — a background delta pull replacing the
+    // building row must never roll back a tick the rep just made. The row stays the persistence target.
+    S.checklist = null; S.clOpen = { 1: true, 3: true }; S.offerBusy = false;
     render();
     loadBuildingSections(id);   // cache-first paint, then background refresh; each section surfaces its own errors (C1)
   }
-  function closeBuilding() { discardProofDraft(); S.view = { name: "list" }; S.editAsset = null; S.msg = null; S.error = null; render(); }
+  function closeBuilding() { flushPendingChecklist(); discardProofDraft(); closeBoardDoc(); S.view = { name: "list" }; S.editAsset = null; S.msg = null; S.error = null; render(); }
   function loadBuildingSections(id) {
     var uid = userId();
     var start = function () { refreshPending(); if (!S.session || !navigator.onLine) { render(); return; } loadAssets(id); loadContacts(id); loadZones(id); loadProof(id); loadOffers(id); };
@@ -515,15 +525,24 @@
       if (cb) cb();
     }).catch(function () { if (cb) cb(); });
   }
+  /* Ticks arrive in BURSTS — a befaring is 40 taps in 90 seconds. Draining per tick means a round-trip and
+   * a full section reload (and, through render(), a Leaflet teardown/rebuild) forty times over. The write
+   * itself is queued immediately — durability is never deferred — but the drain waits for the burst to end. */
+  var drainTimer = null;
+  function scheduleDrain(ms) {
+    if (drainTimer) clearTimeout(drainTimer);
+    drainTimer = setTimeout(function () { drainTimer = null; drainAll(); }, ms || 1200);
+  }
   function drainAll() {
     var uid = userId();
+    if (drainTimer) { clearTimeout(drainTimer); drainTimer = null; }
     if (!uid || !S.session || !navigator.onLine) return;   // draining needs a live token; the offline identity only queues
     OFF.drain(sb, uid, function () { refreshPending(function () { render(); }); }).then(function (changed) {
       refreshPending(function () {
         render();
         if (!changed) return;
         // acked (or conflict-resolved) ops → the DELTA pull brings server truth into the cache, chips flip
-        if (S.view.name === "building") { loadAssets(S.view.id); loadContacts(S.view.id); loadZones(S.view.id); loadProof(S.view.id); }
+        if (S.view.name === "building") { loadAssets(S.view.id); loadContacts(S.view.id); loadZones(S.view.id); loadProof(S.view.id); loadOffers(S.view.id); }
         var u2 = userId();
         if (u2 && S.session && navigator.onLine) {
           pullBuildings(u2).then(function (rows) { S.buildings = rows.map(rowToCore); S.listTs = Date.now(); render(); }).catch(function () {});
@@ -591,10 +610,15 @@
   var FIELD_LABELS = { label: "Navn/merking", type: "Type", area: "Område", access: "Tilgang", notes: "Notat",
     bin: "Dunk-detaljer", lat: "Posisjon (lat)", lon: "Posisjon (lon)", compliance_link: "Kravlenke",
     deleted_at: "Sletting", name: "Navn", address: "Adresse", org_nr: "Org.nr", gnr: "gnr", bnr: "bnr", kommunenr: "Kommunenr",
-    role: "Rolle", phone: "Telefon", email: "E-post" };
+    role: "Rolle", phone: "Telefon", email: "E-post",
+    checklist: "Befaring", data: "Tilbudsinnhold", total_monthly: "Total /mnd", total_yearly: "Total /år",
+    version: "Versjon", status: "Status", cover_note: "Følgebrev" };
   function fmtFieldVal(k, v) {
     if (k === "deleted_at") return v ? "slettet" : "ikke slettet";
     if (v == null || v === "") return "—";
+    // the two blob columns are not diffable field-by-field — summarise them instead of dumping JSON at a rep
+    if (k === "checklist") return (v.length || 0) + " punkter, " + v.filter(function (x) { return x && x.scope && x.scope !== "unknown"; }).length + " avklart";
+    if (k === "data") return "tilbud: " + ((v.modules || []).length) + " moduler, " + kr(v.totalMonthly || 0) + "/mnd";
     if (typeof v === "object") { try { var parts = []; for (var key in v) if (v[key] != null && v[key] !== "") parts.push(key + ": " + v[key]); return parts.join(", ") || "—"; } catch (e) { return JSON.stringify(v); } }
     return String(v);
   }
@@ -1427,6 +1451,355 @@
       + '<div style="margin-top:10px">' + list + '</div></div>';
   }
 
+  /* ============================ section: Befaring (onboarding C — the walkaround checklist) ============================
+   * The doc-38 residential-association walk: 10 zones × service lines, four states per item
+   * (✅ i scope · ⬆ upsell · ✖ finnes ikke · ⬜ ukjent), plus capture, price, notes and photos.
+   *
+   * Ported from the demo's CHECKLIST_TEMPLATE (onboarding.js) — item ids/labels/zones/captureTypes are
+   * VERBATIM, because @onsite/core's computeOffer reads five of those ids by name. Two deliberate
+   * ADDITIONS (marked `added:true`), both of which capture a driver core already reads but the demo could
+   * only get from map markers — which /app does not have:
+   *   · `innganger` → core's `entryways` (manuell rydding/strøing per inngang). The demo counts `entrance`
+   *     MARKERS; Holtet's ground truth is 7 innganger vs 4 oppganger, and without this the snow/hand line
+   *     silently falls back to the oppganger count (kr 344 instead of kr 602 — the 16 530 anchor breaks).
+   *   · `etasjer`  → core's `floors`. Uncaptured, core defaults to 4 — a fabricated number in a codebase
+   *     whose whole discipline is that we don't fabricate. Captured, the trappevask line is honest.
+   *
+   * The demo has NO price input on the checklist at all — `water`/`mats`/`weeds` prices (kr 4 358/mnd of
+   * Holtet's kr 16 530) exist only in its hardcoded seed, unreachable from the UI. PRICE_SRC below makes
+   * the money path explicit per item and puts a kr field exactly where core reads `it.price`. */
+  var WALK_ZONES = [
+    { n: 1, title: "Adkomst og uteareal" }, { n: 2, title: "Avfall" }, { n: 3, title: "Innganger og oppganger" },
+    { n: 4, title: "Heis" }, { n: 5, title: "Fellesareal / svalganger / bod" }, { n: 6, title: "Kjeller / teknisk rom" },
+    { n: 7, title: "Garasje" }, { n: 8, title: "Dører og adgang" }, { n: 9, title: "Tak" }, { n: 10, title: "Roller og admin" }
+  ];
+  var CHECKLIST_TEMPLATE = [
+    // 1. Adkomst og uteareal
+    { id: "lawn", zone: 1, label: "Plen — areal + klippefrekvens", category: "hage", captureType: "area", emoji: "🌿", freq: "Ukentlig i sesong" },
+    { id: "hedges", zone: 1, label: "Hekk/busker — antall + maks høyde", category: "hage", captureType: "count", emoji: "🌳", freq: "2×/sesong" },
+    { id: "trees", zone: 1, label: "Trær <3,5 m (i scope) vs høye ⬆", category: "hage", captureType: "count", emoji: "🌳" },
+    { id: "beds", zone: 1, label: "Staudebed — luking + vårrydding", category: "hage", captureType: "count", emoji: "🌷" },
+    { id: "weeds", zone: 1, label: "Ugras/mose/alger — sprøyterunder", category: "hage", captureType: "condition", emoji: "🌿", freq: "3×/sesong" },
+    { id: "gravel", zone: 1, label: "Elvestein/grus — eddikbehandling", category: "hage", captureType: "note", emoji: "🪨" },
+    { id: "greenwaste", zone: 1, label: "Grøntavfall — rute + deponi", category: "hage", captureType: "note", emoji: "🍂" },
+    { id: "taps", zone: 1, label: "Utekraner — åpne/steng vår/høst", category: "drift", captureType: "count", emoji: "🚰" },
+    { id: "bootscr", zone: 1, label: "Fotskraperister ved innganger", category: "drift", captureType: "count", emoji: "🚪" },
+    { id: "paths", zone: 1, label: "Veier/stier — maskinkost vår (før 17. mai)", category: "anlegg", captureType: "area", emoji: "🧹" },
+    { id: "snow", zone: 1, label: "Snø — brøyteareal, dumpested, strøsoner", category: "vinter", captureType: "area", emoji: "❄️", freq: "Per snøfall >5 cm" },
+    { id: "roofsnow", zone: 1, label: "Takras/snø → taksikring ⬆", category: "vinter", captureType: "condition", emoji: "🏠", upsell: true },
+    // 2. Avfall
+    { id: "wells", zone: 2, label: "Avfallsbrønner + bøtter/askebeger — antall", category: "drift", captureType: "count", emoji: "♻️" },
+    { id: "binwash", zone: 2, label: "Dunk-/containervask ⬆", category: "service", captureType: "boolean", emoji: "♻️", upsell: true },
+    { id: "bulky", zone: 2, label: "Grovavfall — lagringspunkt + henting", category: "drift", captureType: "note", emoji: "📦" },
+    // 3. Innganger og oppganger
+    { id: "oppganger", zone: 3, label: "Antall oppganger — trappevask", category: "renhold", captureType: "count", emoji: "🧹", freq: "Ukentlig" },
+    { id: "etasjer", zone: 3, label: "Antall etasjer per oppgang", category: "renhold", captureType: "count", emoji: "🏢", added: true },
+    { id: "innganger", zone: 3, label: "Antall innganger — manuell rydding + strøing", category: "vinter", captureType: "count", emoji: "🚪", freq: "Per snøfall / is", added: true },
+    { id: "mats", zone: 3, label: "Inngangsmatter — antall + leverandør", category: "renhold", captureType: "count", emoji: "🧺" },
+    { id: "glass", zone: 3, label: "Glass ytterdør / fellesvindu / rekkverk", category: "renhold", captureType: "condition", emoji: "🧼" },
+    { id: "lighting", zone: 3, label: "Lysarmatur — type + reservelager (LED)", category: "drift", captureType: "note", emoji: "💡" },
+    { id: "facade", zone: 3, label: "Fasade → svertesopp/fasadevask ⬆", category: "renhold", captureType: "condition", emoji: "🧼", upsell: true },
+    // 4. Heis
+    { id: "heiser", zone: 4, label: "Antall heiser — gulv/speil/metall", category: "renhold", captureType: "count", emoji: "🛗", freq: "Ukentlig" },
+    { id: "liftctrl", zone: 4, label: "Heis sikkerhetskontroll (2-årlig) — hvem", category: "drift", captureType: "note", emoji: "🛗", compliance: true },
+    // 5. Fellesareal / svalganger / bod
+    { id: "svalg", zone: 5, label: "Svalganger — feiing + glassrekkverk (vår)", category: "renhold", captureType: "condition", emoji: "🧹" },
+    { id: "bodarea", zone: 5, label: "Bod-/korridorareal", category: "renhold", captureType: "note", emoji: "🧹" },
+    // 6. Kjeller / teknisk rom
+    { id: "pipes", zone: 6, label: "Synlige rør/kraner — lekkasjer", category: "drift", captureType: "condition", emoji: "🔧" },
+    { id: "water", zone: 6, label: "Varmtvann/varmepumpe/sluk åpne", category: "drift", captureType: "condition", emoji: "🔧" },
+    { id: "sprinkler", zone: 6, label: "Sprinkler — logg trykk (årskontroll)", category: "drift", captureType: "condition", emoji: "🔧", compliance: true },
+    { id: "vent", zone: 6, label: "Ventilasjon vifter/filter — hvem ⬆", category: "service", captureType: "note", emoji: "🌀", upsell: true },
+    { id: "firepanel", zone: 6, label: "Brannsentral; rømningsveier; brannutstyr", category: "drift", captureType: "condition", emoji: "🔥" },
+    { id: "pumpekum", zone: 6, label: "Pumpekum; varmekabler (sesong)", category: "drift", captureType: "condition", emoji: "🔧" },
+    // 7. Garasje
+    { id: "garage", zone: 7, label: "Garasje — vask/feiing; rampesluk; porter", category: "drift", captureType: "condition", emoji: "🅿️" },
+    // 8. Dører og adgang
+    { id: "doors", zone: 8, label: "Dørpumper/el-sluttstykke/låskasse; hengsler", category: "drift", captureType: "condition", emoji: "🚪" },
+    { id: "access", zone: 8, label: "Nøkler/adgangskoder — fanget", category: "drift", captureType: "note", emoji: "🔑" },
+    // 9. Tak
+    { id: "roof", zone: 9, label: "Tak/takrenner/nedløp; vannbord tilstand", category: "anlegg", captureType: "condition", emoji: "🏠" },
+    // 10. Roller og admin (+ the always-on upsell scan)
+    { id: "round", zone: 10, label: "Ukentlig vaktmesterrunde + tilsyn + rapport", category: "drift", captureType: "note", emoji: "🧰", freq: "Ukentlig" },
+    { id: "approver", zone: 10, label: "Styreleder + preferanser", category: "drift", captureType: "note", emoji: "🏛️" },
+    { id: "manager", zone: 10, label: "Forvalter + rapportering", category: "drift", captureType: "note", emoji: "🗂️" },
+    { id: "vakttlf", zone: 10, label: "Vakttelefon/beredskap 24t", category: "drift", captureType: "boolean", emoji: "📞" },
+    { id: "pest", zone: 10, label: "Skadedyr — tegn? ⬆", category: "service", captureType: "boolean", emoji: "🐜", upsell: true },
+    { id: "playground", zone: 10, label: "Lekeplass — antall + årskontroll ⬆", category: "drift", captureType: "count", emoji: "🛝", upsell: true },
+    { id: "painting", zone: 10, label: "Maling / vannbord / asfalt ⬆", category: "anlegg", captureType: "note", emoji: "🖌️", upsell: true }
+  ];
+  /* Where each item's money comes from — mirrors computeOffer exactly, so the UI can be honest about which
+   * numbers the rep supplies and which the engine derives. `flat` = the captured kr IS the monthly line
+   * (core reads it.price); `count`/`zone`/`rate` = core derives the price from a driver × RATES, so we show
+   * the driver, never a price box that would go nowhere. Any item set to ⬆ upsell gets a kr box regardless
+   * (core turns every upsell with price > 0 into an option line). */
+  var PRICE_SRC = {
+    water: { kind: "flat", to: "Drift / vaktmester" },
+    mats: { kind: "flat", to: "Renhold" },
+    weeds: { kind: "flat", to: "Grønt – skjøtsel" },
+    oppganger: { kind: "count", why: "prises fra antall oppganger × etasjer × sats" },
+    etasjer: { kind: "count", why: "etasjetallet i trappevask-linjen" },
+    heiser: { kind: "count", why: "prises fra antall heiser × sats" },
+    innganger: { kind: "count", why: "prises fra antall innganger × sats" },
+    round: { kind: "rate", why: "fast sats — ukentlig vaktmesterrunde" },
+    lawn: { kind: "zone", why: "prises fra tegnet plen-sone (m²)" },
+    snow: { kind: "zone", why: "prises fra tegnet brøyte-sone (m²)" },
+    hedges: { kind: "zone", why: "prises fra tegnet hekk-linje (m) — opsjon" },
+    beds: { kind: "zone", why: "prises fra tegnet bed-flate (m²) — opsjon" }
+  };
+  function scopeIcon(s) { return ({ "in": "✅", upsell: "⬆", out: "✖", unknown: "⬜" })[s] || "⬜"; }
+  function instantiateChecklist() {
+    return CHECKLIST_TEMPLATE.map(function (t) {
+      return { id: t.id, zone: t.zone, label: t.label, category: t.category, captureType: t.captureType,
+        emoji: t.emoji, freq: t.freq || "", upsell: !!t.upsell, compliance: !!t.compliance,
+        // subtype is what core prints on an upsell offer line — strip the template's trailing ⬆ marker
+        subtype: t.label.replace(/\s*⬆\s*$/, ""),
+        value: null, scope: "unknown", price: 0, oneOff: false, notes: "", photoIds: [] };
+    });
+  }
+  // an existing row's checklist is merged over a fresh template, so a template addition appears on buildings
+  // captured before it existed (and a removed template item stops rendering) — the row stays the source of truth
+  // for everything the rep actually entered.
+  function checklistFor(b) {
+    var saved = (b && b.checklist && b.checklist.length) ? b.checklist : null;
+    var byId = {}; (saved || []).forEach(function (it) { byId[it.id] = it; });
+    return instantiateChecklist().map(function (fresh) {
+      var s = byId[fresh.id]; if (!s) return fresh;
+      var out = fresh;
+      ["value", "scope", "price", "oneOff", "notes", "photoIds", "subtype"].forEach(function (k) {
+        if (s[k] != null) out[k] = s[k];
+      });
+      return out;
+    });
+  }
+  function clItem(id) { return (S.checklist || []).filter(function (x) { return x.id === id; })[0] || null; }
+  function clNum(id) { var it = clItem(id); var n = it ? parseInt(it.value, 10) : NaN; return isNaN(n) ? null : n; }
+  function clPriced(it) {   // does this item get a kr box? exactly when core would read its price
+    if (it.scope === "upsell") return true;
+    return it.scope === "in" && (PRICE_SRC[it.id] || {}).kind === "flat";
+  }
+  function walkTotal() {   // the captured recurring kr the rep has ticked ✅ — NOT the offer (core prices that)
+    return (S.checklist || []).filter(function (it) { return it.scope === "in"; })
+      .reduce(function (s, it) { return s + (it.price || 0); }, 0);
+  }
+  function clCounts() {
+    var n = { "in": 0, upsell: 0, out: 0, unknown: 0 };
+    (S.checklist || []).forEach(function (it) { n[it.scope] = (n[it.scope] || 0) + 1; });
+    return n;
+  }
+
+  /* ---- coalesced WHOLE-ROW writes for the two blob rows (buildings.checklist, offers.data) -------------
+   * Both are a single jsonb blob, and both are edited in BURSTS by the one rep who owns them — 40 checklist
+   * ticks in a walkaround, a handful of module toggles on a draft. Two consequences, which together decide
+   * the write shape:
+   *
+   * 1. ONE queued op per record, its payload rewritten in place. Otherwise a burst queues N ops for one row.
+   *
+   * 2. A WHOLE-ROW UPSERT, not a base-checked field update. This is the subtle half, and the acceptance
+   *    harness is what caught it: a class-B update takes baseUpdatedAt from the LOCAL row, whose updated_at
+   *    only advances once a delta pull brings the server's new value back. Between an op being ACKED and
+   *    that pull landing, the local base is stale — so a tick made in that window matches zero rows and the
+   *    drain (correctly, by its own rules) files it in «Trenger gjennomsyn» as a conflict with ITSELF. During
+   *    a befaring that window is wide open, and the rep would watch their own work pile up as conflicts. An
+   *    upsert is idempotent, always applies, and carries the newest whole value — nothing typed can be
+   *    dropped, and there is no base left to go stale.
+   *
+   * The cost is row-level LWW: a concurrent edit from another device is overwritten rather than flagged.
+   * That is exactly the granularity doc-82 sanctioned — a befaring is one rep on one device — and nothing
+   * else in this app writes a building row (there is no building-edit form) or someone else's draft offer.
+   * The base-checked class-B path is UNCHANGED for the form-shaped tables (assets/contacts/zones), where one
+   * save is one op and the base is always fresh. */
+  function queueCoalesced(spec) {
+    return OFF.listOps(spec.userId).then(function (ops) {
+      var queued = ops.filter(function (o) {
+        return o.entity === spec.entity && o.status === "queued" && o.payload && o.payload.id === spec.id;
+      })[0];
+      if (queued) { queued.payload = spec.fullRow(); return OFF.setOp(queued); }   // same op, newest whole value
+      return OFF.queueOp({ entity: spec.entity, op: "insert", payload: spec.fullRow(), baseUpdatedAt: null,
+        tenantId: spec.tenantId, buildingId: spec.buildingId, userId: spec.userId, title: spec.title });
+    });
+  }
+
+  /* ---- persistence: the checklist rides the building row through the class-B outbox ---- */
+  var clSaveTimer = null;
+  function saveChecklist(b, immediate) {
+    if (clSaveTimer) { clearTimeout(clSaveTimer); clSaveTimer = null; }
+    if (immediate) return flushChecklist(b);
+    clSaveTimer = setTimeout(function () { clSaveTimer = null; flushChecklist(b); }, 400);
+    return Promise.resolve();
+  }
+  /* A typed value (a price, a count, a note) is debounced — so for up to 400 ms it lives in memory and
+   * nowhere else. Every moment that could END that window must close it first: computing an offer (the
+   * offer must not be priced from a checklist the server never received), leaving the building, and the
+   * device going to sleep or the tab being closed — the last kr a rep types before pocketing the iPad is
+   * exactly the one they would never forgive us for dropping. */
+  function flushPendingChecklist() {
+    if (!clSaveTimer) return;
+    clearTimeout(clSaveTimer); clSaveTimer = null;
+    var b = buildingById(S.view.id);
+    if (b && S.checklist) flushChecklist(b);
+  }
+  function flushChecklist(b) {
+    var uid = userId();
+    if (!S.tenant || !S.tenant.id || !uid || !b) { S.secErr.checklist = "Mangler tenant/bruker (åpne appen på nett én gang først)."; render(); return Promise.resolve(); }
+    var cl = S.checklist;
+    // optimistic: state, the building row and the caches take the edit NOW; the chip stays honest until acked
+    b.checklist = cl; if (b._row) b._row.checklist = cl;
+    snapshotBuilding(b.id);
+    return queueCoalesced({
+      entity: "buildings", id: b.id,
+      fullRow: function () { var row = {}; for (var k in (b._row || {})) row[k] = b._row[k]; row.id = b.id; row.checklist = cl; return row; },
+      tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: "Befaring: " + b.name
+    }).then(function () {
+      return OFF.cacheGet(uid, "buildings").then(function (c) {
+        var rows = ((c && c.v) || []).map(function (r) {
+          if (r.id !== b.id) return r;
+          var x = {}; for (var k in r) x[k] = r[k]; x.checklist = cl; return x;
+        });
+        return OFF.cachePut(uid, "buildings", rows);
+      });
+    }).then(function () {
+      S.secErr.checklist = null;
+      refreshPending(function () { refreshBefaring(); });   // surgical — never a full paint mid-befaring
+      scheduleDrain();                                       // one drain per burst of ticks, not one per tick
+    }).catch(function (e) {   // C1: durable queueing failed — loud, never a fake ✓
+      S.secErr.checklist = "⚠ Kunne IKKE lagre befaringen på enheten (" + ((e && e.message) || "lagringsfeil") + ") — endringen er IKKE trygg.";
+      render();
+    });
+  }
+
+  function clScopeBtnsHTML(it) {
+    return ["in", "upsell", "out", "unknown"].map(function (v) {
+      return '<button class="cl-scope s-' + v + (it.scope === v ? ' on' : '') + '" data-act="clScope" data-id="' + esc(it.id) + '" data-arg="' + v + '" title="' + v + '">' + scopeIcon(v) + '</button>';
+    }).join("");
+  }
+  function clCaptureHTML(it) {
+    var v = (it.value == null ? "" : it.value);
+    if (it.captureType === "count") return '<input type="number" min="0" inputmode="numeric" data-clf="value" data-id="' + esc(it.id) + '" value="' + esc("" + v) + '" placeholder="antall">';
+    if (it.captureType === "area") return '<input type="number" min="0" inputmode="numeric" data-clf="value" data-id="' + esc(it.id) + '" value="' + esc("" + v) + '" placeholder="m²">';
+    if (it.captureType === "boolean") return '<label class="cl-bool"><input type="checkbox" data-clf="bool" data-id="' + esc(it.id) + '"' + (v === true ? ' checked' : '') + '> ja</label>';
+    return '<input data-clf="value" data-id="' + esc(it.id) + '" value="' + esc("" + v) + '" placeholder="' + (it.captureType === "condition" ? 'tilstand' : 'notat') + '">';
+  }
+  function clPhotosHTML(it) {
+    var localByPath = {}; (S.pendingPhotos || []).forEach(function (p) { localByPath[p.path] = p; });
+    var thumbs = (it.photoIds || []).map(function (path) {
+      var lp = localByPath[path];
+      var img = (lp && lp.dataUrl) ? '<img class="cl-thumb" src="' + lp.dataUrl + '" alt="bilde (lokalt)">'
+        : '<img class="cl-thumb" data-photo-path="' + esc(path) + '" alt="bilde">';
+      return '<span class="cl-thumbwrap">' + img + '<button class="cl-thumbdel" data-act="clPhotoDel" data-id="' + esc(it.id) + '" data-arg="' + esc(path) + '" title="Fjern">✕</button></span>';
+    }).join("");
+    return '<div class="cl-photos">' + thumbs
+      + '<label class="cl-photobtn" title="Ta bilde">📷<input type="file" accept="image/*" data-clphoto="1" data-id="' + esc(it.id) + '"></label></div>';
+  }
+  function clRowHTML(it) {
+    var src = PRICE_SRC[it.id] || {};
+    var price = clPriced(it)
+      ? '<div class="cl-price"><span class="cl-krlabel">kr</span><input type="number" min="0" step="50" inputmode="numeric" data-clf="price" data-id="' + esc(it.id) + '" value="' + (it.price || 0) + '">'
+        + '<span class="cl-per">' + (it.scope === "upsell" && it.oneOff ? "engangs" : "/mnd") + '</span>'
+        + (it.scope === "upsell" ? '<label class="cl-bool cl-once"><input type="checkbox" data-clf="oneoff" data-id="' + esc(it.id) + '"' + (it.oneOff ? ' checked' : '') + '> engangs</label>' : '')
+        + '</div>'
+        + '<div class="cl-why">' + (it.scope === "upsell" ? '→ opsjonslinje, utenfor grunnbeløpet' : '→ ' + esc(src.to || "tilbudslinje")) + '</div>'
+      : (it.scope === "in" && src.why ? '<div class="cl-why">' + esc(src.why) + '</div>' : '');
+    return '<div class="cl-item' + (it.scope === "upsell" ? ' up' : it.scope === "out" ? ' out' : '') + '">'
+      + '<div class="cl-top"><div class="cl-label">' + it.emoji + ' ' + esc(it.label)
+      + (it.compliance ? ' <span class="chip warn">lovpålagt</span>' : '')
+      + (it.added ? '' : '') + '</div>'
+      + '<div class="cl-scopes">' + clScopeBtnsHTML(it) + '</div></div>'
+      + '<div class="cl-cap">' + clCaptureHTML(it) + (it.freq ? '<span class="cl-freq">' + esc(it.freq) + '</span>' : '') + '</div>'
+      + price
+      + '<input class="cl-note" data-clf="notes" data-id="' + esc(it.id) + '" value="' + esc(it.notes || "") + '" placeholder="notat…">'
+      + clPhotosHTML(it)
+      + '</div>';
+  }
+  function clZoneSummaryHTML(items) {
+    var n = { "in": 0, upsell: 0, out: 0, unknown: 0 };
+    items.forEach(function (it) { n[it.scope] = (n[it.scope] || 0) + 1; });
+    var s = "";
+    if (n["in"]) s += '<span class="chip ok">✅ ' + n["in"] + '</span> ';
+    if (n.upsell) s += '<span class="chip warn">⬆ ' + n.upsell + '</span> ';
+    if (n.unknown) s += '<span class="chip q">⬜ ' + n.unknown + '</span>';
+    return '<span class="cl-zsum">' + s + '</span>';
+  }
+  function befaringHeadHTML(b) {
+    var n = clCounts();
+    return '📋 Befaring <span class="muted" style="font-weight:600">· ' + n["in"] + ' i scope · ' + n.upsell
+      + ' upsell · ' + n.unknown + ' uavklart</span>' + opChip(pendingOpByRecord("buildings")[b.id]);
+  }
+  function befaringBodyHTML() {
+    var byZone = {}; (S.checklist || []).forEach(function (it) { (byZone[it.zone] = byZone[it.zone] || []).push(it); });
+    return WALK_ZONES.map(function (z) {
+      var items = byZone[z.n] || []; if (!items.length) return "";
+      var open = !!S.clOpen[z.n];
+      return '<div class="cl-zone">'
+        + '<button class="cl-zhead" data-act="clZone" data-id="' + z.n + '"><span class="cl-zn">' + z.n + '</span>'
+        + '<span class="cl-zt">' + esc(z.title) + '</span>' + clZoneSummaryHTML(items)
+        + '<span class="cl-zchev">' + (open ? '▾' : '▸') + '</span></button>'
+        + (open ? '<div class="cl-zitems">' + items.map(clRowHTML).join("") + '</div>' : '')
+        + '</div>';
+    }).join("");
+  }
+  function befaringMsgHTML() {
+    return (S.secMsg.checklist ? '<div class="msg ok">' + esc(S.secMsg.checklist) + '</div>' : '')
+      + (S.secErr.checklist ? '<div class="msg err">' + esc(S.secErr.checklist) + '</div>' : '');
+  }
+  function sectionBefaringHTML(b) {
+    if (!S.checklist) return '';
+    return '<div class="card"><div class="ct" id="cl-head">' + befaringHeadHTML(b) + '</div>'
+      + '<div class="note" style="margin-top:-4px">✅ i scope · ⬆ upsell · ✖ finnes ikke · ⬜ ukjent — ticker du ✅ med pris, blir det en tilbudslinje.</div>'
+      + '<div id="cl-msg">' + befaringMsgHTML() + '</div>'
+      + '<div class="cl-total">Fanget fastpris (✅): <b id="cl-total">' + kr(walkTotal()) + '</b> <span class="muted">/mnd — resten prises av soner og antall</span></div>'
+      + '<div id="cl-body">' + befaringBodyHTML() + '</div></div>';
+  }
+  /* A tick must NOT go through render(): that rebuilds #app wholesale, which tears down and re-creates the
+   * Leaflet map (and re-fetches its tiles) — forty times over the course of one befaring. Patch the four
+   * nodes that actually changed instead. Same reason the demo has refreshChecklist() rather than a re-render. */
+  function refreshBefaring() {
+    var b = buildingById(S.view.id);
+    if (!b || !S.checklist) return;
+    var setH = function (id, html) { var el = document.getElementById(id); if (el) el.innerHTML = html; };
+    setH("hdr-chips", headerChipsHTML());   // the «usendte» counter stays honest without a full paint
+    setH("cl-head", befaringHeadHTML(b));
+    setH("cl-msg", befaringMsgHTML());
+    setH("cl-body", befaringBodyHTML());
+    var tot = document.getElementById("cl-total"); if (tot) tot.textContent = kr(walkTotal());
+    hydrateProofPhotos();
+    var btn = document.getElementById("of-compute");
+    if (btn) btn.disabled = S.offerBusy || !offerComputable();
+    var hint = document.getElementById("of-hint");
+    if (hint) hint.style.display = offerComputable() ? "none" : "";
+  }
+  function offerComputable() {
+    return coreReady() && (S.checklist || []).some(function (it) { return it.scope === "in" || it.scope === "upsell"; });
+  }
+  function clPhotoAttach(el) {
+    var b = buildingById(S.view.id), it = clItem(el.getAttribute("data-id"));
+    var uid = userId(), tenantId = S.tenant && S.tenant.id, file = el.files && el.files[0];
+    if (!b || !it || !file) return;
+    if (!uid || !tenantId) { S.secErr.checklist = "Mangler tenant/bruker."; render(); return; }
+    S.secErr.checklist = null;
+    compressImage(file, function (dataUrl) {
+      if (!dataUrl) { S.secErr.checklist = "⚠ Kunne IKKE lagre foto — det følger ikke med befaringen (kunne ikke lese bildet)."; render(); return; }
+      var path = tenantId + "/" + b.id + "/" + OFF.uuid() + ".jpg";
+      // the checklist item IS the form here — there is nothing left to cancel, so the blob is durable and
+      // promoted into the upload queue in one step (same read-back proof as the proof/zone pipelines)
+      OFF.queuePhoto({ path: path, userId: uid, buildingId: b.id, dataUrl: dataUrl, status: "draft" })
+        .then(function () { return OFF.getPhoto(path); })
+        .then(function (stored) {
+          if (!stored || !stored.dataUrl) throw new Error("lagret foto kunne ikke leses tilbake");
+          return OFF.promotePhoto(path);
+        })
+        .then(function () {
+          it.photoIds = (it.photoIds || []).concat([path]);
+          return saveChecklist(b, true);
+        })
+        .catch(function (e) {
+          OFF.delPhoto(path);
+          S.secErr.checklist = "⚠ Kunne IKKE lagre foto — det følger ikke med befaringen (" + ((e && e.message) || "lagringsfeil") + ").";
+          render();
+        });
+    });
+  }
+
   /* ============================ section: Dokumentert arbeid (1c-2 item 2 — completion_proof + photos) ============================ */
   // same pipeline as the demo: FileReader → canvas ≤1280px → JPEG q0.6. Data-URL path keeps the strict CSP
   // (img-src 'self' data: …); the canvas re-encode also strips EXIF/GPS — a relied-upon privacy property.
@@ -1610,91 +1983,391 @@
     });
   }
 
-  /* ============================ section: Tilbud (1c-2 item 3 — offers round-trip) ============================
-   * offers.data carries the SAME modules/lines shape @onsite/core computes; the app never trusts stored
-   * totals — it re-derives them through core (rebuildOfferFlat on a {offer} wrapper) and shows the match.
-   * Computing offers from zones/walkaround stays in later passes; this is persist/render + severability. */
+  /* ============================ section: Tilbud (onboarding C — offer authoring) ============================
+   * The app PRESENTS; @onsite/core PRICES. «Beregn tilbud» maps the building + its drawn zones + the
+   * befaring into the plain customer shape computeOffer expects, and the core engine (the one whose Holtet
+   * kr 16 530 anchor is a node test) returns severable modules with subtotals, per-line driver math and
+   * option lines held outside the recurring total. offers.data stores that shape verbatim; the app never
+   * trusts stored totals — it re-derives them through core on every read and shows the match.
+   *
+   * VERSIONS: a recompute INSERTS the next version and leaves every earlier one intact — a version is never
+   * overwritten in place (doc-82; offers has no deleted_at). Editing the draft you are authoring (module in
+   * or out, a hand-set price) updates THAT version — it is the same offer, still being written. */
   function loadOffers(bid) {
     S.secBusy.offers = true; S.secErr.offers = null;
     prodDb.listOffers(bid).then(function (r) {
       S.secBusy.offers = false;
-      if (r.error) { S.secErr.offers = friendly(r.error); } else { S.offers = r.data || []; snapshotBuilding(bid); }
+      if (r.error) { S.secErr.offers = friendly(r.error); } else { S.offers = mergeQueuedOffers(r.data || [], bid); snapshotBuilding(bid); }
       render();
     });
   }
+  /* A draft that is queued but not yet drained must survive a server re-read — otherwise the rep's own
+   * offer blinks out of the list until the drain lands. The op's payload is the newest truth we have for
+   * that row, so it overlays the server's copy (and wears its «lagret på enheten» chip). */
+  function mergeQueuedOffers(rows, bid) {
+    var byId = {}; rows.forEach(function (r) { byId[r.id] = r; });
+    (S.pendingOps || []).forEach(function (o) {
+      if (o.entity !== "offers" || o.buildingId !== bid || !o.payload || !o.payload.id) return;
+      var p = o.payload, cur = byId[p.id];
+      if (!cur) { byId[p.id] = p; return; }
+      for (var k in p) if (k !== "id") cur[k] = p[k];
+    });
+    return sortOffers(Object.keys(byId).map(function (k) { return byId[k]; }));
+  }
+  function sortOffers(rows) { return rows.slice().sort(function (a, b) { return (b.version || 0) - (a.version || 0); }); }
+  function latestOffer() { var r = S.offers || []; return r.length ? r[0] : null; }
   function kr(n) { return "kr " + (Math.round(n) || 0).toLocaleString("no"); }
+  function krRate(n) {   // a rate can be sub-krone (snø: 0,48 kr/m²/mnd) — kr() would round it to «kr 0» and the driver line would read as a lie
+    if (n == null) return "—";
+    var s = (Math.abs(n) < 10 && n % 1 !== 0) ? n.toFixed(2).replace(".", ",") : (Math.round(n) || 0).toLocaleString("no");
+    return "kr " + s;
+  }
+  function fmtNum(n) { return (Math.round(n) || 0).toLocaleString("no"); }
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
   function coreDerive(data) {   // re-derive totals from the stored shape via core; null if core not loaded yet
     if (!coreReady() || !data || !data.modules) return null;
-    try { var w = { offer: JSON.parse(JSON.stringify(data)) }; window.OnSiteCore.rebuildOfferFlat(w); return w.offer; }
+    try { var w = { offer: clone(data) }; window.OnSiteCore.rebuildOfferFlat(w); return w.offer; }
     catch (e) { return null; }
   }
-  function sectionOffersHTML(b) {
-    var body;
-    if (S.secBusy.offers && S.offers == null) body = '<div class="empty"><span class="spin"></span>Henter tilbud…</div>';
-    else if (!S.offers || !S.offers.length) body = '<div class="empty">Ingen tilbud for dette bygget ennå.</div>';
-    else {
-      var o = S.offers[0], data = o.data || {};
-      var derived = coreDerive(data);
-      var per = (o.period === "år") ? "år" : "mnd";
-      var head = derived
-        ? '<div style="font-size:21px;font-weight:800;letter-spacing:-.02em">' + kr(derived.totalMonthly) + ' <span class="muted" style="font-size:13px;font-weight:650">/' + per + '</span> · ' + kr(derived.totalYearly) + ' <span class="muted" style="font-size:13px;font-weight:650">/år</span></div>'
-        : '<div style="font-size:21px;font-weight:800">' + kr(o.total_monthly) + ' <span class="muted" style="font-size:13px;font-weight:650">/' + per + '</span></div>';
-      var verify = derived
-        ? (Math.round(derived.totalMonthly) === Math.round(o.total_monthly || 0)
-          ? '<div class="msg ok" style="margin:8px 0">✓ Totaler verifisert av @onsite/core etter DB-rundtur (' + kr(derived.totalMonthly) + '/mnd)</div>'
-          : '<div class="msg err" style="margin:8px 0">⚠ Avvik: DB ' + kr(o.total_monthly) + ' vs core ' + kr(derived.totalMonthly) + '</div>')
-        : '<div class="note">@onsite/core laster — totaler vises fra DB inntil verifisert…</div>';
-      var mods = (derived ? derived.modules : (data.modules || [])).map(function (m) {
-        return '<div class="bldg" style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
-          + '<span><span class="t">' + esc(m.title || m.service) + (m.included ? '' : ' <span class="muted">(valgt bort)</span>') + '</span>'
-          + '<span class="d">' + m.lines.length + ' linje' + (m.lines.length !== 1 ? 'r' : '') + ' · kan sies opp separat</span></span>'
-          + '<span style="display:flex;gap:10px;align-items:center;flex-shrink:0"><b>' + kr(m.subtotal) + '</b>'
-          + '<label style="display:flex;gap:5px;align-items:center;font-size:12px;margin:0"><input type="checkbox" data-act="offerModToggle" data-id="' + esc(o.id) + '" data-svc="' + esc(m.service) + '"' + (m.included ? ' checked' : '') + (coreReady() ? '' : ' disabled') + '> med</label></span></div>';
-      }).join("");
-      var opts = (data.optionLines || []).length
-        ? '<div class="note" style="margin-top:8px"><b>Opsjoner (utenfor grunnbeløpet):</b> ' + data.optionLines.map(function (l) { return esc(l.label) + ' (' + kr(l.final) + ')'; }).join(' · ') + '</div>'
-        : '';
-      body = head + verify + mods + opts
-        + (o.cover_note ? '<div class="note" style="margin-top:8px">' + esc(o.cover_note) + '</div>' : '')
-        + '<div class="note" style="margin-top:6px">v' + o.version + ' · status: ' + esc(o.status) + ' · offers.data (jsonb, core-form)</div>';
-    }
-    return '<div class="card"><div class="ct">💰 Tilbud <span class="muted" style="font-weight:600">· offers (RLS: kun din tenant)</span></div>'
-      + (S.secMsg.offers ? '<div class="msg ok">' + esc(S.secMsg.offers) + '</div>' : '')
-      + (S.secErr.offers ? '<div class="msg err">' + esc(S.secErr.offers) + '</div>' : '')
-      + body + '</div>';
+
+  /* ---- DB rows → the customer shape computeOffer reads ---- */
+  var CORE_LAYERS = {
+    // The only marker layer /app materialises. Verbatim from the demo's LAYERS: recordOnly, rate 0 — an
+    // entrance is a DRIVER (core's `entryways`), never a priced line of its own.
+    entrance: { emoji: "🚪", cat: "drift", label: "Inngang / adkomst", measure: "count", unit: "dør", rate: 0, freq: "—", recordOnly: true }
+  };
+  var CAT_LABELS = { drift: "Eiendomsdrift", renhold: "Renhold", hage: "Hage & Gartner", vinter: "Vintertjenester",
+    service: "Servicetjenester", handverk: "Håndverkertjenester", anlegg: "Utemiljø, Bygg & Anlegg" };
+  function catLabel(k) { return CAT_LABELS[k] || ""; }
+  // core calls nowStr() fresh per compute, so each version's createdAt is its own compute moment
+  function nowStr() { try { return new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }); } catch (e) { return "i dag"; } }
+  function buildingToCustomer(b, prevOffer) {
+    // core reads `entryways` from `entrance` markers. /app has no marker model (pass B ported zones, not
+    // pins), so the befaring's `innganger` count MATERIALISES them — one typed number instead of N map taps.
+    var n = clNum("innganger") || 0, markers = [];
+    for (var i = 0; i < n; i++) markers.push({ id: "ent" + i, layer: "entrance", inScope: true });
+    return {
+      id: b.id, name: b.name, addr: b.addr || "", period: "mnd",
+      floors: clNum("etasjer"),   // null → core's own default; captured → the honest trappevask line
+      checklist: (S.checklist || []).map(function (it) {
+        return { id: it.id, scope: it.scope, value: it.value, price: it.price || 0, subtype: it.subtype,
+          label: it.label, oneOff: !!it.oneOff, emoji: it.emoji, category: it.category, compliance: !!it.compliance };
+      }),
+      // plain zone objects, not the app's row-backed ones: computeOffer writes priceLineId back onto whatever
+      // it is handed, and app state is not core's to mutate
+      zones: (S.zones || []).map(function (z) {
+        return { id: z.id, service: z.service, method: z.method, area_m2: z.area_m2, length_m: z.length_m,
+          geometry: z.geometry, label: z.label || "", priority: z.priority, constraint: z.constraint };
+      }),
+      markers: markers, addedLines: [], terms: null,
+      offer: prevOffer || null   // withPrev: hand-edited finals + module choices carry across a recompute
+    };
   }
-  function offerModToggle(el) {
-    var id = el.getAttribute("data-id"), svc = el.getAttribute("data-svc"), want = !!el.checked;
-    var o = (S.offers || []).filter(function (x) { return x.id === id; })[0]; if (!o || !o.data) return;
-    var data = JSON.parse(JSON.stringify(o.data));
-    (data.modules || []).forEach(function (m) { if (m.service === svc) m.included = want; });
-    var derived = coreDerive(data);
-    if (!derived) { S.secErr.offers = "@onsite/core ikke lastet — kan ikke beregne."; render(); return; }
-    S.secBusy.offers = true; S.secErr.offers = null; S.secMsg.offers = null; render();
-    // persist the toggled shape + core-derived totals; C1 — on error nothing pretends to have saved
-    prodDb.updateOffer(id, { data: derived, total_monthly: derived.totalMonthly, total_yearly: derived.totalYearly }).then(function (r) {
-      S.secBusy.offers = false;
-      if (r.error) { S.secErr.offers = friendly(r.error); render(); return; }
-      S.secMsg.offers = (want ? "Modul inkludert" : "Modul valgt bort — kan sies opp separat") + " · ny total " + kr(derived.totalMonthly) + "/mnd";
-      loadOffers(S.view.id);   // re-read: the UI shows what actually persisted
+  function computeOfferNow() {
+    var b = buildingById(S.view.id), uid = userId();
+    if (!b) return;
+    flushPendingChecklist();   // the offer must never be priced from a tick the server has not been told about
+    if (!coreReady()) { S.secErr.offers = "@onsite/core er ikke lastet ennå — vent et øyeblikk og prøv igjen."; render(); return; }
+    if (!S.tenant || !S.tenant.id || !uid) { S.secErr.offers = "Mangler tenant/bruker (åpne appen på nett én gang først)."; render(); return; }
+    if (!(S.checklist || []).some(function (it) { return it.scope === "in" || it.scope === "upsell"; })) {
+      S.secErr.offers = "Ingen befaring ennå — tick av minst én linje (✅ eller ⬆) før du beregner."; render(); return;
+    }
+    var prev = latestOffer();
+    var c = buildingToCustomer(b, prev && prev.data ? clone(prev.data) : null);
+    var offer;
+    try { offer = window.OnSiteCore.computeOffer(c, { nowStr: nowStr, LAYERS: CORE_LAYERS, catLabel: catLabel }); }
+    catch (e) { S.secErr.offers = "Beregningen feilet: " + ((e && e.message) || e); render(); return; }
+    if (!offer.modules.length && !offer.optionLines.length) {
+      S.secErr.offers = "Ingen prisbærende linjer ennå — tegn soner (snø/gress) og fyll inn antall + priser i befaringen."; render(); return;
+    }
+    offer.version = prev ? (prev.version || 0) + 1 : 1;   // insert-new-version: the prior version stays untouched
+    var row = { id: OFF.uuid(), tenant_id: S.tenant.id, building_id: b.id, version: offer.version,
+      period: offer.period || "mnd", total_monthly: offer.totalMonthly, total_yearly: offer.totalYearly,
+      status: "draft", cover_note: offer.coverNote || null, data: offer };
+    S.offerBusy = true; S.secErr.offers = null; S.secMsg.offers = null; render();
+    OFF.queueOp({ entity: "offers", op: "insert", payload: row, baseUpdatedAt: null,
+      tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: "Tilbud v" + offer.version })
+      .then(function () {
+        S.offerBusy = false;
+        S.offers = sortOffers((S.offers || []).concat([row]));
+        S.secMsg.offers = "Tilbud v" + offer.version + " beregnet — " + kr(offer.totalMonthly) + "/mnd · lagret på enheten, synkes.";
+        snapshotBuilding(b.id);
+        refreshPending(function () { render(); });
+        drainAll();
+      })
+      .catch(function (e) {   // C1: never a fake ✓
+        S.offerBusy = false;
+        S.secErr.offers = "⚠ Kunne IKKE lagre tilbudet på enheten (" + ((e && e.message) || "lagringsfeil") + ") — det er IKKE lagret.";
+        render();
+      });
+  }
+  /* An edit to the draft you are authoring — module in/out, a hand-set price — mutates THAT version's blob
+   * and re-derives every total through core. Class-B, through the outbox: it works in a basement. */
+  function offerEdit(rowId, mutate, msg) {
+    var b = buildingById(S.view.id), uid = userId();
+    var row = (S.offers || []).filter(function (x) { return x.id === rowId; })[0];
+    if (!b || !row || !row.data) return;
+    if (!coreReady()) { S.secErr.offers = "@onsite/core er ikke lastet — kan ikke beregne."; render(); return; }
+    if (!S.tenant || !S.tenant.id || !uid) { S.secErr.offers = "Mangler tenant/bruker."; render(); return; }
+    var data = clone(row.data);
+    mutate(data);
+    var w = { offer: data };
+    window.OnSiteCore.rebuildOfferFlat(w);   // core re-derives line prices, module subtotals and the totals
+    row.data = data; row.total_monthly = data.totalMonthly; row.total_yearly = data.totalYearly;
+    S.secErr.offers = null;
+    S.secMsg.offers = msg ? (msg + " · ny total " + kr(data.totalMonthly) + "/mnd") : null;
+    snapshotBuilding(b.id);
+    queueCoalesced({
+      entity: "offers", id: row.id,
+      fullRow: function () { var x = {}; for (var k in row) x[k] = row[k]; return x; },
+      tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: "Tilbud v" + row.version
+    }).then(function () {
+      refreshPending(function () { render(); });
+      scheduleDrain(600);
+    }).catch(function (e) {
+      S.secErr.offers = "⚠ Kunne IKKE lagre endringen på enheten (" + ((e && e.message) || "lagringsfeil") + ").";
+      render();
     });
   }
+  function offerModToggle(el) {
+    var svc = el.getAttribute("data-svc"), want = !!el.checked;
+    var title = "";
+    offerEdit(el.getAttribute("data-id"), function (data) {
+      (data.modules || []).forEach(function (m) { if (m.service === svc) { m.included = want; title = m.title; } });
+    }, want ? "Modul inkludert" : "Modul valgt bort — kan sies opp separat");
+  }
+  function offerLineFinal(el) {
+    var lineId = el.getAttribute("data-line"), v = Math.round(parseFloat(el.value) || 0);
+    offerEdit(el.getAttribute("data-id"), function (data) {
+      (data.modules || []).forEach(function (m) {
+        m.lines.forEach(function (l) {
+          if (l.id !== lineId) return;
+          l.final = v;
+          // `overridden` is DERIVED, never sticky: typing the computed value back releases the line to the
+          // engine again, so the next recompute is free to re-price it from the new measurements.
+          l.overridden = (v !== l.computed);
+          l.price = v;
+        });
+      });
+    }, "Pris satt manuelt");
+  }
+
+  /* ---- the authoring view ---- */
+  function offerLineHTML(o, l) {
+    var driver = (l.qty != null && l.rate != null)
+      ? fmtNum(l.qty) + ' ' + esc(l.unit || "") + ' × ' + krRate(l.rate) + '/' + esc(l.unit || "e") + '/mnd = ' + kr(l.computed)
+      // the "no fabricated numbers" rule: an unpriced line says so — it never back-solves a rate it does not have
+      : (l.computed > 0 ? 'fastpris (fra befaring) = ' + kr(l.computed) : '<span class="of-unpriced">ikke priset ennå — mangler sats/mengde</span>');
+    var partner = l.deliveredBy === "partner" ? ' <span class="chip s">' + esc(l.partnerName || "partner") + ' · partner</span>' : '';
+    var over = l.overridden ? '<span class="of-over">endret fra ' + kr(l.computed) + '</span>' : '';
+    return '<div class="of-line">'
+      + '<div class="of-lmain"><div class="of-llab">' + (l.emoji || "•") + ' ' + esc(l.label) + partner
+      + (l.zoneId ? ' <span title="fra tegnet sone">🗺️</span>' : '') + (l.compliance ? ' <span class="chip warn">lovpålagt</span>' : '') + '</div>'
+      + '<div class="of-ldrv">' + driver + '</div></div>'
+      + '<div class="of-lprice"><input type="number" step="50" inputmode="numeric" data-offf="lineFinal" data-id="' + esc(o.id) + '" data-line="' + esc(l.id) + '" value="' + (l.final || 0) + '">'
+      + '<span class="of-lper">/mnd</span>' + over + '</div></div>';
+  }
+  function offerModuleHTML(o, m) {
+    var open = !!S.clOpen["m:" + m.service];
+    var cadence = (function () { var seen = {}, out = []; m.lines.forEach(function (l) { if (l.cadence && !seen[l.cadence]) { seen[l.cadence] = 1; out.push(l.cadence); } }); return out.slice(0, 2).join(" · ") || "løpende"; })();
+    return '<div class="of-mod' + (m.included ? '' : ' off') + '">'
+      + '<div class="of-mhead">'
+      + '<button class="of-mtoggle" data-act="offerModExpand" data-id="' + esc(m.service) + '"><span class="of-mchev">' + (open ? '▾' : '▸') + '</span> <b>' + esc(m.title || m.service) + '</b></button>'
+      + '<div class="of-mright">'
+      + (m.included ? '<span class="of-msub">' + kr(m.subtotal) + '/mnd</span>' : '<span class="chip q">ikke valgt · kan sies opp separat</span>')
+      + '<label class="of-mincl"><input type="checkbox" data-act="offerModToggle" data-id="' + esc(o.id) + '" data-svc="' + esc(m.service) + '"' + (m.included ? ' checked' : '') + (coreReady() ? '' : ' disabled') + '> med</label>'
+      + '</div></div>'
+      + '<div class="of-mmeta">' + esc(cadence) + ' · oppstart ' + esc(m.startDate || "—") + ' · KPI ' + (m.indexationPct != null ? m.indexationPct : 2.5) + '% (maks ' + (m.cap != null ? m.cap : 3) + '%)</div>'
+      + (open ? '<div class="of-mlines">' + m.lines.map(function (l) { return offerLineHTML(o, l); }).join("") + '</div>' : '')
+      + '</div>';
+  }
+  function offerOptionsHTML(o, data) {
+    var ol = (data.optionLines || []); if (!ol.length) return "";
+    return '<div class="of-opts"><div class="ct" style="margin-bottom:6px">Opsjoner / per gang <span class="muted" style="font-weight:600">· utenfor grunnbeløpet</span></div>'
+      + ol.map(function (l) {
+        var amt = (l.role === "hedge" || l.role === "bed") ? kr(l.final) + '/år' : (l.oneOff ? kr(l.final) + ' eng.' : kr(l.final) + '/mnd');
+        var drv = (l.qty != null && l.rate != null) ? ' <span class="muted" style="font-size:11.5px">· ' + fmtNum(l.qty) + ' ' + esc(l.unit || "") + ' × ' + krRate(l.rate) + '</span>' : '';
+        return '<div class="of-opt"><span>⬆ ' + (l.emoji || "") + ' ' + esc(l.label) + drv + (l.zoneId ? ' 🗺️' : '') + '</span><b>' + amt + '</b></div>';
+      }).join("") + '</div>';
+  }
+  function sectionOffersHTML(b) {
+    var canCompute = offerComputable();
+    var computeBar = '<div class="bar"><button class="btn" id="of-compute" data-act="offerCompute"' + (S.offerBusy || !canCompute ? ' disabled' : '') + '>'
+      + (S.offerBusy ? '<span class="spin"></span>Beregner…' : '🧮 Beregn tilbud fra soner + befaring →') + '</button>'
+      + (latestOffer() ? '<button class="btn ghost" data-act="offerPrint">🖨 Tilbud til styret</button>' : '')
+      + '</div>'
+      + '<div class="note" id="of-hint" style="margin-top:6px' + (canCompute ? ';display:none' : '') + '">Tick av befaringen (✅/⬆) — så priser @onsite/core bygget fra de målte sonene og de talte enhetene.</div>';
+
+    var body;
+    if (S.secBusy.offers && S.offers == null) body = '<div class="empty"><span class="spin"></span>Henter tilbud…</div>';
+    else if (!S.offers || !S.offers.length) body = '<div class="empty">Ingen tilbud ennå — beregn det første fra befaringen.</div>';
+    else {
+      var o = latestOffer(), data = o.data || {};
+      var derived = coreDerive(data) || data;
+      var pend = pendingOpByRecord("offers")[o.id];
+      var verify = coreDerive(data)
+        ? (Math.round(derived.totalMonthly) === Math.round(o.total_monthly || 0)
+          ? '<div class="msg ok">✓ Totaler verifisert av @onsite/core (' + kr(derived.totalMonthly) + '/mnd)</div>'
+          : '<div class="msg err">⚠ Avvik: lagret ' + kr(o.total_monthly) + ' vs core ' + kr(derived.totalMonthly) + '</div>')
+        : '<div class="note">@onsite/core laster — totaler vises fra lagret verdi inntil verifisert…</div>';
+      var hist = (S.offers.length > 1)
+        ? '<div class="note" style="margin-top:8px">Tidligere versjoner beholdt: ' + S.offers.slice(1).map(function (x) { return 'v' + x.version + ' (' + kr(x.total_monthly) + ')'; }).join(' · ') + '</div>'
+        : '';
+      body = '<div class="of-head"><span class="of-big">' + kr(derived.totalMonthly) + ' <span class="of-unit">/mnd</span>'
+        + ' <span class="of-yr">· ' + kr(derived.totalYearly) + ' /år</span></span>'
+        + '<span class="chip q">v' + o.version + ' · ' + esc(o.status || "draft") + '</span>' + opChip(pend) + '</div>'
+        + '<div class="note" style="margin-top:-2px">Alt de betaler for — synlig. Åpne en modul for driver-matematikken; hver modul kan velges bort separat.</div>'
+        + verify
+        + (derived.modules || []).map(function (m) { return offerModuleHTML(o, m); }).join("")
+        + offerOptionsHTML(o, derived)
+        + (o.cover_note ? '<div class="note" style="margin-top:8px">' + esc(o.cover_note) + '</div>' : '')
+        + hist;
+    }
+    return '<div class="card"><div class="ct">💰 Tilbud <span class="muted" style="font-weight:600">· priset av @onsite/core · offers (RLS: kun din tenant)</span></div>'
+      + (S.secMsg.offers ? '<div class="msg ok">' + esc(S.secMsg.offers) + '</div>' : '')
+      + (S.secErr.offers ? '<div class="msg err">' + esc(S.secErr.offers) + '</div>' : '')
+      + body + computeBar + '</div>';
+  }
+
+  /* ============================ artifacts (onboarding C — the board leave-behind) ============================
+   * The doc-50 one-pager, generated from the LIVE offer, with the operational maps drawn from the zones.
+   * Print is VISIBILITY-isolated, not display-isolated: display:none on the siblings is simpler but
+   * collapses the Leaflet containers to 0×0, and the maps print blank. visibility:hidden keeps every layout
+   * box, so the maps survive onto paper. (Same trick, and the same reason, as the demo's four print paths.) */
+  var opMaps = {};
+  function destroyOpMaps() { Object.keys(opMaps).forEach(function (k) { try { opMaps[k].remove(); } catch (e) {} delete opMaps[k]; }); }
+  function opZones(kind) {
+    return (S.zones || []).filter(kind === "snow"
+      ? function (z) { return z.service === "snow"; }
+      : function (z) { return z.service === "grass" || z.service === "greenery"; });
+  }
+  function opLegendHTML(kind) {
+    var items = kind === "snow"
+      ? [["#1d4ed8", "Maskin"], ["#eab308", "Hånd"], ["#b3261e", "No-go"]]
+      : [["#22c55e", "Klipping"], ["#0f766e", "Kantklipp"], ["#f59e0b", "Bed / hekk"], ["#b3261e", "No-go / ømtålig"]];
+    return '<div class="pd-legend">' + items.map(function (it) {
+      return '<span class="pd-lg"><span class="pd-sw" style="background:' + it[0] + '"></span>' + esc(it[1]) + '</span>';
+    }).join("") + '</div>';
+  }
+  function buildOpMap(b, kind, elId) {
+    var el = document.getElementById(elId);
+    if (!el || !window.L || b.lat == null || b.lon == null) return;
+    if (opMaps[elId]) { try { opMaps[elId].remove(); } catch (e) {} delete opMaps[elId]; }
+    var m;
+    try { m = L.map(el, { zoomControl: false, dragging: false, scrollWheelZoom: false, doubleClickZoom: false }); } catch (e) { return; }
+    opMaps[elId] = m;
+    L.tileLayer(KARTVERKET, { attribution: "© Kartverket", maxZoom: 20, maxNativeZoom: 18 }).addTo(m);
+    var grp = L.featureGroup().addTo(m);
+    opZones(kind).forEach(function (z) {
+      if (!z.geometry) return;
+      var lyr = null;
+      if (z.geometry.type === "Polygon") lyr = L.polygon(ringLL(z.geometry.coordinates[0]), zoneStyle(z));
+      else if (z.geometry.type === "LineString") lyr = L.polyline(ringLL(z.geometry.coordinates), zoneStyle(z));
+      if (!lyr) return;
+      lyr.bindTooltip(zoneTip(z), { permanent: true, direction: "center", className: "pd-ztip" });
+      lyr.addTo(grp);
+      if (kind === "snow" && z.geometry.type === "Polygon" && z.priority) {
+        L.marker(centroidLL(ringLL(z.geometry.coordinates[0])), { interactive: false,
+          icon: L.divIcon({ className: "", html: '<div class="ob-zprio">' + z.priority + '</div>', iconSize: [22, 22], iconAnchor: [11, 11] }) }).addTo(grp);
+      }
+    });
+    try { if (grp.getLayers().length) m.fitBounds(grp.getBounds().pad(0.35)); else m.setView([b.lat, b.lon], 17); }
+    catch (e) { m.setView([b.lat, b.lon], 17); }
+    setTimeout(function () { if (opMaps[elId]) opMaps[elId].invalidateSize(); }, 90);
+  }
+  function moduleCovers(m) {
+    var seen = {}, out = [];
+    (m.lines || []).forEach(function (l) { var t = (l.label || "").split(" (")[0]; if (t && !seen[t]) { seen[t] = 1; out.push(t); } });
+    return out.slice(0, 4).join(", ");
+  }
+  function moduleCadence(m) {
+    var seen = {}, out = [];
+    (m.lines || []).forEach(function (l) { if (l.cadence && !seen[l.cadence]) { seen[l.cadence] = 1; out.push(l.cadence); } });
+    return out.slice(0, 2).join(" · ") || "løpende";
+  }
+  function boardDocHTML(b, o, d) {
+    var incl = (d.modules || []).filter(function (m) { return m.included; });
+    var rows = incl.map(function (m) {
+      return '<tr><td><b>' + esc(m.title) + '</b></td><td>' + esc(moduleCovers(m)) + '</td><td>' + esc(moduleCadence(m))
+        + '</td><td class="pd-num">' + kr(m.subtotal) + '</td></tr>';
+    }).join("");
+    var opts = (d.optionLines || []).map(function (l) {
+      var amt = (l.role === "hedge" || l.role === "bed") ? kr(l.final) + '/år' : (l.oneOff ? kr(l.final) + ' engangs' : kr(l.final) + '/mnd');
+      return '<li>' + esc(l.label) + ' — <b>' + amt + '</b></li>';
+    }).join("");
+    var snowN = opZones("snow").length, grassN = opZones("grass").length;
+    var maps = (snowN || grassN)
+      ? '<h2>Operasjonskart</h2><div class="pd-maps">'
+        + (snowN ? '<div class="pd-mapcard"><div class="pd-mt">❄️ Vinter</div><div class="pd-map" id="pd-map-snow"></div>' + opLegendHTML("snow") + '</div>' : '')
+        + (grassN ? '<div class="pd-mapcard"><div class="pd-mt">🌿 Grønt</div><div class="pd-map" id="pd-map-grass"></div>' + opLegendHTML("grass") + '</div>' : '')
+        + '</div>'
+      : '';
+    var meta = [b.addr, (b.gnr ? 'gnr ' + b.gnr + '/' + b.bnr : '')].filter(Boolean).join(' · ');
+    return '<div class="pd-bar"><button class="btn ghost" data-pact="close">✕ Lukk</button>'
+      + '<div class="pd-bartitle">Tilbud til styret</div>'
+      + '<button class="btn" data-pact="print">🖨 Skriv ut / PDF</button></div>'
+      + '<div class="pd-scroll"><div class="pd-doc">'
+      + '<h1>Tilbud om eiendomsservice — ' + esc(b.name) + '</h1>'
+      + '<div class="pd-meta">' + esc(meta) + (S.tenant && S.tenant.name ? ' · Levert av ' + esc(S.tenant.name) : '')
+      + ' · tilbud v' + o.version + ' · ' + esc(o.status || "draft") + '</div>'
+      + '<h2>Tjenester og pris <span class="pd-vat">alle priser eks. mva</span></h2>'
+      + '<table class="pd-tab"><thead><tr><th>Modul</th><th>Hva det dekker</th><th>Frekvens</th><th class="pd-num">Pris/mnd</th></tr></thead>'
+      + '<tbody>' + rows + '</tbody>'
+      + '<tfoot><tr><td colspan="3"><b>Sum fast</b></td><td class="pd-num"><b>' + kr(d.totalMonthly) + '</b></td></tr></tfoot></table>'
+      + '<div class="pd-sever">Hver modul er en <b>egen avtale</b> — én tjeneste kan sies opp uten at resten faller. '
+      + 'Prisen er regnet ut fra byggets <b>målte arealer og talte enheter</b>, ikke en rundsum.</div>'
+      + (opts ? '<h2>Opsjoner <span class="pd-vat">utenfor grunnbeløpet</span></h2><ul class="pd-opts">' + opts + '</ul>' : '')
+      + maps
+      + '<h2>Slik vet dere at jobben er gjort</h2>'
+      + '<p>Hver utført jobb dokumenteres på stedet — tid, sted og bilde. Styret ser dokumentasjonen, ikke bare fakturaen.</p>'
+      + '</div></div>';
+  }
+  function showBoardDoc() {
+    var b = buildingById(S.view.id), o = latestOffer();
+    if (!b || !o) return;
+    var host = document.getElementById("printdoc"); if (!host) return;
+    host.innerHTML = boardDocHTML(b, o, coreDerive(o.data) || o.data || {});
+    host.classList.add("on");
+    buildOpMap(b, "snow", "pd-map-snow");
+    buildOpMap(b, "grass", "pd-map-grass");
+  }
+  function closeBoardDoc() {
+    var host = document.getElementById("printdoc"); if (!host) return;
+    destroyOpMaps();
+    host.classList.remove("on"); host.innerHTML = "";
+  }
+  function printBoardDoc() {
+    // the containers' boxes just changed under the print styles — Leaflet must re-read them, then the tiles
+    // need a beat to land before the snapshot. The delay is the fragile part; keep it.
+    Object.keys(opMaps).forEach(function (k) { try { opMaps[k].invalidateSize(); } catch (e) {} });
+    document.body.classList.add("printing");
+    var cleanup = function () { document.body.classList.remove("printing"); window.removeEventListener("afterprint", cleanup); };
+    window.addEventListener("afterprint", cleanup);
+    setTimeout(function () { window.print(); }, 220);
+  }
+  // the leave-behind lives OUTSIDE #app (render() rewrites that wholesale), so it needs its own delegate
+  document.addEventListener("click", function (e) {
+    var t = e.target.closest && e.target.closest("[data-pact]"); if (!t) return;
+    if (t.getAttribute("data-pact") === "close") closeBoardDoc(); else printBoardDoc();
+  });
 
   /* ============================ building detail (1c-2 item 0) ============================
-   * The container for the per-table sections: Eiendeler · Dokumentert arbeid · Tilbud. Tablet-first. */
+   * The container for the per-table sections: Kart · Befaring · Eiendeler · Kontakter · Arbeid · Tilbud. */
   function renderBuilding(b) {
     var email = userEmail();
+    if (!S.checklist) S.checklist = checklistFor(b);   // the row's saved items merged over a fresh template
     var meta = [b.addr, (b.gnr ? 'gnr ' + b.gnr : ''), (b.bnr ? 'bnr ' + b.bnr : '')].filter(Boolean).join(' · ');
     var synk = S.snapTs ? ' · sist synket ' + timeHM(S.snapTs) : (S.offline ? ' · frakoblet — viser lagret kopi' : '');
     app.innerHTML =
       '<div class="top"><div><span class="logo">● ONSITE</span><span class="prodtag">prod</span>'
       + (S.tenant && S.tenant.name ? ' <span class="tenant">' + esc(S.tenant.name) + '</span>' : '')
-      + headerChipsHTML()
+      + '<span id="hdr-chips">' + headerChipsHTML() + '</span>'
       + '</div><div style="display:flex;gap:8px;align-items:center"><span class="who">' + esc(email) + '</span><button class="btn ghost" data-act="signout" style="padding:8px 12px">Logg av</button></div></div>'
       + '<div class="bhead"><button class="btn ghost" data-act="back" style="padding:9px 13px">← Bygg</button>'
       + '<div><h1>🏢 ' + esc(b.name) + '</h1><div class="note">' + esc(meta) + esc(synk) + '</div></div></div>'
       + (S.error ? '<div class="msg err">' + esc(S.error) + '</div>' : '')
       + sectionKartHTML(b)
+      + sectionBefaringHTML(b)
       + sectionAssetsHTML(b)
       + sectionContactsHTML(b)
       + sectionProofHTML(b)
@@ -1797,8 +2470,28 @@
       var p = S.proofPhoto; S.proofPhoto = null;
       if (p) OFF.delPhoto(p.path).then(function () { render(); }); else render();
     },
-    // item 3: offers (severability toggle)
-    offerModToggle: offerModToggle
+    // onboarding C: befaring (the walkaround checklist) — every handler refreshes SURGICALLY, never render()
+    clZone: function (el) { var n = el.getAttribute("data-id"); S.clOpen[n] = !S.clOpen[n]; refreshBefaring(); },
+    clScope: function (el) {
+      var b = buildingById(S.view.id), it = clItem(el.getAttribute("data-id"));
+      if (!b || !it) return;
+      it.scope = el.getAttribute("data-arg");
+      S.secMsg.checklist = null;
+      refreshBefaring();           // the row restyles and the kr box appears/disappears with the scope
+      saveChecklist(b, true);      // queued NOW (durable); the drain waits for the burst to end
+    },
+    clPhotoDel: function (el) {
+      var b = buildingById(S.view.id), it = clItem(el.getAttribute("data-id"));
+      if (!b || !it) return;
+      var path = el.getAttribute("data-arg");
+      it.photoIds = (it.photoIds || []).filter(function (p) { return p !== path; });
+      refreshBefaring(); saveChecklist(b, true);
+    },
+    // onboarding C: offer authoring
+    offerCompute: computeOfferNow,
+    offerModExpand: function (el) { var k = "m:" + el.getAttribute("data-id"); S.clOpen[k] = !S.clOpen[k]; render(); },
+    offerModToggle: offerModToggle,
+    offerPrint: showBoardDoc
   };
   app.addEventListener("click", function (e) {
     var t = e.target.closest("[data-act]"); if (!t) return;
@@ -1815,6 +2508,16 @@
     if (e.target && e.target.getAttribute && e.target.getAttribute("data-zsvc")) {   // service change → method options change
       if (S.editZone) { S.editZone.service = e.target.value; S.editZone.method = zoneDefaultMethod(e.target.value); render(); }
     }
+    var t = e.target; if (!t || !t.getAttribute) return;
+    if (t.getAttribute("data-clphoto")) { clPhotoAttach(t); return; }          // onboarding C: befaring photo
+    var clf = t.getAttribute("data-clf");
+    if (clf === "bool" || clf === "oneoff") {
+      var b = buildingById(S.view.id), it = clItem(t.getAttribute("data-id"));
+      if (b && it) { if (clf === "bool") it.value = t.checked; else it.oneOff = t.checked; refreshBefaring(); saveChecklist(b, true); }
+      return;
+    }
+    // the hand-set price commits on change (blur/Enter), not per keystroke — one op per real edit
+    if (t.getAttribute("data-offf") === "lineFinal") { offerLineFinal(t); return; }
   });
   // findings #1 (same wipe class): typed proof text survives background renders via a live state mirror
   app.addEventListener("input", function (e) {
@@ -1822,6 +2525,19 @@
     if (id === "pf_title" || id === "pf_note") {
       S.proofDraft = S.proofDraft || {};
       S.proofDraft[id === "pf_title" ? "title" : "note"] = e.target.value;
+    }
+    // befaring capture (antall / m² / kr / notat): mutate state + debounce the class-B write. NEVER render()
+    // here — the wholesale innerHTML rebuild would blow away the field being typed into (findings #1's class).
+    // Only the total is patched surgically; the scope chips re-render on the next scope tap.
+    var t = e.target, clf = t && t.getAttribute && t.getAttribute("data-clf");
+    if (clf === "value" || clf === "price" || clf === "notes") {
+      var b = buildingById(S.view.id), it = clItem(t.getAttribute("data-id"));
+      if (!b || !it) return;
+      if (clf === "price") it.price = Math.round(parseFloat(t.value) || 0);
+      else if (clf === "notes") it.notes = t.value;
+      else it.value = t.value;
+      var tot = document.getElementById("cl-total"); if (tot) tot.textContent = kr(walkTotal());
+      saveChecklist(b);
     }
   });
   /* findings #2: iPad landscape keyboard leaves a sliver. Scroll the focused field into view after the
@@ -1903,6 +2619,18 @@
     if (!S.offlineIdent) render();
   });
 
+  /* @onsite/core arrives as a DEFERRED module (boot.mjs), so it can land after app.js's first paint. Anything
+   * gated on coreReady() — the Beregn-tilbud button, the totals verification — would then sit disabled until
+   * some unrelated state change happened to re-render. Re-render once, the moment core is actually here. */
+  (function awaitCore() {
+    if (coreReady()) return;
+    var tries = 0;
+    var t = setInterval(function () {
+      if (coreReady()) { clearInterval(t); render(); }
+      else if (++tries > 100) clearInterval(t);   // 10 s: core is a static same-origin bundle — if it is not
+    }, 100);                                      // here by now it is not coming, and the UI stays honest about it
+  })();
+
   /* ---- offline v1 triggers: SW + online/visibility drains (NO Background Sync — iOS reality) ---- */
   OFF.registerSW(function (reg) { S.updateReg = reg; render(); });   // quiet "ny versjon — last på nytt" hint
   window.addEventListener("online", function () {
@@ -1919,7 +2647,11 @@
     S.installEvt = e;
     if (S.view.name === "list") render();
   });
-  document.addEventListener("visibilitychange", function () { if (document.visibilityState === "visible") drainAll(); });
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible") drainAll();
+    else flushPendingChecklist();   // backgrounded mid-befaring: the in-flight tick becomes durable NOW
+  });
+  window.addEventListener("pagehide", flushPendingChecklist);
 
   render(); // immediate paint (login screen / cached shell) while getSession resolves
 })();
