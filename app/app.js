@@ -27,6 +27,8 @@
     view: { name: "list" }, assets: null, proof: null, offers: null, editAsset: null, secBusy: {}, secErr: {}, secMsg: {},
     // contacts port (small pass): second class-B table riding the SAME v1.5 outbox/LWW/delta machinery
     contacts: null, editContact: null, installEvt: null,
+    // onboarding A (doc-82): the Step-0 registry-prefill wizard state (search → confirm → create)
+    nb: null,
     // OTP pass: the email a code was sent to — verifyOtp must target IT, not a later-edited input
     otpEmail: null,
     // field-findings #1: the proof photo lives in IDB from the moment it is picked ({path, dataUrl
@@ -285,6 +287,190 @@
   function val(id) { var el = document.getElementById(id); return el ? el.value.trim() : ""; }
   function esc(s) { return (s == null ? "" : String(s)).replace(/[&<>"]/g, function (c) { return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]; }); }
 
+  /* ============================ onboarding A: Step-0 registry prefill (doc-82) ============================
+   * Port of the demo's proven Step-0 layer into /app: one search → a confirmed, editable building record
+   * from public, key-free, CORS-open registries (geonorge adresser + Brønnøysund enheter). Behaviour is
+   * ported verbatim from the demo incl. **null-on-fail** (never throws; always falls back to manual) and
+   * **fodselsdato NEVER retained** — parseRoles reads names only (the roller payload DOES carry birthdates;
+   * they must not touch client state, doc-82 §4). CSP: connect-src allows ws.geonorge.no + data.brreg.no. */
+  var BRREG = "https://data.brreg.no/enhetsregisteret/api/enheter";
+  function titleCase(s) {
+    // capitalize the first letter after a real separator only — treating æ/ø/å as word chars. (The demo's
+    // /\b(...)/ version mis-fires mid-word on æ/ø/å — "MellomgÅRden"; JS \b counts them as non-word. Fixed here.)
+    return (s || "").toLowerCase().replace(/(^|[\s\-\/])([a-zà-ÿ])/g, function (m, p, c) { return p + c.toUpperCase(); })
+      .replace(/\bAs\b/g, "AS").replace(/\bUsbl\b/g, "USBL").replace(/\bObos\b/g, "OBOS")
+      .replace(/\bKpmg\b/g, "KPMG").replace(/\bBbl\b/g, "BBL").replace(/\bBrl\b/g, "BRL").replace(/\bSa\b/g, "SA").replace(/\bDa\b/g, "DA");
+  }
+  function personName(p) { var n = (p && p.navn) || {}; return [n.fornavn, n.mellomnavn, n.etternavn].filter(Boolean).join(" "); }
+  function brregSearch(name, cb) {
+    fetch(BRREG + "?navn=" + encodeURIComponent(name) + "&size=10").then(function (r) { return r.json(); })
+      .then(function (j) { cb(((j._embedded || {}).enheter) || []); }).catch(function () { cb(null); });
+  }
+  function brregRoles(orgnr, cb) {
+    fetch(BRREG + "/" + encodeURIComponent(orgnr) + "/roller").then(function (r) { return r.json(); })
+      .then(function (j) { cb(parseRoles(j)); }).catch(function () { cb(null); });
+  }
+  function parseRoles(j) {   // → {forvalter, styreleder, styremedlemmer[], revisor} — NAMES ONLY (never fodselsdato)
+    var out = { forvalter: null, styreleder: null, styremedlemmer: [], revisor: null };
+    (((j || {}).rollegrupper) || []).forEach(function (g) {
+      var gk = ((g.type || {}).kode) || "";
+      (g.roller || []).forEach(function (r) {
+        var rk = ((r.type || {}).kode) || "";
+        var nm = r.enhet ? titleCase((r.enhet.navn || []).join(" ")) : r.person ? personName(r.person) : null;   // reads navn ONLY
+        if (!nm) return;
+        if (gk === "FFØR" && !out.forvalter) out.forvalter = nm;
+        else if (gk === "STYR" && rk === "LEDE" && !out.styreleder) out.styreleder = nm;
+        else if (gk === "STYR" && rk === "MEDL") out.styremedlemmer.push(nm);
+        else if (gk === "REVI" && !out.revisor) out.revisor = nm;
+      });
+    });
+    return out;
+  }
+  function geoSearch(q, cb) {
+    fetch("https://ws.geonorge.no/adresser/v1/sok?sok=" + encodeURIComponent(q) + "&treffPerSide=10&fuzzy=true")
+      .then(function (r) { return r.json(); }).then(function (j) { cb((j.adresser) || []); }).catch(function () { cb(null); });
+  }
+  function parseAddr(a) {
+    return { adressetekst: a.adressetekst || "", postnummer: a.postnummer || "", poststed: a.poststed || "",
+      kommunenavn: a.kommunenavn || "", kommunenummer: a.kommunenummer || "",
+      gnr: (a.gardsnummer != null ? String(a.gardsnummer) : ""), bnr: (a.bruksnummer != null ? String(a.bruksnummer) : ""),
+      lat: (a.representasjonspunkt || {}).lat, lon: (a.representasjonspunkt || {}).lon,
+      units: ((a.bruksenhetsnummer) || []).length };
+  }
+  function geoLookup(q, cb) { geoSearch(q, function (list) { cb(list === null ? null : (list[0] ? parseAddr(list[0]) : false)); }); }
+  // doc-83 #1 / doc-66 A1: once gnr/bnr is known, discover EVERY entrance on the property (Holtveien 9 = A+B+C
+  // shows as 3 oppganger) so the true building shape is known before leaving the office. null-on-fail.
+  function addrByMatrikkel(knr, gnr, bnr, cb) {
+    if (!knr || gnr == null || gnr === "" || bnr == null || bnr === "") { cb(null); return; }
+    var url = "https://ws.geonorge.no/adresser/v1/sok?kommunenummer=" + encodeURIComponent(knr)
+      + "&gardsnummer=" + encodeURIComponent(gnr) + "&bruksnummer=" + encodeURIComponent(bnr) + "&utkoordsys=4258&treffPerSide=100";
+    fetch(url).then(function (r) { return r.json(); }).then(function (j) {
+      var ents = ((j && j.adresser) || []).map(function (a) {
+        return { address: (a.adressetekst || ((a.adressenavn || "") + " " + a.nummer + (a.bokstav || ""))),
+          nummer: a.nummer, bokstav: a.bokstav || "", gnr: String(a.gardsnummer), bnr: String(a.bruksnummer),
+          units: ((a.bruksenhetsnummer) || []).length, lat: (a.representasjonspunkt || {}).lat, lon: (a.representasjonspunkt || {}).lon };
+      }).sort(function (x, y) { return (x.nummer - y.nummer) || (x.bokstav < y.bokstav ? -1 : 1); });
+      cb(ents);
+    }).catch(function () { cb(null); });
+  }
+
+  /* ---- the wizard: search → pick → confirm card → create (buildings + contacts through the outbox) ---- */
+  function nbOpen() { S.nb = { mode: "name", loading: false, error: null, results: null, prefill: null }; S.view = { name: "newBuilding" }; S.msg = null; S.error = null; render(); }
+  function nbCancel() { S.nb = null; S.view = { name: "list" }; render(); }
+  function nbSetMode(m) { if (!S.nb) return; S.nb.mode = m; S.nb.results = null; S.nb.error = null; render(); }
+  function nbSearch() {
+    var nb = S.nb; if (!nb) return;
+    var q = val("nb_q"); if (!q) { nb.error = "Skriv et navn eller en adresse."; render(); return; }
+    nb.results = null; nb.error = null; nb.prefill = null; nb.loading = true; render();
+    if (nb.mode === "name") {
+      brregSearch(q, function (list) { nb.loading = false; if (list === null) nb.error = "Brønnøysund utilgjengelig (nett) — søk på adresse eller fyll inn manuelt."; else nb.results = { type: "brreg", items: list }; render(); });
+    } else {
+      geoSearch(q, function (list) { nb.loading = false; if (list === null) nb.error = "geonorge utilgjengelig — fyll inn manuelt."; else nb.results = { type: "geo", items: list }; render(); });
+    }
+  }
+  function prefillFromGeo(a) {
+    var p = parseAddr(a);
+    return { source: "geonorge", name: (p.adressetekst || ""), orgnr: "", orgform: "Eierseksjonssameie",
+      addr: p.adressetekst, postnummer: p.postnummer, poststed: p.poststed, kommunenavn: p.kommunenavn, kommunenummer: p.kommunenummer,
+      gnr: p.gnr, bnr: p.bnr, lat: p.lat, lon: p.lon, units: p.units, forvalter: "", styreleder: "", entrances: null, oppgangLoading: false };
+  }
+  // brreg forretningsadresse is the FORVALTER's c/o office, NOT the building — do NOT seed address/coords
+  // from it (the demo lesson: that put the map on the forvalter). Org + roles are correct; the rep types
+  // the real street + 📍 Geokod resolves gnr/bnr/coords.
+  function prefillFromBrreg(e) {
+    var of = (e.organisasjonsform || {});
+    return { source: "Brønnøysund", name: titleCase(e.navn), orgnr: e.organisasjonsnummer || "", orgform: (of.beskrivelse || of.kode || ""),
+      addr: "", postnummer: "", poststed: "", kommunenavn: "", kommunenummer: "", gnr: "", bnr: "", lat: null, lon: null, units: 0,
+      forvalter: "", styreleder: "", entrances: null, oppgangLoading: false };
+  }
+  function nbDiscover(p) {   // fill p.entrances from the property's gnr/bnr (oppganger); silent on fail
+    if (!p || !p.kommunenummer || !p.gnr || !p.bnr) return;
+    p.oppgangLoading = true; render();
+    addrByMatrikkel(p.kommunenummer, p.gnr, p.bnr, function (ents) {
+      p.oppgangLoading = false; p.entrances = ents || null;   // null-on-fail: just no count, never a crash
+      if (S.nb && S.nb.prefill === p) render();
+    });
+  }
+  function nbPick(idx) {
+    var nb = S.nb; if (!nb || !nb.results) return; var it = (nb.results.items || [])[idx]; if (!it) return;
+    if (nb.results.type === "geo") { nb.prefill = prefillFromGeo(it); render(); nbDiscover(nb.prefill); return; }
+    var p = prefillFromBrreg(it); nb.prefill = p; render();
+    if (p.orgnr) brregRoles(p.orgnr, function (roles) {
+      if (roles && S.nb && S.nb.prefill === p) { p.forvalter = roles.forvalter || ""; p.styreleder = roles.styreleder || ""; render(); }
+    });
+  }
+  function nbSyncForm() {
+    var p = S.nb && S.nb.prefill; if (!p) return;
+    p.name = val("nb_name"); p.orgnr = val("nb_orgnr"); p.orgform = val("nb_orgform"); p.addr = val("nb_addr");
+    p.gnr = val("nb_gnr"); p.bnr = val("nb_bnr"); p.kommunenummer = val("nb_kommunenr");
+    var la = parseFloat(val("nb_lat")), lo = parseFloat(val("nb_lon")); if (!isNaN(la)) p.lat = la; if (!isNaN(lo)) p.lon = lo;
+    var u = parseInt(val("nb_units"), 10); if (!isNaN(u)) p.units = u;
+    p.forvalter = val("nb_forvalter"); p.styreleder = val("nb_styreleder");
+  }
+  function nbGeocode() {
+    var p = S.nb && S.nb.prefill; if (!p) return; nbSyncForm();
+    var q = val("nb_addr"); if (!q) { S.nb.error = "Skriv en adresse å geokode."; render(); return; }
+    S.nb.error = null; p.geoBusy = true; render();
+    geoLookup(q, function (res) {
+      p.geoBusy = false;
+      if (res === null) { S.nb.error = "geonorge utilgjengelig — fyll inn gnr/bnr manuelt."; render(); return; }
+      if (!res) { S.nb.error = "Fant ikke adressen — prøv med husnummer/bokstav, eller fyll inn manuelt."; render(); return; }
+      p.addr = res.adressetekst; p.postnummer = res.postnummer; p.poststed = res.poststed;
+      p.kommunenavn = res.kommunenavn || p.kommunenavn; p.kommunenummer = res.kommunenummer || p.kommunenummer;
+      p.gnr = res.gnr; p.bnr = res.bnr; p.lat = res.lat; p.lon = res.lon; if (res.units) p.units = res.units;
+      if (!p.name) p.name = res.adressetekst || "";
+      render(); nbDiscover(p);   // resolved gnr/bnr → discover oppganger
+    });
+  }
+  function nbManual() {
+    if (!S.nb) return;
+    S.nb.results = null; S.nb.error = null; S.nb.loading = false;
+    S.nb.prefill = { source: "manuelt", name: "", orgnr: "", orgform: "Borettslag", addr: "", postnummer: "", poststed: "",
+      kommunenavn: "", kommunenummer: "", gnr: "", bnr: "", lat: null, lon: null, units: "", forvalter: "", styreleder: "", entrances: null, oppgangLoading: false };
+    render();
+  }
+  function nbCreate() {
+    var nb = S.nb; if (!nb || !nb.prefill) return; nbSyncForm(); var p = nb.prefill;
+    var uid = userId();
+    if (!S.tenant || !S.tenant.id || !uid) { nb.error = "Mangler tenant/bruker (åpne appen på nett én gang først)."; render(); return; }
+    if (!p.name) p.name = (p.addr || "").split(",")[0].trim() || "Nytt bygg";   // address/discovery path may have no org name → never silently block
+    var b = { name: p.name, orgnr: p.orgnr, addr: p.addr, gnr: p.gnr, bnr: p.bnr, kommunenr: p.kommunenummer, lat: p.lat, lon: p.lon };
+    var row = coreToRow(S.tenant.id, b); row.id = OFF.uuid();
+    // contacts: styreleder + forvalter, NAME + ROLE only (registry gives no work phone/email; those are manual later)
+    var contactRows = [];
+    if ((p.styreleder || "").trim()) contactRows.push({ id: OFF.uuid(), tenant_id: S.tenant.id, building_id: row.id, name: p.styreleder.trim(), role: "Styreleder", phone: null, email: null });
+    if ((p.forvalter || "").trim()) contactRows.push({ id: OFF.uuid(), tenant_id: S.tenant.id, building_id: row.id, name: p.forvalter.trim(), role: "Forvalter", phone: null, email: null });
+    nb.busy = true; nb.error = null; render();
+    // FIFO matters: queue the BUILDING first (contacts.building_id FKs it), then the contacts.
+    OFF.queueOp({ entity: "buildings", op: "insert", payload: row, baseUpdatedAt: null,
+      tenantId: S.tenant.id, buildingId: row.id, userId: uid, title: "Nytt bygg: " + row.name })
+      .then(function () {
+        S.buildings = (S.buildings || []); S.buildings.push(rowToCore(row));
+        S.buildings.sort(function (x, y) { return (x.name || "") < (y.name || "") ? -1 : 1; });
+        return OFF.cacheGet(uid, "buildings").then(function (c) { return OFF.cachePut(uid, "buildings", ((c && c.v) || []).concat([row])); });
+      })
+      .then(function () {   // queue contacts sequentially so their clientTs follows the building's
+        return contactRows.reduce(function (chain, cr) {
+          return chain.then(function () {
+            return OFF.queueOp({ entity: "contacts", op: "insert", payload: cr, baseUpdatedAt: null,
+              tenantId: S.tenant.id, buildingId: row.id, userId: uid, title: cr.name });
+          });
+        }, Promise.resolve());
+      })
+      .then(function () {
+        // seed the building's contact cache so the detail view shows them immediately (they drain right after)
+        if (contactRows.length) OFF.cachePut(uid, "b:" + row.id, { assets: [], proof: [], offers: null, contacts: contactRows.slice() });
+        S.nb = null;
+        openBuilding(row.id);   // land in the new building's detail view (ready for pass B's map)
+        drainAll();
+      })
+      .catch(function (e) {
+        nb.busy = false;
+        nb.error = "⚠ Kunne IKKE lagre på enheten (" + ((e && e.message) || "lagringsfeil") + ") — bygget er IKKE lagret.";
+        render();
+      });
+  }
+
   /* ============================ render ============================ */
   function buildingById(id) { return (S.buildings || []).filter(function (b) { return b.id === id; })[0] || null; }
   function discardProofDraft() {   // an abandoned draft photo never lingers in the queue store
@@ -445,6 +631,7 @@
     else if (S.view.name === "signoutGuard") { renderSignoutGuard(); }
     else if (S.view.name === "outbox") { renderOutbox(); }
     else if (S.view.name === "review") { renderReview(); }
+    else if (S.view.name === "newBuilding") { renderNewBuilding(); }
     else if (S.noAccess) { renderNoAccess(); }
     else if (S.view.name === "building" && buildingById(S.view.id)) { renderBuilding(buildingById(S.view.id)); hydrateProofPhotos(); }
     else { S.view = { name: "list" }; renderApp(); }
@@ -492,6 +679,7 @@
    * capture (doc 62), never in standalone, dismissal remembered. iOS = manual steps; Android = the
    * captured beforeinstallprompt. ---- */
   var A2HS_KEY = "onsite_a2hs_dismissed";
+  var A2HS_IOS_ENABLED = false;   // iOS add-to-home hint suppressed until installed-iOS login works (OTP email unblocked)
   function isStandalone() { try { return (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone === true; } catch (e) { return false; } }
   function isIOS() { return /iPad|iPhone|iPod/.test(navigator.userAgent || ""); }
   function a2hsDismissed() { try { return localStorage.getItem(A2HS_KEY) === "1"; } catch (e) { return true; } }
@@ -503,7 +691,10 @@
         + '<span style="display:flex;gap:8px;flex-shrink:0"><button class="btn" style="padding:8px 12px" data-act="a2hsInstall">Installer</button>'
         + '<button class="btn ghost" style="padding:8px 10px" data-act="a2hsDismiss" aria-label="Ikke nå">✕</button></span></div>';
     }
-    if (isIOS()) {
+    // Housekeeping (doc-82, Martin's 7 Jul defer): the iOS hint invites users to install, but the
+    // installed-iOS PWA login is still broken until the {{ .Token }} email works (blocked on Supabase
+    // Free tier). So the iOS hint stays SUPPRESSED. Flip A2HS_IOS_ENABLED back to true when Pro/SMTP lands.
+    if (A2HS_IOS_ENABLED && isIOS()) {
       return '<div class="card" style="padding:11px 14px;display:flex;justify-content:space-between;gap:10px;align-items:center">'
         + '<span class="note" style="margin:0">📲 Legg til på Hjem-skjerm for rask tilgang: trykk <b>Del</b> (firkanten med pil ↑), velg <b>«Legg til på Hjem-skjerm»</b> — og logg inn i appen med koden fra e-posten.</span>'
         + '<button class="btn ghost" style="padding:8px 10px;flex-shrink:0" data-act="a2hsDismiss" aria-label="Ikke nå">✕</button></div>';
@@ -535,18 +726,78 @@
       + (S.error ? '<div class="msg err">' + esc(S.error) + '</div>' : '')
       + list + '</div>';
 
+    // onboarding A: the add flow is now search-first (registry prefill); manual lives inside the wizard.
     var addCard =
       '<div class="card"><div class="ct">＋ Legg til bygg</div>'
-      + '<label>Navn *</label><input id="nb_name" placeholder="f.eks. Sameiet Solsiden">'
-      + '<label>Adresse</label><input id="nb_addr" placeholder="Gate 1, 0123 Oslo">'
-      + '<div class="row2"><div style="flex:1"><label>gnr</label><input id="nb_gnr"></div><div style="flex:1"><label>bnr</label><input id="nb_bnr"></div></div>'
-      + '<div class="bar"><button class="btn" data-act="addBuilding">Lagre bygg →</button></div>'
-      + '<p class="note" style="margin-bottom:0">Lagres på enheten og synkes — tenant_id settes fra din membership; RLS <code>with check</code> håndhever at det er din tenant.</p>'
+      + '<p class="note" style="margin-top:-2px">Søk opp borettslaget/sameiet i offentlige registre — så er navn, org.nr, styre og gnr/bnr fylt ut før du drar på befaring.</p>'
+      + '<div class="bar"><button class="btn" data-act="nbOpen">🔎 Søk og legg til bygg →</button></div>'
       + '</div>';
 
-    var coreCard = '<p class="note">@onsite/core: ' + (coreReady() ? (Object.keys(window.OnSiteCore).length + ' motorer lastet — DB-rader mappes til samme plain-JS-form demoen bruker (rowToCore/coreToRow).') : 'laster…') + '</p>';
+    app.innerHTML = head + installHintHTML() + buildingsCard + addCard;
+  }
+  /* onboarding A: the search-first add-building wizard view (doc-82). */
+  function renderNewBuilding() {
+    var nb = S.nb || { mode: "name" };
+    var head =
+      '<div class="top"><div><span class="logo">● ONSITE</span><span class="prodtag">prod</span>'
+      + (S.tenant && S.tenant.name ? ' <span class="tenant">' + esc(S.tenant.name) + '</span>' : '') + headerChipsHTML()
+      + '</div><div style="display:flex;gap:8px;align-items:center"><span class="who">' + esc(userEmail()) + '</span><button class="btn ghost" data-act="signout" style="padding:8px 12px">Logg av</button></div></div>';
+    var bhead = '<div class="bhead"><button class="btn ghost" data-act="nbCancel" style="padding:9px 13px">← Bygg</button><div><h1>Legg til bygg</h1><div class="note">Fra offentlige registre — geonorge + Brønnøysund</div></div></div>';
 
-    app.innerHTML = head + installHintHTML() + buildingsCard + addCard + coreCard;
+    var search = '';
+    if (!nb.prefill) {
+      var tName = 'class="btn ' + (nb.mode === "name" ? '' : 'ghost') + '" data-act="nbModeName" style="padding:9px 13px"';
+      var tAddr = 'class="btn ' + (nb.mode === "address" ? '' : 'ghost') + '" data-act="nbModeAddr" style="padding:9px 13px"';
+      search = '<div class="card"><div class="ct">1 · Søk</div>'
+        + '<div class="bar" style="margin-top:0"><button ' + tName + '>🏢 Navn (borettslag/sameie)</button><button ' + tAddr + '>📍 Adresse</button></div>'
+        + '<label>' + (nb.mode === "name" ? "Navn på borettslag/sameie" : "Adresse") + '</label>'
+        + '<input id="nb_q" placeholder="' + (nb.mode === "name" ? "f.eks. Mellomgården borettslag" : "f.eks. Rødtvetveien 20, Oslo") + '" value="' + esc(nb.query || "") + '">'
+        + (nb.error ? '<div class="msg err">' + esc(nb.error) + '</div>' : '')
+        + '<div class="bar"><button class="btn" data-act="nbSearch"' + (nb.loading ? ' disabled' : '') + '>' + (nb.loading ? '<span class="spin"></span>Søker…' : 'Søk →') + '</button>'
+        + '<button class="btn ghost" data-act="nbManual">Fyll inn manuelt</button></div></div>';
+    }
+
+    var results = '';
+    if (nb.results && !nb.prefill) {
+      var items = nb.results.items || [];
+      var body = !items.length ? '<div class="empty">Ingen treff — prøv et annet søk eller fyll inn manuelt.</div>'
+        : items.map(function (it, i) {
+          if (nb.results.type === "brreg") {
+            var of = (it.organisasjonsform || {});
+            return '<button class="bldg click" data-act="nbPick" data-idx="' + i + '"><span><span class="t">🏢 ' + esc(titleCase(it.navn || "")) + '</span><span class="d">org ' + esc(it.organisasjonsnummer || "") + (of.beskrivelse ? ' · ' + esc(of.beskrivelse) : '') + '</span></span><span class="chev">›</span></button>';
+          }
+          var pa = parseAddr(it);
+          return '<button class="bldg click" data-act="nbPick" data-idx="' + i + '"><span><span class="t">📍 ' + esc(pa.adressetekst) + '</span><span class="d">' + esc([pa.poststed, (pa.gnr ? 'gnr ' + pa.gnr + '/' + pa.bnr : '')].filter(Boolean).join(' · ')) + '</span></span><span class="chev">›</span></button>';
+        }).join("");
+      results = '<div class="card"><div class="ct">2 · Velg treff</div>' + body + '</div>';
+    }
+
+    var confirm = nb.prefill ? nbConfirmHTML(nb.prefill, nb) : '';
+    app.innerHTML = head + bhead + search + results + confirm;
+  }
+  function nbConfirmHTML(p, nb) {
+    var needGeo = (nb.results && nb.results.type === "brreg") || p.source === "Brønnøysund" || !p.gnr;
+    var opp = p.oppgangLoading ? '<div class="note"><span class="spin"></span>Søker oppganger…</div>'
+      : (p.entrances && p.entrances.length)
+        ? '<div class="binbox" style="border-color:var(--teal)"><b>🏘️ ' + p.entrances.length + ' oppgang' + (p.entrances.length !== 1 ? 'er' : '') + ' funnet</b> på gnr ' + esc(p.gnr) + '/' + esc(p.bnr) + ': '
+          + p.entrances.map(function (e) { return esc((e.nummer || "") + (e.bokstav || "")); }).join(", ")
+          + ' · ' + p.entrances.reduce(function (s, e) { return s + (e.units || 0); }, 0) + ' boenheter'
+          + '<div class="note" style="margin:4px 0 0">Befaringen starter med byggets faktiske form.</div></div>'
+        : '';
+    return '<div class="card"><div class="ct">' + (nb.results ? '3' : '2') + ' · Bekreft og rediger <span class="muted" style="font-weight:600">· kilde: ' + esc(p.source || "") + '</span></div>'
+      + (nb.error ? '<div class="msg err">' + esc(nb.error) + '</div>' : '')
+      + '<label>Navn *</label><input id="nb_name" value="' + esc(p.name || "") + '" placeholder="Sameiet Solsiden">'
+      + '<div class="row2"><div style="flex:1"><label>Org.nr</label><input id="nb_orgnr" value="' + esc(p.orgnr || "") + '"></div><div style="flex:1"><label>Org.form</label><input id="nb_orgform" value="' + esc(p.orgform || "") + '"></div></div>'
+      + '<label>Adresse (byggets gate — ikke forvalters)</label><input id="nb_addr" value="' + esc(p.addr || "") + '" placeholder="Gate 1, 0123 Oslo">'
+      + (needGeo ? '<div class="bar" style="margin-top:8px"><button class="btn ghost" data-act="nbGeocode"' + (p.geoBusy ? ' disabled' : '') + '>' + (p.geoBusy ? '<span class="spin"></span>Geokoder…' : '📍 Geokod (finn gnr/bnr + koordinater)') + '</button></div>' : '')
+      + '<div class="row2"><div style="flex:1"><label>gnr</label><input id="nb_gnr" value="' + esc(p.gnr || "") + '"></div><div style="flex:1"><label>bnr</label><input id="nb_bnr" value="' + esc(p.bnr || "") + '"></div><div style="flex:1"><label>Kommunenr</label><input id="nb_kommunenr" value="' + esc(p.kommunenummer || "") + '"></div></div>'
+      + '<div class="row2"><div style="flex:1"><label>~ Boenheter</label><input id="nb_units" value="' + esc(p.units != null ? p.units : "") + '"></div><div style="flex:1"><label>lat</label><input id="nb_lat" value="' + esc(p.lat != null ? p.lat : "") + '"></div><div style="flex:1"><label>lon</label><input id="nb_lon" value="' + esc(p.lon != null ? p.lon : "") + '"></div></div>'
+      + opp
+      + '<label>Forvalter</label><input id="nb_forvalter" value="' + esc(p.forvalter || "") + '" placeholder="—">'
+      + '<label>Styreleder</label><input id="nb_styreleder" value="' + esc(p.styreleder || "") + '" placeholder="—">'
+      + '<p class="note">Styreleder og forvalter lagres som kontakter — <b>kun navn + rolle</b> fra registeret. Telefon/e-post legges til manuelt senere; personopplysninger utover det offentlige registeret venter på sikkerhets-signoff.</p>'
+      + '<div class="bar"><button class="btn" data-act="nbCreate"' + (nb.busy ? ' disabled' : '') + '>' + (nb.busy ? '<span class="spin"></span>Oppretter…' : 'Opprett bygg →') + '</button>'
+      + '<button class="btn ghost" data-act="nbCancel">Avbryt</button></div></div>';
   }
   /* ============================ section: Eiendeler (1c-2 item 1 — assets) ============================ */
   /* v1.5 delta pull, assets (doc-80 §3): per-building watermark `wm:assets:<bid>`. Delta WITHOUT the
@@ -1192,6 +1443,10 @@
     },
     applyUpdate: function () { if (S.updateReg) OFF.applyUpdate(S.updateReg); },
     addBuilding: addBuilding,
+    // onboarding A: the registry-prefill wizard
+    nbOpen: nbOpen, nbCancel: nbCancel, nbSearch: nbSearch, nbGeocode: nbGeocode, nbManual: nbManual, nbCreate: nbCreate,
+    nbModeName: function () { nbSetMode("name"); }, nbModeAddr: function () { nbSetMode("address"); },
+    nbPick: function (el) { nbPick(parseInt(el.getAttribute("data-idx"), 10)); },
     openBuilding: function (el) { openBuilding(el.getAttribute("data-id")); },
     back: function () {
       if (S.view.name === "outbox" || S.view.name === "review") { S.view = S._prevView && S._prevView.name === "building" ? S._prevView : { name: "list" }; render(); if (S.view.name === "building") loadBuildingSections(S.view.id); return; }
@@ -1263,6 +1518,7 @@
   app.addEventListener("keydown", function (ev) {
     if (ev.key === "Enter" && ev.target && ev.target.id === "li_email") { var e = val("li_email"); rememberEmail(e); sendMagicLink(e); }
     if (ev.key === "Enter" && ev.target && ev.target.id === "li_code") { verifyCode(); }
+    if (ev.key === "Enter" && ev.target && ev.target.id === "nb_q") { ev.preventDefault(); nbSearch(); }
   });
   function bind() {} // retained no-op — render() calls it; all wiring is delegated above
 

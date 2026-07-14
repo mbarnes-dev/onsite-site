@@ -10,7 +10,7 @@
         { "key": "X-Frame-Options", "value": "SAMEORIGIN" },
         { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
         { "key": "Permissions-Policy", "value": "geolocation=()" },
-        { "key": "Content-Security-Policy", "value": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://btneqhrqnxmggwowboei.supabase.co; font-src 'self'; connect-src 'self' https://btneqhrqnxmggwowboei.supabase.co; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'" }
+        { "key": "Content-Security-Policy", "value": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://btneqhrqnxmggwowboei.supabase.co; font-src 'self'; connect-src 'self' https://btneqhrqnxmggwowboei.supabase.co https://ws.geonorge.no https://data.brreg.no; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'" }
       ]
     }
   ]
