@@ -29,6 +29,8 @@
     contacts: null, editContact: null, installEvt: null,
     // onboarding B: zones (class B) + the drafted zone photo
     zones: null, editZone: null, zonePhoto: null,
+    // desk mode D (doc-83): the assignment tray + document view + extraction form
+    tray: null, docView: null, extract: null,
     // onboarding C: the befaring checklist (working copy; persisted on the building row) + offer authoring
     checklist: null, clOpen: {}, offerBusy: false,
     // onboarding A (doc-82): the Step-0 registry-prefill wizard state (search → confirm → create)
@@ -112,8 +114,15 @@
     { id: "varmekilde", emoji: "♨️", label: "Varmekilde", area: "teknisk" },
     { id: "nøkkelboks", emoji: "🔑", label: "Nøkkelboks", area: "oppgang" },
     { id: "avfall-bin", emoji: "♻️", label: "Avfallsdunk / -brønn", area: "avfall", isBin: true },
+    // desk mode D (doc-83): the field-capture chip set — gass/utekran new; dokument is first-class (own shelf)
+    { id: "gass", emoji: "🔥", label: "Gassanlegg / -tank", area: "teknisk" },
+    { id: "utekran", emoji: "💧", label: "Utekran", area: "ute" },
+    { id: "dokument", emoji: "📄", label: "Dokument", area: "annet", isDoc: true },
     { id: "annet", emoji: "🔧", label: "Annet anlegg", area: "teknisk" }
   ];
+  // the doc-83 type-chip row (shared with pass B2's capture mode when it lands): one-tap type selection
+  var TYPE_CHIPS = ["avfall-bin", "hovedstoppekran", "gass", "utekran", "el-skap", "dokument", "annet"];
+  var DOC_TYPES = [{ k: "instruks", label: "Instruks" }, { k: "kontaktliste", label: "Kontaktliste" }, { k: "rutine", label: "Rutine" }, { k: "annet", label: "Annet" }];
   var AREAS = ["kjeller", "teknisk", "oppgang", "ute", "tak", "avfall", "heis", "fasade", "annet"];
   var BIN_TYPES = ["nedgravd", "frittstående", "kompaktor"];
   var BIN_FRACTIONS = ["Restavfall", "Papir", "Matavfall", "Plast", "Glass/metall", "Drikkekartong", "Farlig avfall", "Tekstiler"];
@@ -122,14 +131,16 @@
     return { id: row.id, type: row.type || "annet", label: row.label || "", area: row.area || "",
       geo: (row.lat != null && row.lon != null) ? { lat: row.lat, lon: row.lon } : null,
       access: row.access || "", notes: row.notes || "", complianceLink: row.compliance_link || null,
-      bin: row.bin || null, photoIds: row.photo_ids || [], _row: row };
+      bin: row.bin || null, docType: row.doc_type || null, photoIds: row.photo_ids || [], _row: row };
   }
   function assetToRow(a) {
     var isBin = assetTypeDef(a.type).isBin;
     return { type: a.type, label: (a.label || "").trim() || assetTypeDef(a.type).label, area: a.area || assetTypeDef(a.type).area,
       lat: a.geo ? a.geo.lat : null, lon: a.geo ? a.geo.lon : null,
       access: a.access || null, notes: a.notes || null, compliance_link: a.complianceLink || null,
-      bin: isBin ? (a.bin || {}) : null };
+      bin: isBin ? (a.bin || {}) : null,
+      doc_type: assetTypeDef(a.type).isDoc ? (a.docType || "annet") : null,
+      photo_ids: (a.photoIds && a.photoIds.length) ? a.photoIds : null };
   }
 
   /* ============================ auth ============================ */
@@ -500,6 +511,7 @@
     discardProofDraft();
     S.view = { name: "building", id: id };
     S.assets = null; S.proof = null; S.offers = null; S.contacts = null; S.zones = null; S.editAsset = null; S.editContact = null; S.editZone = null; S.secErr = {}; S.secMsg = {}; S.msg = null; S.error = null; S.snapTs = null;
+    S.tray = null; S.docView = null; S.extract = null;   // desk mode resets (tray DRAFTS persist in IDB; loadTray re-lists them)
     // onboarding C: the befaring is a working copy held in state — a background delta pull replacing the
     // building row must never roll back a tick the rep just made. The row stays the persistence target.
     S.checklist = null; S.clOpen = { 1: true, 3: true }; S.offerBusy = false;
@@ -509,7 +521,7 @@
   function closeBuilding() { flushPendingChecklist(); discardProofDraft(); closeBoardDoc(); S.view = { name: "list" }; S.editAsset = null; S.msg = null; S.error = null; render(); }
   function loadBuildingSections(id) {
     var uid = userId();
-    var start = function () { refreshPending(); if (!S.session || !navigator.onLine) { render(); return; } loadAssets(id); loadContacts(id); loadZones(id); loadProof(id); loadOffers(id); };
+    var start = function () { loadTray(id); refreshPending(); if (!S.session || !navigator.onLine) { render(); return; } loadAssets(id); loadContacts(id); loadZones(id); loadProof(id); loadOffers(id); };   // tray is IDB-only — works offline
     if (!uid) { start(); return; }
     OFF.cacheGet(uid, "b:" + id).then(function (snap) {
       if (snap && snap.v) { S.assets = snap.v.assets; S.proof = snap.v.proof; S.offers = snap.v.offers; S.contacts = snap.v.contacts || null; S.zones = snap.v.zones || null; S.snapTs = snap.ts; render(); }
@@ -669,6 +681,7 @@
     else if (S.view.name === "review") { renderReview(); }
     else if (S.view.name === "newBuilding") { renderNewBuilding(); }
     else if (S.noAccess) { renderNoAccess(); }
+    else if (S.view.name === "building" && S.docView) { renderDokView(); }
     else if (S.view.name === "building" && buildingById(S.view.id)) { renderBuilding(buildingById(S.view.id)); hydrateProofPhotos(); }
     else { S.view = { name: "list" }; renderApp(); }
     bind();
@@ -916,7 +929,7 @@
     var body;
     if (S.secBusy.assets && S.assets == null) body = '<div class="empty"><span class="spin"></span>Henter eiendeler…</div>';
     else if (!S.assets || !S.assets.length) body = '<div class="empty">Ingen eiendeler registrert ennå.</div>';
-    else { var aPend = pendingOpByRecord("assets"); body = S.assets.map(function (a) {
+    else { var aPend = pendingOpByRecord("assets"); body = S.assets.filter(function (a) { return !assetTypeDef(a.type).isDoc; }).map(function (a) {   // documents live on their own shelf
       var d = assetTypeDef(a.type), bin = a.bin || {};
       var meta = [a.area, bin.fraction, bin.binType, bin.capacity, bin.supplier, a.access].filter(Boolean).join(' · ');
       return '<div class="bldg"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><span><span class="t">' + d.emoji + ' ' + esc(a.label || d.label) + opChip(aPend[a.id]) + '</span>'
@@ -1274,7 +1287,10 @@
     L.tileLayer(KARTVERKET, { attribution: "© Kartverket", maxZoom: 20, maxNativeZoom: 18 }).addTo(zmap);
     zoneLayer = L.layerGroup().addTo(zmap); renderZoneLayers();
     zmap.on("moveend", function () { try { var c = zmap.getCenter(); zmapView = { center: [c.lat, c.lng], zoom: zmap.getZoom() }; } catch (e) {} });
-    zmap.on("click", function (e) { if (drawMode) handleDrawClick(e.latlng); });
+    zmap.on("click", function (e) {
+      if (drawMode) { handleDrawClick(e.latlng); return; }
+      if (S.tray && S.tray.sel) trayPlaceAt(e.latlng);   // desk mode: selected tray photo → point-asset here
+    });
     zmap.on("dblclick", function () { if (drawMode && drawMode !== "point") finishDraw(); });
     if (drawMode) { try { zmap.doubleClickZoom.disable(); } catch (e) {} el.style.cursor = "crosshair"; if (drawPts.length) updateDrawTemp(); }
     setTimeout(function () { if (zmap) zmap.invalidateSize(); }, 60);
@@ -1449,6 +1465,289 @@
       + mapBox
       + (S.editZone ? zoneFormHTML(S.editZone) : '')
       + '<div style="margin-top:10px">' + list + '</div></div>';
+  }
+
+  /* ============================ section: Importer bilder — the desk-mode assignment tray (doc-83 #4) ============================
+   * Field reality: capture on site, curation at the desk. A batch of camera-roll photos goes through the
+   * field-findings draft-IDB pipeline (compress → IDB at pick → thumbnail = the STORED blob, loud per-file
+   * failures) into a tray of unassigned thumbnails. Assignment is zero-typing: select a thumbnail → tap the
+   * map (point-asset with the photo, type from the chip row) / attach to an existing asset or zone / mark
+   * 📄 dokument / 🗑 discard. Tray items are DRAFTS (status "draft" + tray:true) — the upload drain skips
+   * them, the pending chip ignores them, discardProofDraft doesn't touch them, and they survive restarts;
+   * assignment PROMOTES the blob into the upload queue alongside the class-B op. Counters live in kv
+   * (`tray:<bid>`) so «N av M plassert» stays honest across sessions and a mid-tray crash loses nothing. */
+  function trayKey(bid) { return "tray:" + bid; }
+  function loadTray(bid) {
+    var uid = userId(); if (!uid) return;
+    Promise.all([OFF.listPhotos(uid), OFF.cacheGet(uid, trayKey(bid))]).then(function (r) {
+      var items = (r[0] || []).filter(function (p) { return p.status === "draft" && p.tray && p.buildingId === bid; });
+      var counters = (r[1] && r[1].v) || { imported: 0, placed: 0, discarded: 0 };
+      S.tray = { bid: bid, items: items, sel: null, chip: S.tray && S.tray.bid === bid ? S.tray.chip : "annet", docType: "annet", counters: counters, importing: false, err: null };
+      render();
+    }).catch(function () {});
+  }
+  function traySaveCounters() {
+    var uid = userId(); if (!uid || !S.tray) return;
+    OFF.cachePut(uid, trayKey(S.tray.bid), S.tray.counters);
+  }
+  function trayImport(el) {
+    var b = buildingById(S.view.id); if (!b) return;
+    // never drop an import silently: if loadTray's async init hasn't landed yet, initialize inline
+    if (!S.tray || S.tray.bid !== b.id) S.tray = { bid: b.id, items: [], sel: null, chip: "annet", docType: "annet", counters: { imported: 0, placed: 0, discarded: 0 }, importing: false, err: null };
+    var uid = userId(), tenantId = S.tenant && S.tenant.id;
+    var files = [].slice.call(el.files || []);
+    if (!files.length) return;
+    if (!uid || !tenantId) { S.tray.err = "Mangler tenant/bruker."; render(); return; }
+    if (!S.tray.items.length) S.tray.counters = { imported: 0, placed: 0, discarded: 0 };   // fresh batch → fresh honest count
+    S.tray.importing = true; S.tray.err = null; render();
+    var okCount = 0, failCount = 0;
+    var chain = Promise.resolve();
+    files.forEach(function (file) {
+      chain = chain.then(function () {
+        return new Promise(function (res) {
+          compressImage(file, function (dataUrl) {
+            if (!dataUrl) { failCount++; res(); return; }
+            var path = tenantId + "/" + b.id + "/" + OFF.uuid() + ".jpg";
+            OFF.queuePhoto({ path: path, userId: uid, buildingId: b.id, dataUrl: dataUrl, status: "draft", tray: true })
+              .then(function () { return OFF.getPhoto(path); })
+              .then(function (stored) {
+                if (!stored || !stored.dataUrl) { failCount++; res(); return; }   // read-back = what's stored
+                okCount++; res();
+              })
+              .catch(function () { failCount++; res(); });
+          });
+        });
+      });
+    });
+    chain.then(function () {
+      S.tray.counters.imported += okCount;
+      traySaveCounters();
+      S.tray.importing = false;
+      if (failCount) S.tray.err = "⚠ " + failCount + " av " + files.length + " bilder kunne IKKE lagres på enheten — de følger ikke med. Prøv dem igjen.";
+      loadTray(b.id);   // re-list from the STORE (thumbnails = stored blobs, never the picker)
+    });
+  }
+  function trayItem(path) { return (S.tray && S.tray.items || []).filter(function (p) { return p.path === path; })[0]; }
+  function trayAfterAssign(path) {
+    S.tray.counters.placed++; traySaveCounters();
+    S.tray.items = S.tray.items.filter(function (p) { return p.path !== path; });
+    S.tray.sel = null;
+    refreshPending(function () { render(); });
+    drainAll();
+  }
+  // select a thumbnail → tap the map → a point-asset with the photo lands there (zero typing; doc-83 #3 chips)
+  function trayPlaceAt(latlng) {
+    var t = S.tray, b = buildingById(S.view.id); if (!t || !t.sel || !b) return;
+    var d = assetTypeDef(t.chip);
+    if (d.isDoc) { trayMakeDoc(); return; }   // dokument never needs a map point
+    var uid = userId();
+    var n = (S.assets || []).filter(function (a) { return a.type === t.chip; }).length + 1;
+    var a = { id: null, type: t.chip, label: d.label.split(" (")[0].split(" /")[0] + " " + n, area: d.area,
+      access: "", notes: "", bin: d.isBin ? {} : null, geo: { lat: latlng.lat, lon: latlng.lng }, photoIds: [t.sel], docType: null };
+    var row = assetToRow(a); row.id = OFF.uuid(); row.tenant_id = S.tenant.id; row.building_id = b.id;
+    var path = t.sel;
+    OFF.promotePhoto(path)
+      .then(function () { return OFF.queueOp({ entity: "assets", op: "insert", payload: row, baseUpdatedAt: null, tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: row.label }); })
+      .then(function () {
+        S.assets = (S.assets || []).concat([assetRowToCore(row)]);
+        S.secMsg.assets = "Lagret på enheten: " + row.label + " (med foto) — synkes.";
+        snapshotBuilding(b.id);
+        trayAfterAssign(path);
+      })
+      .catch(function (e) { t.err = "⚠ Kunne IKKE lagre (" + ((e && e.message) || "lagringsfeil") + ") — bildet ligger fortsatt i skuffen."; render(); });
+  }
+  function trayMakeDoc() {
+    var t = S.tray, b = buildingById(S.view.id); if (!t || !t.sel || !b) return;
+    var uid = userId();
+    var n = (S.assets || []).filter(function (a) { return a.type === "dokument"; }).length + 1;
+    var a = { id: null, type: "dokument", label: "Dokument " + n, area: "annet", access: "", notes: "", bin: null, geo: null, photoIds: [t.sel], docType: t.docType || "annet" };
+    var row = assetToRow(a); row.id = OFF.uuid(); row.tenant_id = S.tenant.id; row.building_id = b.id;
+    var path = t.sel;
+    OFF.promotePhoto(path)
+      .then(function () { return OFF.queueOp({ entity: "assets", op: "insert", payload: row, baseUpdatedAt: null, tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: row.label }); })
+      .then(function () {
+        S.assets = (S.assets || []).concat([assetRowToCore(row)]);
+        S.secMsg.dok = "Lagret på enheten: " + row.label + " (" + (row.doc_type || "annet") + ") — synkes.";
+        snapshotBuilding(b.id);
+        trayAfterAssign(path);
+      })
+      .catch(function (e) { t.err = "⚠ Kunne IKKE lagre dokumentet (" + ((e && e.message) || "lagringsfeil") + ")."; render(); });
+  }
+  function trayAttachExisting(kind, id) {
+    var t = S.tray, b = buildingById(S.view.id); if (!t || !t.sel || !b) return;
+    var uid = userId(), path = t.sel;
+    var target = kind === "zone" ? (S.zones || []).filter(function (z) { return z.id === id; })[0]
+                                 : (S.assets || []).filter(function (a) { return a.id === id; })[0];
+    if (!target) return;
+    var base = target._row || {};
+    var newIds = (target.photoIds || []).concat([path]);
+    var op;
+    if (base.updated_at) {
+      op = { entity: kind === "zone" ? "zones" : "assets", op: "update", payload: { id: id, photo_ids: newIds },
+        baseUpdatedAt: base.updated_at, tenantId: S.tenant.id, buildingId: b.id, userId: uid,
+        title: "Foto → " + (target.label || id) };
+    } else {   // never-synced local row: re-upsert whole with the photo attached (v1.5 rule)
+      var row = kind === "zone" ? zoneToRow(target) : assetToRow(target);
+      row.id = id; row.tenant_id = S.tenant.id; row.building_id = b.id; row.photo_ids = newIds;
+      op = { entity: kind === "zone" ? "zones" : "assets", op: "insert", payload: row, baseUpdatedAt: null,
+        tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: "Foto → " + (target.label || id) };
+    }
+    OFF.promotePhoto(path)
+      .then(function () { return OFF.queueUpdate(op); })
+      .then(function () {
+        target.photoIds = newIds;   // optimistic
+        S.secMsg.assets = "Foto lagt til " + (target.label || "") + " — synkes.";
+        snapshotBuilding(b.id);
+        trayAfterAssign(path);
+      })
+      .catch(function (e) { t.err = "⚠ Kunne IKKE feste bildet (" + ((e && e.message) || "lagringsfeil") + ")."; render(); });
+  }
+  function trayDiscard() {
+    var t = S.tray; if (!t || !t.sel) return;
+    var path = t.sel;
+    OFF.delPhoto(path).then(function () {   // GC'd properly — the blob is gone
+      t.counters.discarded++; traySaveCounters();
+      t.items = t.items.filter(function (p) { return p.path !== path; });
+      t.sel = null; render();
+    });
+  }
+  function sectionTrayHTML(b) {
+    var t = S.tray;
+    var c = (t && t.counters) || { imported: 0, placed: 0, discarded: 0 };
+    var progress = c.imported ? ('<span class="chip ' + (c.placed >= c.imported - c.discarded ? 'ok' : 's') + '">' + c.placed + ' av ' + (c.imported - c.discarded) + ' plassert</span>' + (c.discarded ? ' <span class="chip q">' + c.discarded + ' forkastet</span>' : '')) : '';
+    var strip = '';
+    if (t && t.items.length) {
+      strip = '<div class="tray-strip">' + t.items.map(function (p) {
+        return '<img class="tray-thumb' + (t.sel === p.path ? ' sel' : '') + '" src="' + p.dataUrl + '" data-act="traySel" data-path="' + esc(p.path) + '" alt="uplassert bilde">';
+      }).join("") + '</div>';
+    } else if (t && !t.items.length && c.imported > 0) {
+      strip = '<div class="empty">Skuffen er tom — alt er plassert. 🎉</div>';
+    }
+    var assign = '';
+    if (t && t.sel) {
+      var chips = TYPE_CHIPS.map(function (k) { var d = assetTypeDef(k);
+        return '<button class="chip pendbtn ' + (t.chip === k ? 's' : 'q') + '" data-act="trayChip" data-id="' + k + '" style="border:none;cursor:pointer">' + d.emoji + ' ' + esc(d.label.split(" (")[0].split(" /")[0]) + '</button>';
+      }).join(" ");
+      var docPick = t.chip === "dokument"
+        ? '<div style="margin-top:6px">' + DOC_TYPES.map(function (dt) { return '<button class="chip pendbtn ' + (t.docType === dt.k ? 's' : 'q') + '" data-act="trayDocType" data-id="' + dt.k + '" style="border:none;cursor:pointer">' + esc(dt.label) + '</button> '; }).join("") + '<div class="bar" style="margin-top:8px"><button class="btn" data-act="trayMakeDoc">📄 Lagre som dokument →</button></div></div>'
+        : '<div class="note" style="margin-top:6px">👆 Trykk på kartet der bildet hører hjemme — eiendelen opprettes der med bildet festet.</div>';
+      var existing = (S.assets || []).filter(function (a) { return !assetTypeDef(a.type).isDoc; }).map(function (a) {
+        return '<option value="asset:' + esc(a.id) + '">' + assetTypeDef(a.type).emoji + ' ' + esc(a.label || assetTypeDef(a.type).label) + '</option>'; }).join("")
+        + (S.zones || []).map(function (z) { return '<option value="zone:' + esc(z.id) + '">🗺️ ' + esc(z.label || zoneSvcDef(z.service).label) + '</option>'; }).join("");
+      assign = '<div class="aform" style="margin-top:8px"><div class="note" style="font-weight:800;text-transform:uppercase;font-size:10.5px;letter-spacing:.03em">Plasser valgt bilde</div>'
+        + '<div style="margin-top:6px">' + chips + '</div>' + docPick
+        + '<label>…eller fest til eksisterende</label><select id="tray_existing"><option value="">— velg eiendel/sone —</option>' + existing + '</select>'
+        + '<div class="bar"><button class="btn ghost" data-act="trayAttach">Fest til valgt →</button>'
+        + '<button class="btn ghost" data-act="trayDiscard">🗑 Forkast bildet</button>'
+        + '<button class="btn ghost" data-act="trayDeselect">Avbryt</button></div></div>';
+    }
+    return '<div class="card"><div class="ct">🖼️ Importer bilder <span class="muted" style="font-weight:600">· skrivebordsmodus (doc-83)</span> ' + progress + '</div>'
+      + (t && t.err ? '<div class="msg err">' + esc(t.err) + '</div>' : '')
+      + '<div class="bar" style="margin-top:0"><label class="btn ghost" style="cursor:pointer;margin:0">📥 Importer bilder (kamerarull)'
+      + '<input type="file" id="tray_files" accept="image/*" multiple style="display:none"></label>'
+      + (t && t.importing ? '<span class="chip s"><span class="spin"></span> importerer…</span>' : '') + '</div>'
+      + '<p class="note">Bildene lagres på enheten (skuffen overlever omstart). Velg et bilde og plassér det — på kartet, på en eksisterende eiendel/sone, eller som 📄 dokument.</p>'
+      + strip + assign + '</div>';
+  }
+
+  /* ============================ section: Dokumenter — the shelf + the extraction seam (doc-83 #5) ============================ */
+  function docAssets() { return (S.assets || []).filter(function (a) { return assetTypeDef(a.type).isDoc; }); }
+  function docTypeLabel(k) { var d = DOC_TYPES.filter(function (x) { return x.k === k; })[0]; return d ? d.label : "Annet"; }
+  function docThumbHTML(a, big) {
+    var path = (a.photoIds || [])[0];
+    if (!path) return '<div class="empty">ingen bilde</div>';
+    var lp = {}; (S.pendingPhotos || []).forEach(function (p) { lp[p.path] = p; });
+    var local = lp[path];
+    if (local && local.dataUrl) return '<img class="' + (big ? 'dok-full' : 'proofimg') + '" src="' + local.dataUrl + '" alt="' + esc(a.label) + ' (lokalt)">';
+    return '<img class="' + (big ? 'dok-full' : 'proofimg') + '" data-photo-path="' + esc(path) + '" alt="' + esc(a.label) + '">';
+  }
+  function sectionDokHTML(b) {
+    var docs = docAssets();
+    var body = !docs.length ? '<div class="empty">Ingen dokumenter ennå — merk et bilde som 📄 dokument i skuffen over.</div>'
+      : docs.map(function (a) {
+        var pend = pendingOpByRecord("assets");
+        return '<div class="bldg"><div style="display:flex;justify-content:space-between;gap:10px;align-items:center">'
+          + '<button class="bldg click" style="border:none;margin:0;padding:4px;flex:1" data-act="dokOpen" data-id="' + esc(a.id) + '"><span><span class="t">📄 ' + esc(a.label) + ' <span class="tenant" style="font-size:11px">' + esc(docTypeLabel(a.docType)) + '</span>' + opChip(pend[a.id]) + '</span></span><span class="chev">›</span></button>'
+          + '</div>' + docThumbHTML(a) + '</div>';
+      }).join("");
+    return '<div class="card"><div class="ct">📄 Dokumenter <span class="muted" style="font-weight:600">· ' + docs.length + ' · oppslagstavler, instrukser, lister</span></div>'
+      + (S.secMsg.dok ? '<div class="msg ok">' + esc(S.secMsg.dok) + '</div>' : '')
+      + (S.secErr.dok ? '<div class="msg err">' + esc(S.secErr.dok) + '</div>' : '')
+      + body + '</div>';
+  }
+  /* Full-screen doc view + the manual-assisted extraction form. The button's future is the LLM:
+   * // PROD: LLM vision extraction — the seam is the point (same pattern as parseIntake/parseContract);
+   * until the backend milestone, a human fills the rows while viewing the photo side-by-side. */
+  function renderDokView() {
+    var a = (S.assets || []).filter(function (x) { return x.id === (S.docView && S.docView.id); })[0];
+    if (!a) { S.docView = null; S.view = { name: "building", id: S.view.id }; render(); return; }
+    var ex = S.extract;
+    var right = '';
+    if (ex) {
+      if (ex.kind === "kontaktliste") {
+        var rows = ex.rows.map(function (r, i) {
+          return '<div class="row2"><div style="flex:1.2"><input data-exf="name" data-i="' + i + '" placeholder="Navn" value="' + esc(r.name) + '"></div>'
+            + '<div style="flex:1"><input data-exf="role" data-i="' + i + '" placeholder="Rolle" value="' + esc(r.role) + '"></div>'
+            + '<div style="flex:1"><input data-exf="phone" data-i="' + i + '" inputmode="tel" placeholder="Telefon (jobb)" value="' + esc(r.phone) + '"></div></div>';
+        }).join("");
+        right = '<div class="aform"><div class="note" style="font-weight:800;text-transform:uppercase;font-size:10.5px;letter-spacing:.03em">Hent ut opplysninger — kontaktliste</div>'
+          + '<p class="note">Fyll radene mens du ser på bildet. <b>Kun arbeidskontakter — kun rolle til sign-off.</b></p>'
+          + rows
+          + '<div class="bar"><button class="btn ghost" data-act="exAddRow">+ rad</button>'
+          + '<button class="btn" data-act="exSave">Lagre som kontakter →</button>'
+          + '<button class="btn ghost" data-act="exCancel">Avbryt</button></div></div>';
+      } else {
+        right = '<div class="aform"><div class="note" style="font-weight:800;text-transform:uppercase;font-size:10.5px;letter-spacing:.03em">Kravlenke — instruks</div>'
+          + '<p class="note">Koble dokumentet til riktig kravpunkt (CompliancePack-utvidelsen kommer som egen pass).</p>'
+          + '<label>Kravlenke / referanse</label><input id="ex_link" value="' + esc(a.complianceLink || "") + '" placeholder="f.eks. brannvern §11 / gassinstruks">'
+          + '<div class="bar"><button class="btn" data-act="exSaveLink">Lagre lenke →</button><button class="btn ghost" data-act="exCancel">Avbryt</button></div></div>';
+      }
+    } else {
+      var extractBtn = a.docType === "kontaktliste"
+        ? '<button class="btn" data-act="exStart">📋 Hent ut opplysninger</button>'   // PROD: LLM vision extraction
+        : (a.docType === "instruks" ? '<button class="btn" data-act="exStartLink">🔗 Koble til krav</button>' : '');
+      right = '<div class="bar">' + extractBtn + '<button class="btn ghost" data-act="dokDelete" data-id="' + esc(a.id) + '">🗑 Slett dokument</button></div>';
+    }
+    app.innerHTML =
+      '<div class="top"><div><span class="logo">● ONSITE</span><span class="prodtag">prod</span>' + headerChipsHTML() + '</div>'
+      + '<div style="display:flex;gap:8px;align-items:center"><span class="who">' + esc(userEmail()) + '</span><button class="btn ghost" data-act="signout" style="padding:8px 12px">Logg av</button></div></div>'
+      + '<div class="bhead"><button class="btn ghost" data-act="dokClose" style="padding:9px 13px">← Dokumenter</button>'
+      + '<div><h1>📄 ' + esc(a.label) + '</h1><div class="note">' + esc(docTypeLabel(a.docType)) + '</div></div></div>'
+      + (S.secMsg.dok ? '<div class="msg ok">' + esc(S.secMsg.dok) + '</div>' : '')
+      + (S.secErr.dok ? '<div class="msg err">' + esc(S.secErr.dok) + '</div>' : '')
+      + '<div class="dok-split">'
+      + '<div class="card" style="text-align:center">' + docThumbHTML(a, true) + '</div>'
+      + '<div>' + right + '</div>'
+      + '</div>';
+    hydrateProofPhotos();
+  }
+  function exSaveContacts() {
+    var a = (S.assets || []).filter(function (x) { return x.id === (S.docView && S.docView.id); })[0];
+    var b = buildingById(S.view.id); if (!a || !b || !S.extract) return;
+    var uid = userId();
+    // read live DOM into rows first
+    [].forEach.call(app.querySelectorAll("[data-exf]"), function (el) {
+      var i = parseInt(el.getAttribute("data-i"), 10), f = el.getAttribute("data-exf");
+      if (S.extract.rows[i]) S.extract.rows[i][f] = el.value;
+    });
+    var keep = S.extract.rows.filter(function (r) { return (r.name || "").trim(); });
+    if (!keep.length) { S.secErr.dok = "Ingen rader med navn — ingenting å lagre."; render(); return; }
+    var chain = Promise.resolve();
+    keep.forEach(function (r) {
+      var cr = { id: OFF.uuid(), tenant_id: S.tenant.id, building_id: b.id, name: r.name.trim(),
+        role: (r.role || "").trim() || null, phone: (r.phone || "").trim() || null, email: null };
+      chain = chain.then(function () {
+        return OFF.queueOp({ entity: "contacts", op: "insert", payload: cr, baseUpdatedAt: null,
+          tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: cr.name });
+      }).then(function () { S.contacts = (S.contacts || []).concat([cr]); });
+    });
+    chain.then(function () {
+      snapshotBuilding(b.id);
+      S.extract = null;
+      S.secMsg.dok = keep.length + " kontakt" + (keep.length !== 1 ? "er" : "") + " lagret på enheten fra «" + a.label + "» — synkes.";
+      refreshPending(function () { render(); });
+      drainAll();
+    }).catch(function (e) { S.secErr.dok = "⚠ Kunne IKKE lagre kontaktene (" + ((e && e.message) || "lagringsfeil") + ")."; render(); });
   }
 
   /* ============================ section: Befaring (onboarding C — the walkaround checklist) ============================
@@ -1918,7 +2217,7 @@
       return '<div class="bldg"><span class="t">✅ ' + esc(p.title || "Utført arbeid") + assetChip + ' <span class="chip ok">synket ✓</span>' + fotoChip + skewChip(p) + '</span>'
         + '<span class="d">' + esc(when) + (p.by_name ? ' · ' + esc(p.by_name) : '') + (p.note ? ' · ' + esc(p.note) : '') + '</span>' + photos + '</div>';
     }).join("");
-    var assetOpts = '<option value="">— ingen spesifikk eiendel —</option>' + (S.assets || []).map(function (a) {
+    var assetOpts = '<option value="">— ingen spesifikk eiendel —</option>' + (S.assets || []).filter(function (a) { return !assetTypeDef(a.type).isDoc; }).map(function (a) {
       return '<option value="' + esc(a.id) + '">' + esc(a.label || assetTypeDef(a.type).label) + '</option>'; }).join("");
     var d = S.proofDraft || {};
     var form =
@@ -2367,6 +2666,8 @@
       + '<div><h1>🏢 ' + esc(b.name) + '</h1><div class="note">' + esc(meta) + esc(synk) + '</div></div></div>'
       + (S.error ? '<div class="msg err">' + esc(S.error) + '</div>' : '')
       + sectionKartHTML(b)
+      + sectionTrayHTML(b)
+      + sectionDokHTML(b)
       + sectionBefaringHTML(b)
       + sectionAssetsHTML(b)
       + sectionContactsHTML(b)
@@ -2461,6 +2762,47 @@
     zoneSave: zoneSave,
     zoneDel: function (el) { zoneDelete(el.getAttribute("data-id")); },
     zonePhotoRemove: function () { var p = S.zonePhoto; S.zonePhoto = null; if (p) OFF.delPhoto(p.path).then(function () { render(); }); else render(); },
+    // desk mode D: the assignment tray
+    traySel: function (el) { if (!S.tray) return; var p = el.getAttribute("data-path"); S.tray.sel = S.tray.sel === p ? null : p; S.tray.err = null; render(); },
+    trayDeselect: function () { if (S.tray) { S.tray.sel = null; render(); } },
+    trayChip: function (el) { if (S.tray) { S.tray.chip = el.getAttribute("data-id"); render(); } },
+    trayDocType: function (el) { if (S.tray) { S.tray.docType = el.getAttribute("data-id"); render(); } },
+    trayMakeDoc: trayMakeDoc,
+    trayAttach: function () {
+      var v = val("tray_existing"); if (!v) { if (S.tray) { S.tray.err = "Velg en eiendel eller sone først."; render(); } return; }
+      var kind = v.split(":")[0], id = v.slice(v.indexOf(":") + 1);
+      trayAttachExisting(kind === "zone" ? "zone" : "asset", id);
+    },
+    trayDiscard: trayDiscard,
+    // desk mode D: documents + the extraction seam
+    dokOpen: function (el) { S.docView = { id: el.getAttribute("data-id") }; S.extract = null; S.secMsg.dok = null; S.secErr.dok = null; render(); },
+    dokClose: function () { S.docView = null; S.extract = null; render(); },
+    dokDelete: function (el) { var id = el.getAttribute("data-id"); S.docView = null; S.extract = null; assetDelete(id); },
+    exStart: function () { S.extract = { kind: "kontaktliste", rows: [{ name: "", role: "", phone: "" }, { name: "", role: "", phone: "" }, { name: "", role: "", phone: "" }, { name: "", role: "", phone: "" }, { name: "", role: "", phone: "" }] }; render(); },   // PROD: LLM vision extraction fills these rows
+    exStartLink: function () { S.extract = { kind: "link" }; render(); },
+    exCancel: function () { S.extract = null; render(); },
+    exAddRow: function () {
+      if (!S.extract || !S.extract.rows) return;
+      [].forEach.call(app.querySelectorAll("[data-exf]"), function (el) {   // keep typed values across the re-render
+        var i = parseInt(el.getAttribute("data-i"), 10), f = el.getAttribute("data-exf");
+        if (S.extract.rows[i]) S.extract.rows[i][f] = el.value;
+      });
+      S.extract.rows.push({ name: "", role: "", phone: "" }); render();
+    },
+    exSave: exSaveContacts,
+    exSaveLink: function () {
+      var a = (S.assets || []).filter(function (x) { return x.id === (S.docView && S.docView.id); })[0];
+      var b = buildingById(S.view.id); if (!a || !b) return;
+      var link = val("ex_link") || null, uid = userId(), base = a._row || {};
+      var op = base.updated_at
+        ? { entity: "assets", op: "update", payload: { id: a.id, compliance_link: link }, baseUpdatedAt: base.updated_at, tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: a.label }
+        : (function () { var row = assetToRow(a); row.id = a.id; row.tenant_id = S.tenant.id; row.building_id = b.id; row.compliance_link = link; return { entity: "assets", op: "insert", payload: row, baseUpdatedAt: null, tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: a.label }; })();
+      OFF.queueUpdate(op).then(function () {
+        a.complianceLink = link;
+        S.extract = null; S.secMsg.dok = "Kravlenke lagret på enheten — synkes.";
+        snapshotBuilding(b.id); refreshPending(function () { render(); }); drainAll();
+      }).catch(function (e) { S.secErr.dok = "⚠ Kunne IKKE lagre lenken (" + ((e && e.message) || "lagringsfeil") + ")."; render(); });
+    },
     // small pass: add-to-home-screen (doc 81)
     a2hsInstall: function () { var e = S.installEvt; S.installEvt = null; render(); if (e && e.prompt) e.prompt(); },
     a2hsDismiss: function () { try { localStorage.setItem(A2HS_KEY, "1"); } catch (e) {} render(); },
@@ -2505,6 +2847,7 @@
     }
     if (e.target && e.target.id === "pf_photo") attachProofPhoto(e.target);   // findings #1: durable at ATTACH time
     if (e.target && e.target.id === "z_photo") attachZonePhoto(e.target);      // onboarding B: zone photo, same draft pipeline
+    if (e.target && e.target.id === "tray_files") trayImport(e.target);        // desk mode D: batch import → draft-IDB tray
     if (e.target && e.target.getAttribute && e.target.getAttribute("data-zsvc")) {   // service change → method options change
       if (S.editZone) { S.editZone.service = e.target.value; S.editZone.method = zoneDefaultMethod(e.target.value); render(); }
     }

@@ -56,6 +56,17 @@ a{color:var(--teal-d)}
 .thumbrow{display:flex;align-items:flex-start;gap:8px;margin-top:7px}
 /* field-findings #2: keyboard up in landscape → collapse chrome, the form owns the height */
 body.kb-land .top,body.kb-land .bhead,body.kb-land .ct{display:none}
+/* desk mode D (doc-83): the assignment tray + document view + desk-width workbench */
+.tray-strip{display:flex;gap:8px;overflow-x:auto;padding:8px 2px;margin-top:8px;-webkit-overflow-scrolling:touch}
+.tray-thumb{width:86px;height:86px;object-fit:cover;border-radius:10px;border:2px solid var(--line);cursor:pointer;flex-shrink:0;background:var(--bg)}
+.tray-thumb.sel{border-color:var(--teal);box-shadow:0 0 0 2px var(--teal-l)}
+.dok-full{max-width:100%;max-height:70vh;border-radius:10px;border:1px solid var(--line)}
+.dok-split{display:block}
+@media(min-width:1000px){
+  /* doc 62: field taps, desk types — at desk widths the building record is a workbench, not a phone form */
+  .wrap{max-width:1000px}
+  .dok-split{display:grid;grid-template-columns:1.2fr 1fr;gap:14px;align-items:start}
+}
 /* onboarding B: Kart section — the map needs an explicit height; zone markers are divIcons (no image deps) */
 .kart-map{height:340px;border-radius:12px;border:1px solid var(--line);background:#e8eae6}
 .leaflet-container{font:inherit}
