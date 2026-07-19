@@ -969,7 +969,7 @@
         tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: row.label };
       coreAfter = assetRowToCore(row);
     }
-    OFF.queueOp(op).then(function () {
+    OFF.queueUpdate(op).then(function () {
       // optimistic: state + snapshot take the edit NOW; the chip says `lagret på enheten` until acked
       if (a.id) S.assets = (S.assets || []).map(function (x) { return x.id === a.id ? coreAfter : x; });
       else S.assets = (S.assets || []).concat([coreAfter]);
@@ -1003,7 +1003,7 @@
       op = { entity: "assets", op: "insert", payload: row, baseUpdatedAt: null,
         tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: title };
     }
-    OFF.queueOp(op).then(function () {
+    OFF.queueUpdate(op).then(function () {
       S.assets = (S.assets || []).filter(function (x) { return x.id !== id; });
       S.secMsg.assets = "Slettet — lagret på enheten, synkes.";
       snapshotBuilding(b.id);
@@ -1110,7 +1110,7 @@
         tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: row.name };
       after = row;
     }
-    OFF.queueOp(op).then(function () {
+    OFF.queueUpdate(op).then(function () {
       if (ec.id) S.contacts = (S.contacts || []).map(function (x) { return x.id === ec.id ? after : x; });
       else S.contacts = (S.contacts || []).concat([after]);
       S.editContact = null;
@@ -1138,7 +1138,7 @@
       op = { entity: "contacts", op: "insert", payload: row, baseUpdatedAt: null,
         tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: title };
     }
-    OFF.queueOp(op).then(function () {
+    OFF.queueUpdate(op).then(function () {
       S.contacts = (S.contacts || []).filter(function (x) { return x.id !== id; });
       S.secMsg.contacts = "Slettet — lagret på enheten, synkes.";
       snapshotBuilding(b.id);
@@ -1385,7 +1385,7 @@
       op = { entity: "zones", op: "insert", payload: row, baseUpdatedAt: null, tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: z.label || zoneSvcDef(z.service).label };
       z.id = row.id; after = zoneRowToCore(row);
     }
-    var commit = draftPath ? OFF.promotePhoto(draftPath).then(function () { return OFF.queueOp(op); }) : OFF.queueOp(op);
+    var commit = draftPath ? OFF.promotePhoto(draftPath).then(function () { return OFF.queueUpdate(op); }) : OFF.queueUpdate(op);
     commit.then(function () {
       if (z.id && (S.zones || []).some(function (x) { return x.id === z.id; })) S.zones = S.zones.map(function (x) { return x.id === z.id ? after : x; });
       else S.zones = (S.zones || []).concat([after]);
@@ -1402,7 +1402,7 @@
     var base = z._row || {}, op, title = "Slett sone: " + (z.label || zoneSvcDef(z.service).label);
     if (base.updated_at) op = { entity: "zones", op: "update", payload: { id: id, deleted_at: new Date().toISOString() }, baseUpdatedAt: base.updated_at, tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: title };
     else { var row = zoneToRow(z); row.id = id; row.tenant_id = S.tenant.id; row.building_id = b.id; row.deleted_at = new Date().toISOString(); op = { entity: "zones", op: "insert", payload: row, baseUpdatedAt: null, tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: title }; }
-    OFF.queueOp(op).then(function () {
+    OFF.queueUpdate(op).then(function () {
       S.zones = (S.zones || []).filter(function (x) { return x.id !== id; });
       S.secMsg.zones = "Sone slettet — lagret på enheten, synkes."; snapshotBuilding(b.id); refreshPending(function () { render(); }); drainAll();
     }).catch(function (e) { S.secErr.zones = "⚠ Kunne ikke lagre slettingen (" + ((e && e.message) || "lagringsfeil") + ")."; render(); });

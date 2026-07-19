@@ -78,6 +78,39 @@
   }
   function setOp(op) { return tx("outbox", "readwrite", function (s) { s.put(op); }); }
   function delOp(opId) { return tx("outbox", "readwrite", function (s) { s.delete(opId); }); }
+  function getOp(opId) { return tx("outbox", "readonly", function (s) { return s.get(opId); }).then(function (r) { return r || null; }); }
+  /* doc-80 §2 refined (self-conflict fix): ONE pending update op per row. A second edit of the same row
+   * while the first is still QUEUED merges its changed fields into the existing op (later value wins per
+   * field) and keeps the ORIGINAL baseUpdatedAt — both edits were made on top of that base locally, so it
+   * stays the honest base. A soft-delete supersedes pending edits (fields are moot). Never merges into an
+   * op in `sending` (queued behind instead; the drain re-bases it on the leader's ack), never across
+   * rows/entities, never other users' ops — genuine REMOTE conflicts still fire exactly as v1.5 built. */
+  var _acked = {};   // entity:id → updated_at from THIS device's own update acks (session-lived).
+  // Third window of the same bug: an edit queued AFTER our own ack but BEFORE the delta pull refreshes
+  // the local row still carries the pre-ack base. Upgrading to the acked ts is honest (the edit was made
+  // on top of our own applied fields); a genuinely newer REMOTE edit still mismatches → real conflict.
+  function ackedBase(op) {
+    var ak = _acked[op.entity + ":" + op.payload.id];
+    if (ak && (!op.baseUpdatedAt || op.baseUpdatedAt < ak)) op.baseUpdatedAt = ak;
+    return op;
+  }
+  function queueUpdate(op) {
+    if (op.op !== "update" || !op.payload || !op.payload.id) return queueOp(op);   // inserts etc. pass through
+    return listOps(op.userId).then(function (ops) {
+      var pend = ops.filter(function (o) {
+        return o.op === "update" && o.entity === op.entity && o.status === "queued" &&
+               o.payload && o.payload.id === op.payload.id;
+      })[0];
+      if (!pend) return queueOp(ackedBase(op));
+      if (op.payload.deleted_at) {
+        pend.payload = { id: pend.payload.id, deleted_at: op.payload.deleted_at };   // delete supersedes
+      } else {
+        for (var k in op.payload) if (k !== "id") pend.payload[k] = op.payload[k];   // later value wins per field
+      }
+      pend.title = op.title || pend.title;
+      return setOp(pend).then(function () { return pend; });
+    });
+  }
   function listOps(userId) {
     return getAll("outbox").then(function (all) {
       return (all || []).filter(function (o) { return o.userId === userId; })
@@ -157,9 +190,31 @@
         if (o.status === "sending" && now - (o.sendingAt || 0) < 60000) return false;   // in-flight elsewhere; stale 'sending' (crash) re-runs
         return (o.nextAt || 0) <= now;
       });
+      // a successful update returns the server's NEW updated_at (the .select() plumbing) — any queued
+      // follower op for the same row (the sending-race window) is re-based onto it so it drains clean.
+      function rebaseFollowers(o, newTs) {
+        if (!newTs) return Promise.resolve();
+        _acked[o.entity + ":" + o.payload.id] = newTs;   // remember our own ack (see ackedBase)
+        return getAll("outbox").then(function (all) {
+          var c2 = Promise.resolve();
+          (all || []).forEach(function (f) {
+            if (f.opId !== o.opId && f.op === "update" && f.entity === o.entity && f.userId === o.userId &&
+                f.status === "queued" && f.payload && f.payload.id === o.payload.id) {
+              f.baseUpdatedAt = newTs;
+              c2 = c2.then(function () { return setOp(f); });
+            }
+          });
+          return c2;
+        });
+      }
       var chain = Promise.resolve();
       run.forEach(function (o) {
         chain = chain.then(function () {
+          // re-read from the store: a queueUpdate coalesce (or a discard) may have changed/removed this op
+          // after the run snapshot — sending the stale in-memory copy would silently drop merged fields.
+          return getOp(o.opId).then(function (fresh) {
+            if (!fresh) return null;   // coalesced away / discarded mid-drain — nothing to send
+            o = fresh;
           o.status = "sending"; o.sendingAt = Date.now();
           return setOp(o).then(function () { if (onChange) onChange(); })
             .then(function () {
@@ -175,7 +230,9 @@
                 return sb.from(o.entity).update(fields).eq("id", o.payload.id).eq("updated_at", o.baseUpdatedAt).select()
                   .then(function (r) {
                     if (r.error) return r;                                    // real error → normal classification below
-                    if ((r.data || []).length > 0) return { error: null };    // base matched → applied
+                    if ((r.data || []).length > 0) {                          // base matched → applied
+                      return rebaseFollowers(o, r.data[0] && r.data[0].updated_at).then(function () { return { error: null }; });
+                    }
                     return sb.from(o.entity).select("*").eq("id", o.payload.id).maybeSingle().then(function (cur) {
                       if (cur && cur.error) return cur;   // couldn't SEE the winning row (network died) → retry op later, no review yet
                       return queueReview({
@@ -198,6 +255,7 @@
               o.nextAt = Date.now() + backoff(o.attempts);
               return setOp(o).then(note);
             });
+          });   // getOp fresh re-read
         });
       });
       return chain;
@@ -278,6 +336,7 @@
     cachePut: cachePut, cacheGet: cacheGet,
     uuid: uuid, queueOp: queueOp, listOps: listOps, delOp: delOp, setOp: setOp,
     queuePhoto: queuePhoto, promotePhoto: promotePhoto, listPhotos: listPhotos, getPhoto: getPhoto, delPhoto: delPhoto,
+    queueUpdate: queueUpdate,   // self-conflict fix: coalescing queue for class-B update ops
     listReview: listReview, delReview: delReview,   // v1.5: the LWW-loser surface
     countPending: countPending, drain: drain, retryHeld: retryHeld, discardAll: discardAll,
     registerSW: registerSW, applyUpdate: applyUpdate
