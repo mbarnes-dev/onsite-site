@@ -178,3 +178,26 @@ test("parseBruksenhet + aggregateBruksenheter → storeys/units/basement", () =>
   assert.equal(Core.aggregateBruksenheter([]).parsedUnits, 0);
   assert.equal(Core.aggregateBruksenheter([]).storeys, 0);
 });
+
+test("app-path parity (review-3 F-M5): buildCustomerFromApp -> computeOffer holds the 16530 anchor", () => {
+  const appFix = JSON.parse(readFileSync(join(here, "fixtures", "holtet-app.json"), "utf8"));
+  const c = Core.buildCustomerFromApp(appFix);
+  assert.equal(c.strictFloors, true, "app path is strict by default");
+  assert.equal(c.floors, 4, "etasjer carries floors");
+  assert.equal(c.markers.filter(m => m.layer === "entrance").length, 7, "innganger materialises entrance markers");
+  Core.computeOffer(c, FIXED_NOW);
+  assert.equal(c.offer.totalMonthly, 16530, "the anchor must hold through the APP builder");
+});
+
+test("strictFloors (review-3 F-M4): etasjer blank -> trappevask honestly unpriced, no fabricated kroner", () => {
+  const appFix = JSON.parse(readFileSync(join(here, "fixtures", "holtet-app.json"), "utf8"));
+  appFix.checklist = appFix.checklist.filter(i => i.id !== "etasjer");
+  const c = Core.buildCustomerFromApp(appFix);
+  assert.equal(c.floors, null);
+  Core.computeOffer(c, FIXED_NOW);
+  const opp = c.offer.modules.flatMap(m => m.lines).find(l => l.id.endsWith("cleaning:opp"));
+  assert.ok(opp, "the line still exists");
+  assert.equal(opp.computed, 0, "unpriced, never floors||4");
+  assert.match(opp.label, /mangler etasjer/);
+  assert.ok(c.offer.totalMonthly < 16530, "total excludes the unpriced line");
+});

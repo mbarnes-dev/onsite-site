@@ -168,7 +168,7 @@
     var code = (val("li_code") || "").replace(/\D/g, "");
     var email = S.otpEmail;
     if (!email) { S.error = "Send en kode først."; S.msg = null; render(); return; }
-    if (!/^\d{6}$/.test(code)) { S.error = "Koden er 6 sifre — sjekk e-posten."; render(); return; }
+    if (!/^\d{6,8}$/.test(code)) { S.error = "Koden er 6–8 sifre — sjekk e-posten."; render(); return; }   // review-3 F-M1: live config emits 8
     S.loading = true; S.error = null; render();
     // fully in-app: no redirect, no PKCE verifier handoff — works in standalone iOS and any browser.
     // shouldCreateUser stays enforced upstream: an unknown email never got a code, and verifyOtp
@@ -604,7 +604,9 @@
         : p.status === "held" ? '<span class="chip warn">får ikke synket</span>'
         : '<span class="chip q">i kø</span>';
       var b = buildingById(p.buildingId);
-      return '<div class="bldg"><span class="t">📷 Bilde ' + st + '</span><span class="d">' + esc(b ? b.name : "") + (p.lastError ? ' · ' + esc(p.lastError) : '') + '</span></div>';
+      return '<div class="bldg"><span class="t">📷 Bilde ' + st + '</span><span class="d">' + esc(b ? b.name : "") + (p.lastError ? ' · ' + esc(p.lastError) : '') + '</span>'
+        + (p.status === "rejected" ? '<span style="display:block;margin-top:6px"><button class="btn ghost" style="padding:7px 10px" data-act="discardPhoto" data-id="' + esc(p.path) + '">Forkast dette bildet</button></span>' : '')   // review-3 F-m1: rejected photos are actionable
+        + '</div>';
     }).join("");
     var anyHeld = (S.pendingOps || []).some(function (o) { return o.status === "held"; }) || (S.pendingPhotos || []).some(function (p) { return p.status === "held"; });
     app.innerHTML =
@@ -638,7 +640,7 @@
   function renderReview() {
     var rows = (S.review || []).map(function (r) {
       var b = buildingById(r.buildingId);
-      var gone = !r.serverRow;
+      var gone = !r.serverRow || !!r.serverRow.deleted_at;   // review-3 F-m2: a tombstoned row is gone — never re-apply into a hidden row
       var diffs = Object.keys(r.fields || {}).filter(function (k) { return k !== "id"; }).map(function (k) {
         var mine = fmtFieldVal(k, r.fields[k]);
         var srv = gone ? "(raden finnes ikke lenger på serveren)" : fmtFieldVal(k, r.serverRow[k]);
@@ -703,8 +705,8 @@
     var codeBlock = "";
     if (S.otpEmail) {
       codeBlock =
-        '<label>Skriv inn 6-sifret kode fra e-posten</label>'
-        + '<input id="li_code" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="6" placeholder="123456" style="letter-spacing:.3em;font-size:19px;font-weight:700">'
+        '<label>Skriv inn engangskoden fra e-posten</label>'
+        + '<input id="li_code" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="8" placeholder="12345678" style="letter-spacing:.3em;font-size:19px;font-weight:700">'
         + '<div class="bar"><button class="btn" data-act="verifyCode"' + (S.loading ? ' disabled' : '') + '>' + (S.loading ? '<span class="spin"></span>Sjekker…' : 'Logg inn med kode →') + '</button></div>'
         + '<p class="note" style="margin-bottom:0">'
         + (isStandalone()
@@ -2002,6 +2004,8 @@
     return '<div class="cl-item' + (it.scope === "upsell" ? ' up' : it.scope === "out" ? ' out' : '') + '">'
       + '<div class="cl-top"><div class="cl-label">' + it.emoji + ' ' + esc(it.label)
       + (it.compliance ? ' <span class="chip warn">lovpålagt</span>' : '')
+      // review-3 F-M4: the missing driver is highlighted where the rep fills it — trappevask stays unpriced until this lands
+      + (it.id === "etasjer" && (it.value == null || it.value === "") && (clItem("oppganger") || {}).scope === "in" ? ' <span class="chip warn">mangler — trengs for trappevask-pris</span>' : '')
       + (it.added ? '' : '') + '</div>'
       + '<div class="cl-scopes">' + clScopeBtnsHTML(it) + '</div></div>'
       + '<div class="cl-cap">' + clCaptureHTML(it) + (it.freq ? '<span class="cl-freq">' + esc(it.freq) + '</span>' : '') + '</div>'
@@ -2123,16 +2127,31 @@
       rd.readAsDataURL(file);
     } catch (e) { cb(null); }
   }
-  var signedUrlCache = {};   // storage path → signed url (1 h TTL; per-session cache)
+  var signedUrlCache = {};   // storage path → {url, ts} — URLs live 1 h; entries expire at ~50 min (review-3 F-m5)
+  var SIGNED_URL_MAX_AGE = 50 * 60 * 1000;
+  function mintSigned(path, img) {
+    prodDb.signPhoto(path).then(function (r) {
+      if (r.error || !r.data || !r.data.signedUrl) { img.alt = "bilde utilgjengelig"; return; }
+      signedUrlCache[path] = { url: r.data.signedUrl, ts: Date.now() };
+      if (img.isConnected) img.src = r.data.signedUrl;
+    });
+  }
   function hydrateProofPhotos() {
     [].forEach.call(app.querySelectorAll("img[data-photo-path]"), function (img) {
       var path = img.getAttribute("data-photo-path");
-      if (signedUrlCache[path]) { img.src = signedUrlCache[path]; return; }
-      prodDb.signPhoto(path).then(function (r) {
-        if (r.error || !r.data || !r.data.signedUrl) { img.alt = "bilde utilgjengelig"; return; }
-        signedUrlCache[path] = r.data.signedUrl;
-        if (img.isConnected) img.src = r.data.signedUrl;
-      });
+      if (!img.dataset.remintWired) {   // a dead URL (expired/revoked) re-mints ONCE instead of a broken image
+        img.dataset.remintWired = "1";
+        img.addEventListener("error", function () {
+          if (img.dataset.reminted) { img.alt = "bilde utilgjengelig"; return; }
+          img.dataset.reminted = "1";
+          delete signedUrlCache[path];
+          mintSigned(path, img);
+        });
+      }
+      var hit = signedUrlCache[path];
+      if (hit && Date.now() - hit.ts < SIGNED_URL_MAX_AGE) { img.src = hit.url; return; }
+      delete signedUrlCache[path];
+      mintSigned(path, img);
     });
   }
   function loadProof(bid) {
@@ -2341,26 +2360,13 @@
   // core calls nowStr() fresh per compute, so each version's createdAt is its own compute moment
   function nowStr() { try { return new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }); } catch (e) { return "i dag"; } }
   function buildingToCustomer(b, prevOffer) {
-    // core reads `entryways` from `entrance` markers. /app has no marker model (pass B ported zones, not
-    // pins), so the befaring's `innganger` count MATERIALISES them — one typed number instead of N map taps.
-    var n = clNum("innganger") || 0, markers = [];
-    for (var i = 0; i < n; i++) markers.push({ id: "ent" + i, layer: "entrance", inScope: true });
-    return {
-      id: b.id, name: b.name, addr: b.addr || "", period: "mnd",
-      floors: clNum("etasjer"),   // null → core's own default; captured → the honest trappevask line
-      checklist: (S.checklist || []).map(function (it) {
-        return { id: it.id, scope: it.scope, value: it.value, price: it.price || 0, subtype: it.subtype,
-          label: it.label, oneOff: !!it.oneOff, emoji: it.emoji, category: it.category, compliance: !!it.compliance };
-      }),
-      // plain zone objects, not the app's row-backed ones: computeOffer writes priceLineId back onto whatever
-      // it is handed, and app state is not core's to mutate
-      zones: (S.zones || []).map(function (z) {
-        return { id: z.id, service: z.service, method: z.method, area_m2: z.area_m2, length_m: z.length_m,
-          geometry: z.geometry, label: z.label || "", priority: z.priority, constraint: z.constraint };
-      }),
-      markers: markers, addedLines: [], terms: null,
-      offer: prevOffer || null   // withPrev: hand-edited finals + module choices carry across a recompute
-    };
+    // review-3 F-M5: the mapping itself lives in core (buildCustomerFromApp) so the node parity test
+    // guards this seam; this wrapper only supplies the app's state. strictFloors is on in core — a blank
+    // etasjer yields an honestly unpriced trappevask line, never floors||4 (F-M4).
+    return window.OnSiteCore.buildCustomerFromApp({
+      building: { id: b.id, name: b.name, addr: b.addr || "" },
+      checklist: S.checklist || [], zones: S.zones || [], prevOffer: prevOffer || null
+    });
   }
   function computeOfferNow() {
     var b = buildingById(S.view.id), uid = userId();
@@ -2714,7 +2720,7 @@
     reviewUseMine: function (el) {
       var id = el.getAttribute("data-id");
       var r = (S.review || []).filter(function (x) { return x.reviewId === id; })[0]; if (!r) return;
-      if (!r.serverRow || !r.serverUpdatedAt) return;   // button is disabled for these; belt and braces
+      if (!r.serverRow || !r.serverUpdatedAt || r.serverRow.deleted_at) return;   // disabled for these (incl. tombstoned — F-m2); belt and braces
       var uid = userId(); if (!uid) return;
       var payload = { id: r.recordId }; for (var k in (r.fields || {})) if (k !== "id") payload[k] = r.fields[k];
       OFF.queueOp({ entity: r.entity, op: "update", payload: payload, baseUpdatedAt: r.serverUpdatedAt,
@@ -2729,6 +2735,10 @@
     discardOp: function (el) {
       if (!window.confirm("Forkaste denne avviste registreringen?")) return;
       OFF.delOp(el.getAttribute("data-id")).then(function () { refreshPending(function () { render(); }); });
+    },
+    discardPhoto: function (el) {   // review-3 F-m1: a rejected photo can be discarded, so the chip can reach zero
+      if (!window.confirm("Forkaste dette avviste bildet? Det kan ikke gjenopprettes.")) return;
+      OFF.delPhoto(el.getAttribute("data-id")).then(function () { refreshPending(function () { render(); }); });
     },
     applyUpdate: function () { if (S.updateReg) OFF.applyUpdate(S.updateReg); },
     addBuilding: addBuilding,

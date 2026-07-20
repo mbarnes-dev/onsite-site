@@ -51,6 +51,15 @@ The 1c app's login loop depends on dashboard settings that live outside the repo
 
   **Headline goal NOT achieved:** the emailed code (`{{ .Token }}`) requires **either a Pro plan upgrade or a custom SMTP provider** — email-template customization is disabled on Free tier with the default email sender. Until then the magic-link email is link-only, so the app's `verifyOtp` code path has no code and the installed-iOS login problem is unresolved. `mailer_otp_length` is **8** (reconcile with the app's OTP-input length when the template is unblocked). Advisor after this pass: the single security WARN is still `auth_leaked_password_protection` ([remediation](https://supabase.com/docs/guides/auth/password-security#password-strength-and-leaked-password-protection)) — cosmetic for passwordless.
 
-- **2026-07-03 — decision: DEFER the OTP-email unblock.** Martin chose not to upgrade to Pro or configure custom SMTP right now. Installed-iOS PWA login stays broken by design until then (normal-browser link login works); revisit when boards onboard. The template PATCH is staged (`{{ .Token }}` body + `Logg inn i OnSite` subject) — a ~2-minute finish once either Pro is on or a custom SMTP sender is configured.
+- **2026-07-03 — decision: DEFER the OTP-email unblock.** Martin chose not to upgrade to Pro or configure custom SMTP right now. Installed-iOS PWA login stays broken by design until then (normal-browser link login works); revisit when boards onboard. The template PATCH is staged below — a ~2-minute finish once either Pro is on or a custom SMTP sender is configured.
+
+- **Staged magic-link template (review-3 ledger fix — committed here so the unblock pass is paste-ready; the `/tmp` copy was volatile and is gone).** PATCH keys: `mailer_templates_magic_link_content` = the HTML below (note the underscore key names — `magiclink` is silently ignored), `mailer_subjects_magic_link` = `Logg inn i OnSite`. The app's OTP input accepts 6–8 digits, so this works whether `mailer_otp_length` stays 8 or is pinned to 6 in the same PATCH.
+
+  ```html
+  <h2>Logg inn i OnSite</h2>
+  <p><a href="{{ .ConfirmationURL }}">Trykk her for å logge inn</a> — på denne enheten.</p>
+  <p>Eller skriv inn koden i appen: <strong style="font-size:1.3em;letter-spacing:2px">{{ .Token }}</strong></p>
+  <p style="color:#666;font-size:0.9em">Koden og lenken gjelder i én time og kan brukes én gang. Var ikke dette deg? Da kan du se bort fra denne e-posten.</p>
+  ```
 
 - **Martin — live proof after any settings change:** request login from the app; confirm existing-user sign-in still works with `disable_signup:true`. Date + initials: ______________

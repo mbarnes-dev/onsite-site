@@ -70,3 +70,9 @@ When the prototype needs multi-tenant persistence (building records, the knowled
 - **Env vars** (set in dashboards, never in git): Vercel site → `WORKER_BASE_URL`, `WORKER_SHARED_SECRET`, `SITE_URL` (+ `RESEND_*` if the site sends mail). Railway worker → `DATABASE_URL` (Railway Postgres), `WORKER_SHARED_SECRET` (must match the site exactly), `SITE_ORIGIN`, a persistent `STORAGE_DIR` on a Railway volume, `RESEND_*`, plus any Stripe keys.
 
 When you build the worker, update this file's status table and the CSP `connect-src` in `vercel.json`.
+
+## The production app (`app/`)
+
+Everything above describes the **demo**. The production app in `app/` is a different animal with
+different rules — **read `app/README.md` before touching it** (deploy is CLI-only from `app/`, the
+SW cache name is the release trigger, outbox writes have an atomicity discipline, tests run pre-deploy).

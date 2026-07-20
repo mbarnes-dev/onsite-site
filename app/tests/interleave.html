@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<!-- COMMITTED interleaving harness (review-3 F-M2/F-M3/F-M5) — drives offline.js's atomic outbox steps
+     through every dangerous interleaving, deterministically (gated hold/release, zero sleeps-as-logic).
+     Run: python3 -m http.server 8788 (repo root) → open /app/tests/interleave.html — all green + DONE fails=0.
+     Also run BEFORE deploy per app/README.md. This file ships (inert, no secrets) but is not in the SW shell. -->
+<html lang="nb"><head><meta charset="UTF-8"><title>outbox interleavings</title></head>
+<body style="background:#111;color:#9f9;font:12px/1.5 monospace;padding:14px">
+<pre id="log"></pre>
+<script>
+try { Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: { register: function () { return Promise.reject(new Error("SW off")); }, addEventListener: function () {}, getRegistrations: function () { return Promise.resolve([]); } } }); } catch (e) {}
+var CONSOLE_ERRORS = [];
+window.onerror = function (m) { CONSOLE_ERRORS.push(String(m)); };
+</script>
+<script src="../offline.js?v=5"></script>
+<script>
+var LOG = document.getElementById("log"), FAILS = 0;
+function log(s) { LOG.textContent += s + "\n"; }
+function ok(n, c, x) { if (c) log("PASS  " + n); else { FAILS++; log("FAIL  " + n + (x ? " — " + x : "")); } }
+function jstr(o) { return JSON.stringify(o); }
+var OFF = window.OnsiteOffline;
+var UID = "test-user";
+
+/* gated mock backend: an update holds until release(); records every server-side effect */
+var GATE = { hold: false, release: null };
+var SRV = { rows: { r1: { id: "r1", label: "orig", updated_at: "2026-01-01T00:00:00.000Z" } }, updates: [], stamp: 0 };
+function nextTs() { SRV.stamp += 7; return "2026-01-01T00:00:0" + (SRV.stamp % 10) + "." + (100 + SRV.stamp) + "Z"; }
+function mkResult(rows) { return { data: rows, error: null }; }
+var sbMock = {
+  from: function (t) {
+    var fs = [], kind = "select", payload = null, single = false;
+    var q = {
+      select: function () { return q; }, order: function () { return q; },
+      eq: function (k, v) { fs.push([k, v]); return q; }, is: function () { return q; }, gt: function () { return q; },
+      maybeSingle: function () { single = true; return q; },
+      upsert: function (p) { kind = "upsert"; payload = p; return q; },
+      update: function (p) { kind = "update"; payload = p; return q; },
+      then: function (res, rej) {
+        function exec() {
+          if (kind === "update") {
+            SRV.updates.push({ fields: JSON.parse(jstr(payload)), fs: fs.slice() });
+            var id = (fs.filter(function (f) { return f[0] === "id"; })[0] || [])[1];
+            var base = (fs.filter(function (f) { return f[0] === "updated_at"; })[0] || [])[1];
+            var row = SRV.rows[id];
+            if (!row || row.updated_at !== base) return mkResult([]);
+            for (var k in payload) row[k] = payload[k];
+            row.updated_at = nextTs();
+            return mkResult([JSON.parse(jstr(row))]);
+          }
+          if (kind === "upsert") { var p = JSON.parse(jstr(payload)); SRV.rows[p.id] = p; return mkResult([p]); }
+          var sid = (fs.filter(function (f) { return f[0] === "id"; })[0] || [])[1];
+          var r = SRV.rows[sid] ? JSON.parse(jstr(SRV.rows[sid])) : null;
+          return single ? { data: r, error: null } : mkResult(r ? [r] : []);
+        }
+        if (kind === "update" && GATE.hold) {
+          GATE.hold = false;
+          return new Promise(function (r) { GATE.release = function () { GATE.release = null; r(exec()); }; }).then(res, rej);
+        }
+        return new Promise(function (r) { setTimeout(function () { r(exec()); }, 0); }).then(res, rej);
+      }
+    };
+    return q;
+  },
+  storage: { from: function () { return { upload: function () { return Promise.resolve({ data: {}, error: null }); } }; } }
+};
+function op(fields, base) { return { entity: "assets", op: "update", payload: Object.assign({ id: "r1" }, fields), baseUpdatedAt: base, tenantId: "t1", buildingId: "b1", userId: UID, title: "t" }; }
+function ops() { return OFF.listOps(UID); }
+function until(fn, label, ms) { ms = ms || 5000; var t0 = Date.now(); return (function p() { return Promise.resolve().then(fn).then(function (v) { if (v) return v; if (Date.now() - t0 > ms) throw new Error("timeout: " + label); return new Promise(function (r) { setTimeout(r, 25); }).then(p); }); })(); }
+
+(function main() {
+  if (/[?&]noauto/.test(location.search)) { log("noauto: harness idle — probe mode (drive OFF/sbMock/GATE from the console or a driver)"); return; }
+  var del = indexedDB.deleteDatabase("onsite-app-offline");
+  del.onsuccess = del.onerror = del.onblocked = run;
+  function run() {
+    Promise.resolve()
+    /* ---- 1) THE F-M2 RAZOR at the atomic level: a mid-flight change survives the ack ---- */
+    .then(function () {
+      log("== 1: ack may only delete what was sent (rev guard) ==");
+      return OFF.queueUpdate(op({ label: "A" }, SRV.rows.r1.updated_at));
+    })
+    .then(function (o) {
+      window.OP1 = o.opId;
+      return OFF.claimOp(o.opId, Date.now());
+    })
+    .then(function (claimed) {
+      ok("claim: atomic queued→sending", !!claimed && claimed.status === "sending" && (claimed.rev || 1) === 1);
+      // simulate ANY writer changing the record mid-flight (the razor: it must survive the ack)
+      return OFF.setOp(Object.assign({}, claimed, { payload: { id: "r1", label: "A", access: "B" }, rev: 2, status: "sending" }))
+        .then(function () { return OFF.ackDeleteOp(window.OP1, 1); });
+    })
+    .then(function () { return ops(); })
+    .then(function (o) {
+      ok("RAZOR DEAD: rev-mismatched ack does NOT delete — record survives as queued", o.length === 1 && o[0].status === "queued" && o[0].rev === 2 && o[0].payload.access === "B", jstr(o));
+      return OFF.delOp(window.OP1);
+    })
+    /* ---- 2) coalesce vs claim, both orders ---- */
+    .then(function () {
+      log("== 2: ack-vs-coalesce ordering, both ways ==");
+      return OFF.queueUpdate(op({ label: "X" }, SRV.rows.r1.updated_at));
+    })
+    .then(function (o) { window.OP2 = o.opId; return OFF.claimOp(o.opId, Date.now()); })
+    .then(function () {
+      // order A: claim FIRST, merge second → merge must refuse (queues behind instead via queueUpdate)
+      return OFF.mergeInto(window.OP2, op({ notes: "mid" }, "whatever"));
+    })
+    .then(function (merged) {
+      ok("order A: mergeInto refuses a SENDING op", merged === null);
+      return OFF.queueUpdate(op({ notes: "mid" }, SRV.rows.r1.updated_at)).then(function (behind) {
+        window.OP2B = behind.opId;
+        ok("order A: the edit queued BEHIND as its own op", behind.opId !== window.OP2);
+        return OFF.ackDeleteOp(window.OP2, 1);
+      });
+    })
+    .then(function () { return ops(); })
+    .then(function (o) {
+      ok("order A: ack deleted only the sent op; follower intact", o.length === 1 && o[0].opId === window.OP2B, jstr(o.map(function (x) { return x.opId; })));
+      // order B: merge FIRST (rev bumps), claim second → the claim carries the merged rev; ack deletes cleanly
+      return OFF.mergeInto(window.OP2B, op({ label: "Y" }, "irrelevant"));
+    })
+    .then(function (merged) {
+      ok("order B: merge into queued bumps rev", !!merged && merged.rev === 2 && merged.payload.label === "Y" && merged.payload.notes === "mid");
+      return OFF.claimOp(window.OP2B, Date.now());
+    })
+    .then(function (claimed) {
+      ok("order B: claim sees the MERGED payload", claimed.rev === 2 && claimed.payload.label === "Y");
+      return OFF.ackDeleteOp(window.OP2B, 2);
+    })
+    .then(function () { return ops(); })
+    .then(function (o) { ok("order B: rev-matched ack deletes cleanly", o.length === 0, jstr(o)); })
+    /* ---- 3) two-drain claim contention (the cross-tab belt under the lock) ---- */
+    .then(function () {
+      log("== 3: concurrent claims — exactly one winner ==");
+      return OFF.queueUpdate(op({ label: "Z" }, SRV.rows.r1.updated_at));
+    })
+    .then(function (o) {
+      var now = Date.now();
+      return Promise.all([OFF.claimOp(o.opId, now), OFF.claimOp(o.opId, now)]).then(function (r) {
+        var winners = r.filter(Boolean);
+        ok("two concurrent claims → exactly one wins", winners.length === 1, jstr(r.map(function (x) { return !!x; })));
+        return OFF.delOp(o.opId);
+      });
+    })
+    /* ---- 4) full drain flow: coalesce lands mid-flight → queues behind → re-bases → drains clean ---- */
+    .then(function () {
+      log("== 4: flow — hold the wire, edit during flight, release ==");
+      SRV.updates = [];
+      return OFF.queueUpdate(op({ label: "flow1" }, SRV.rows.r1.updated_at));
+    })
+    .then(function () {
+      GATE.hold = true;
+      window.DRAIN1 = OFF.drain(sbMock, UID, null);   // op1 in flight, response gated
+      return until(function () { return GATE.release ? true : false; }, "op1 gated in flight");
+    })
+    .then(function () { return OFF.queueUpdate(op({ notes: "flow2" }, SRV.rows.r1.updated_at)); })
+    .then(function () { return ops(); })
+    .then(function (o) {
+      ok("flow: second edit queued BEHIND during flight", o.length === 2 && o.filter(function (x) { return x.status === "sending"; }).length === 1, jstr(o.map(function (x) { return x.status; })));
+      GATE.release();
+      return window.DRAIN1;
+    })
+    .then(function () { return ops(); })
+    .then(function (o) {
+      ok("flow: leader acked+deleted; follower re-based to the acked server ts", o.length === 1 && o[0].status === "queued" && o[0].baseUpdatedAt === SRV.rows.r1.updated_at, jstr(o.map(function (x) { return [x.status, x.baseUpdatedAt]; })) + " want " + SRV.rows.r1.updated_at);
+      return OFF.drain(sbMock, UID, null);
+    })
+    .then(function () { return Promise.all([ops(), OFF.listReview(UID)]); })
+    .then(function (r) {
+      ok("flow: follower drained clean — both fields on the server, outbox empty", r[0].length === 0 && SRV.rows.r1.label === "flow1" && SRV.rows.r1.notes === "flow2", jstr(SRV.rows.r1));
+      ok("flow: NO false conflict", r[1].length === 0, jstr(r[1]));
+    })
+    /* ---- 5) sign-out during sending: discardAll wins, ack cannot resurrect; review cleared too ---- */
+    .then(function () {
+      log("== 5: sign-out during sending ==");
+      return OFF.queueUpdate(op({ label: "bye" }, SRV.rows.r1.updated_at));
+    })
+    .then(function (o) {
+      window.OP5 = o.opId;
+      return OFF.claimOp(o.opId, Date.now());
+    })
+    .then(function () { return OFF.discardAll(UID); })
+    .then(function () { return OFF.ackDeleteOp(window.OP5, 1); })
+    .then(function () { return ops(); })
+    .then(function (o) {
+      ok("discard during flight: op gone, ack is a no-op, nothing resurrects", o.length === 0, jstr(o));
+    })
+    /* ---- 6) genuine-conflict regression: server-wins → review fires; discardAll clears review (F-m4) ---- */
+    .then(function () {
+      log("== 6: genuine conflict still fires; discardAll clears review ==");
+      // a TRUE remote conflict: device 2 moves the row BEYOND our last ack (a merely-stale base on a row
+      // we ourselves acked is window-3 territory and rightly self-heals via the own-acks map — test 4 proved it)
+      SRV.rows.r1.label = "remote"; SRV.rows.r1.updated_at = nextTs();
+      return OFF.queueUpdate(op({ label: "mine" }, "1999-01-01T00:00:00.000Z"));
+    })
+    .then(function () { return OFF.drain(sbMock, UID, null); })
+    .then(function () { return OFF.listReview(UID); })
+    .then(function (r) {
+      ok("remote-moved row → review item with both values (LWW regression intact)", r.length === 1 && r[0].fields.label === "mine" && r[0].serverRow && r[0].serverRow.label === "remote", jstr(r));
+      return OFF.discardAll(UID);
+    })
+    .then(function () { return OFF.listReview(UID); })
+    .then(function (r) {
+      ok("discardAll clears the user's review items (F-m4)", r.length === 0, jstr(r));
+      ok("zero console errors", CONSOLE_ERRORS.length === 0, CONSOLE_ERRORS.join(" | "));
+      log("DONE fails=" + FAILS);
+    })
+    .catch(function (e) { FAILS++; log("FAIL " + (e && e.message)); log("DONE fails=" + FAILS); });
+  }
+})();
+</script>
+</body></html>

@@ -4,14 +4,14 @@
  * The Supabase API is NEVER cached here — data honesty lives in the outbox/read-cache (offline.js), not
  * in HTTP caching. No Background Sync API dependency (iOS): draining is foreground (open/online/visible).
  * Same-origin only — the strict CSP is untouched (worker-src falls back to script-src 'self'). */
-var CACHE = "onsite-app-v14";   // bump WITH the asset versions in index.html — old caches are purged on activate
+var CACHE = "onsite-app-v15";   // bump WITH the asset versions in index.html — old caches are purged on activate
 var SHELL = [
   "./",
   "app.css?v=8",
-  "offline.js?v=4",
-  "app.js?v=14",
-  "boot.mjs?v=2",
-  "core.bundle.js?v=2",
+  "offline.js?v=5",
+  "app.js?v=15",
+  "boot.mjs?v=3",
+  "core.bundle.js?v=3",
   "vendor/supabase-js.min.js",
   "vendor/leaflet/leaflet.js",
   "vendor/leaflet/leaflet.css",

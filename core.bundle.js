@@ -60,8 +60,10 @@ function ckVal(c, id) { var it = (c.checklist || []).filter(function (x) { retur
 function keptVal(c, id, fb) { var it = (c.checklist || []).filter(function (x) { return x.id === id; })[0]; return (it && it.price) ? it.price : fb; }
 function driverCounts(c) {
   var entry = (c.markers || []).filter(function (m) { return m.layer === "entrance"; }).length;
+  // review-3 F-M4: under strictFloors (the /app path) a missing floor count is NULL, never a fabricated 4 —
+  // computeOffer then emits an honest unpriced trappevask line. The demo path keeps its legacy default.
   return { oppganger: parseInt(ckVal(c, "oppganger"), 10) || entry || 4, heiser: parseInt(ckVal(c, "heiser"), 10) || 0,
-    entryways: entry || parseInt(ckVal(c, "oppganger"), 10) || 4, floors: c.floors || 4 };
+    entryways: entry || parseInt(ckVal(c, "oppganger"), 10) || 4, floors: c.floors || (c.strictFloors ? null : 4) };
 }
 function zoneAgg(c) {
   var z = c.zones || [];
@@ -106,8 +108,14 @@ export function computeOffer(c, opts) {
     var oppCaptured = ckVal(c, "oppganger") != null && ckVal(c, "oppganger") !== "";
     var entryCaptured = (c.markers || []).some(function (m) { return m.layer === "entrance"; }) || oppCaptured;
     if (oppCaptured) {
+      if (n.floors == null) {
+        // strictFloors + etasjer uncaptured (review-3 F-M4): the line EXISTS but is honestly unpriced —
+        // computed 0 renders as «ikke priset» and contributes nothing; no kroner from a defaulted floor count.
+        lines.push(withPrev(oLine({ id: id + "cleaning:opp", service: "cleaning", role: "opp", label: "Trappevask " + n.oppganger + " oppg — mangler etasjer", emoji: "🧹", qty: null, unit: "", rate: null, cadence: "Ukentlig", computed: 0 })));
+      } else {
       var cl = Math.round(n.oppganger * n.floors * RATES.cleaning.per_oppgang_floor_week * WPM);
       lines.push(withPrev(oLine({ id: id + "cleaning:opp", service: "cleaning", role: "opp", label: "Trappevask " + n.oppganger + " oppg × " + n.floors + " etg", emoji: "🧹", qty: n.oppganger * n.floors, unit: "etg/uke", rate: RATES.cleaning.per_oppgang_floor_week, cadence: "Ukentlig", computed: cl })));
+      }
       if (n.heiser > 0) { var he = Math.round(n.heiser * RATES.cleaning.per_heis_week * WPM);
         lines.push(withPrev(oLine({ id: id + "cleaning:heis", service: "cleaning", role: "heis", label: "Heisrenhold " + n.heiser + " heis", emoji: "🛗", qty: n.heiser, unit: "heis/uke", rate: RATES.cleaning.per_heis_week, cadence: "Ukentlig", computed: he }))); }
     }
@@ -160,6 +168,31 @@ export function computeOffer(c, opts) {
   if (!c.offerHistory) c.offerHistory = [];
   rebuildOfferFlat(c);
   return c.offer;
+}
+/** review-3 F-M5: the /app → core seam, IN core so the parity test guards it in node. Maps the app's
+ * building + checklist rows + zone rows into the customer shape computeOffer prices. strictFloors defaults
+ * ON (no fabricated etasjer — F-M4); `innganger` materialises the entrance markers core counts (the app has
+ * no marker model). Pure: reads only its input, mutates nothing of the app's. */
+export function buildCustomerFromApp(inp) {
+  var cl = (inp && inp.checklist) || [];
+  function num(id) { var it = cl.filter(function (x) { return x.id === id; })[0]; var n = it ? parseInt(it.value, 10) : NaN; return isNaN(n) ? null : n; }
+  var nIn = num("innganger") || 0, markers = [];
+  for (var i = 0; i < nIn; i++) markers.push({ id: "ent" + i, layer: "entrance", inScope: true });
+  var b = (inp && inp.building) || {};
+  return {
+    id: b.id, name: b.name, addr: b.addr || "", period: "mnd",
+    floors: num("etasjer"), strictFloors: inp.strictFloors !== false,
+    checklist: cl.map(function (it) {
+      return { id: it.id, scope: it.scope, value: it.value, price: it.price || 0, subtype: it.subtype,
+        label: it.label, oneOff: !!it.oneOff, emoji: it.emoji, category: it.category, compliance: !!it.compliance };
+    }),
+    zones: ((inp && inp.zones) || []).map(function (z) {
+      return { id: z.id, service: z.service, method: z.method, area_m2: z.area_m2, length_m: z.length_m,
+        geometry: z.geometry, label: z.label || "", priority: z.priority, constraint: z.constraint };
+    }),
+    markers: markers, addedLines: [], terms: null,
+    offer: (inp && inp.prevOffer) || null
+  };
 }
 export function syncOfferTotals(c) {
   var o = c.offer; if (!o || !o.modules) return;
