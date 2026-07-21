@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<!-- COMMITTED fangst harness (doc-83 #3, pass B2) — boots the REAL app.js in basement mode (offline
+     identity from localStorage, tenant/buildings seeded into the IDB cache, navigator.onLine forced
+     false) with a MOCK CAMERA (canvas.captureStream) and drives the whole capture loop through real
+     DOM events: shoot → map tap → chip. Proves, deterministically:
+       1) shoot→tap→chip creates the asset op with the draft photo linked (photo promoted at placement)
+       2) the strip survives a forced full re-render AND a visibilitychange pause/resume cycle with a
+          live stream in play (the render-wipe regression, camera edition)
+       3) leaving the mode stops every track; other views never keep the camera running
+       4) getUserMedia denial falls back to the file-input camera path driving the IDENTICAL flow
+       5) serialized-outbox regression: rapid-fire 5 captures assigned fast → 5 ops + 5 photos drain
+          with no interleave loss (mock supabase records what the server would hold)
+     Run: python3 -m http.server 8788 (repo root) → open /app/tests/fangst.html — all green + DONE fails=0.
+     Ships inert (no secrets, not in the SW shell), like interleave.html. -->
+<html lang="nb"><head><meta charset="UTF-8"><title>fangst — split-screen capture harness</title>
+<link rel="stylesheet" href="../vendor/leaflet/leaflet.css">
+<link rel="stylesheet" href="../app.css?v=9">
+<style>#log{background:#111;color:#9f9;font:12px/1.5 monospace;padding:14px;border-radius:8px;white-space:pre-wrap}</style>
+</head>
+<body>
+<pre id="log"></pre>
+<div class="wrap"><div id="app"></div></div>
+<div id="printdoc" aria-hidden="true"></div>
+
+<script>
+/* ---- environment shims: no SW, controllable onLine/visibilityState, error collector ---- */
+try { Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: { register: function () { return Promise.reject(new Error("SW off")); }, addEventListener: function () {}, getRegistrations: function () { return Promise.resolve([]); } } }); } catch (e) {}
+var CONSOLE_ERRORS = [];
+window.onerror = function (m) { CONSOLE_ERRORS.push(String(m)); };
+var ONLINE = false;
+Object.defineProperty(navigator, "onLine", { configurable: true, get: function () { return ONLINE; } });
+var VIS = "visible";
+Object.defineProperty(document, "visibilityState", { configurable: true, get: function () { return VIS; } });
+
+/* ---- basement identity + hygiene ---- */
+var UID = "felt-tester";
+localStorage.setItem("sb-btneqhrqnxmggwowboei-auth-token", JSON.stringify({ user: { id: UID, email: "felt@test.no" } }));
+localStorage.setItem("onsite_a2hs_dismissed", "1");
+localStorage.removeItem("onsite-drain-lease");
+
+/* ---- mock supabase-js: auth is inert (basement), from/storage never used while offline ---- */
+window.supabase = { createClient: function () {
+  function q() { var o = { eq: function () { return o; }, is: function () { return o; }, gt: function () { return o; }, order: function () { return o; }, select: function () { return o; }, maybeSingle: function () { return o; }, upsert: function () { return o; }, update: function () { return o; }, then: function (res, rej) { return Promise.resolve({ data: null, error: { message: "offline-harness" } }).then(res, rej); } }; return o; }
+  return {
+    auth: { onAuthStateChange: function () {}, getSession: function () { return Promise.resolve({ data: { session: null } }); },
+      signInWithOtp: function () { return Promise.resolve({ error: { message: "harness" } }); },
+      verifyOtp: function () { return Promise.resolve({ error: { message: "harness" } }); },
+      signOut: function () { return Promise.resolve({}); } },
+    from: function () { return q(); },
+    storage: { from: function () { return { upload: function () { return Promise.resolve({ data: {}, error: null }); }, createSignedUrl: function () { return Promise.resolve({ data: null, error: { message: "offline" } }); } }; } }
+  };
+} };
+
+/* ---- mock camera: a painted canvas captureStream; DENY flips to the NotAllowedError path ---- */
+var DENY = false;
+var camCv = document.createElement("canvas"); camCv.width = 640; camCv.height = 480;
+var camCx = camCv.getContext("2d");
+setInterval(function () {
+  camCx.fillStyle = "#2f6f5f"; camCx.fillRect(0, 0, 640, 480);
+  camCx.fillStyle = "#fff"; camCx.fillRect(120, 100, 240, 180);
+  camCx.fillStyle = "#c33"; camCx.fillRect(400, 300, 90, 90);
+}, 100);
+if (!navigator.mediaDevices) { try { Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: {} }); } catch (e) {} }
+navigator.mediaDevices.getUserMedia = function () {
+  if (DENY) return Promise.reject(new DOMException("Permission denied", "NotAllowedError"));
+  return Promise.resolve(camCv.captureStream(10));
+};
+</script>
+
+<script src="../vendor/leaflet/leaflet.js"></script>
+<script src="../offline.js?v=5"></script>
+<script>
+var LOG = document.getElementById("log"), FAILS = 0;
+function log(s) { LOG.textContent += s + "\n"; }
+function ok(n, c, x) { if (c) log("PASS  " + n); else { FAILS++; log("FAIL  " + n + (x ? " — " + x : "")); } }
+function jstr(o) { return JSON.stringify(o); }
+var OFF = window.OnsiteOffline;
+function until(fn, label, ms) { ms = ms || 12000; var t0 = Date.now(); return (function p() { return Promise.resolve().then(fn).then(function (v) { if (v) return v; if (Date.now() - t0 > ms) throw new Error("timeout: " + label); return new Promise(function (r) { setTimeout(r, 40); }).then(p); }); })(); }
+function click(sel) { var el = document.querySelector(sel); if (!el) throw new Error("mangler element: " + sel); el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window })); return el; }
+function armed() { return document.querySelector("#fangst-strip img.tray-thumb.sel"); }
+function mapTap(dx, dy) {
+  var m = document.getElementById("kart-map"); if (!m) throw new Error("kart-map mangler");
+  try { m.scrollIntoView({ block: "center" }); } catch (e) {}
+  var r = m.getBoundingClientRect();
+  var x = r.left + r.width / 2 + (dx || 0), y = r.top + r.height / 2 + (dy || 0);
+  var t = document.elementFromPoint(x, y) || m;
+  t.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y }));
+}
+function video() { return document.getElementById("fangst-video"); }
+function vTrack() { var v = video(); var s = v && v.srcObject; return (s && s.getVideoTracks && s.getVideoTracks()[0]) || null; }
+function assetOps() { return OFF.listOps(UID).then(function (o) { return o.filter(function (x) { return x.entity === "assets"; }); }); }
+function drafts() { return OFF.listPhotos(UID).then(function (p) { return p.filter(function (x) { return x.status === "draft" && x.tray; }); }); }
+function fire(ev) { document.dispatchEvent(new Event(ev)); }
+
+/* ---- the drain-leg mock server (interleave style): records upserts + uploads ---- */
+var SRV = { tables: {}, uploads: [] };
+var sbDrain = {
+  from: function (t) {
+    var kind = "select", payload = null, fs = [], single = false;
+    var q = { select: function () { return q; }, order: function () { return q; }, is: function () { return q; }, gt: function () { return q; },
+      eq: function (k, v) { fs.push([k, v]); return q; }, maybeSingle: function () { single = true; return q; },
+      upsert: function (p) { kind = "upsert"; payload = p; return q; },
+      update: function (p) { kind = "update"; payload = p; return q; },
+      then: function (res, rej) {
+        return new Promise(function (r) { setTimeout(function () {
+          SRV.tables[t] = SRV.tables[t] || {};
+          if (kind === "upsert") { var p = JSON.parse(jstr(payload)); p.updated_at = "2026-07-21T10:00:00.000Z"; SRV.tables[t][p.id] = p; r({ data: [p], error: null }); return; }
+          if (kind === "update") { r({ data: [], error: null }); return; }
+          r(single ? { data: null, error: null } : { data: [], error: null });
+        }, 0); }).then(res, rej);
+      } };
+    return q;
+  },
+  storage: { from: function () { return { upload: function (path) { SRV.uploads.push(path); return Promise.resolve({ data: {}, error: null }); } }; } }
+};
+
+(function main() {
+  var del = indexedDB.deleteDatabase("onsite-app-offline");
+  del.onsuccess = del.onerror = del.onblocked = seed;
+  function seed() {
+    // basement seeds: the tenant + one building with coordinates (the map needs them) in the read-cache
+    Promise.all([
+      OFF.cachePut(UID, "meta", { id: "t1", role: "rep", name: "Testfirma AS", count: 1 }),
+      OFF.cachePut(UID, "buildings", [{ id: "b1", name: "Testbygg", address: "Testveien 1", gnr: "1", bnr: "2",
+        kommunenr: "0301", lat: 59.91, lon: 10.75, created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z" }])
+    ]).then(function () {
+      var s = document.createElement("script"); s.src = "../app.js?v=16";
+      s.onload = run; s.onerror = function () { FAILS++; log("FAIL app.js lastet ikke"); log("DONE fails=" + FAILS); };
+      document.body.appendChild(s);
+    }).catch(function (e) { FAILS++; log("FAIL seed: " + e.message); log("DONE fails=" + FAILS); });
+  }
+
+  var A1 = null;   // first placed asset id (retype target)
+  function run() {
+    Promise.resolve()
+    /* ---- boot: basement identity + cached building ---- */
+    .then(function () { log("== boot: basement (offline identitet + cache) =="); return until(function () { return document.querySelector('[data-act="openBuilding"][data-id="b1"]'); }, "byggliste"); })
+    .then(function () { click('[data-act="openBuilding"][data-id="b1"]'); return until(function () { return document.querySelector('[data-act="fangstToggle"]'); }, "fangst-knapp"); })
+    /* ---- 1) mode opens, mock stream renders ---- */
+    .then(function () {
+      log("== 1: fangst åpner — strøm inn i <video> ==");
+      click('[data-act="fangstToggle"]');
+      return until(function () { var v = video(); return v && v.readyState >= 2 && v.videoWidth > 0; }, "video klar");
+    })
+    .then(function () {
+      var t = vTrack();
+      ok("stream renders (captureStream attached, live)", !!t && t.readyState === "live");
+      ok("split-screen: kart ved siden av kamera", !!document.getElementById("kart-map"));
+    })
+    /* ---- 2) shoot → draft-IDB → strip (stored blob) → armed. The UI contract is EVENTUAL: the strip
+            shows the armed thumb when the read-back lands — every DOM assert here polls for it. ---- */
+    .then(function () { log("== 2: skyt → draft i IDB → stripe fra lagret blob =="); click('[data-act="fangstShoot"]'); return until(function () { return drafts().then(function (d) { return d.length === 1 ? d : null; }); }, "draft lagret"); })
+    .then(function (d) {
+      ok("shoot stored a DRAFT with tray:true for b1", d[0].buildingId === "b1" && d[0].dataUrl.indexOf("data:image") === 0);
+      return until(function () {
+        var img = document.querySelector("#fangst-strip img.tray-thumb");
+        return (img && img.getAttribute("src") === d[0].dataUrl && img.className.indexOf("sel") !== -1) || null;
+      }, "stripe viser lagret blob, armert");
+    })
+    .then(function () {
+      ok("strip thumbnail = the STORED blob, auto-armed", true);
+      return OFF.countPending(UID).then(function (c) { ok("pending chip ignores the draft (workbench, not sync)", c.total === 0, jstr(c)); });
+    })
+    /* ---- 3) tap the map → point-asset with the photo, zero typing ---- */
+    .then(function () { log("== 3: trykk kartet → punkt-eiendel med foto =="); mapTap(0, 0); return until(function () { return assetOps().then(function (o) { return o.length === 1 ? o : null; }); }, "asset-op i kø"); })
+    .then(function (o) {
+      A1 = o[0].payload.id;
+      ok("op is an outbox INSERT with the photo linked", o[0].op === "insert" && (o[0].payload.photo_ids || [])[0] && o[0].payload.photo_ids.length === 1, jstr(o[0].payload.photo_ids));
+      ok("tap position captured (lat/lon ≈ bygget)", Math.abs(o[0].payload.lat - 59.91) < 0.01 && Math.abs(o[0].payload.lon - 10.75) < 0.02, jstr([o[0].payload.lat, o[0].payload.lon]));
+      ok("default chip → «Annet anlegg 1» (auto-nummerert)", o[0].payload.label === "Annet anlegg 1", o[0].payload.label);
+      return OFF.getPhoto(o[0].payload.photo_ids[0]).then(function (p) { ok("photo PROMOTED draft→queued at placement (two-phase)", !!p && p.status === "queued", p && p.status); });
+    })
+    .then(function () { return until(function () { return document.querySelector(".ob-apin"); }, "pin på kartet"); })
+    .then(function () { ok("asset PIN visible on the map", true); })
+    /* ---- 4) chip AFTER the tap retypes + renumbers — still ONE op ---- */
+    .then(function () { log("== 4: brikke etter trykk → retype «Utekran 1» =="); click('[data-act="fangstChip"][data-id="utekran"]'); return until(function () { return assetOps().then(function (o) { return (o.length === 1 && o[0].payload.type === "utekran") ? o : null; }); }, "retype i samme op"); })
+    .then(function (o) {
+      ok("retype rewrote the QUEUED insert in place (one op per asset)", o.length === 1 && o[0].payload.id === A1, jstr(o.map(function (x) { return [x.payload.type, x.payload.label]; })));
+      ok("label renumbered per type: «Utekran 1»", o[0].payload.label === "Utekran 1", o[0].payload.label);
+      ok("photo still linked after retype", (o[0].payload.photo_ids || [])[0] === o[0].payload.photo_ids[0] && o[0].payload.photo_ids.length === 1);
+      return until(function () { var p = document.querySelector(".ob-apin"); return p && p.getAttribute("title") === "Utekran 1"; }, "pin retitlet");
+    })
+    .then(function () { ok("pin flips type in place (💧 Utekran 1)", true); })
+    /* ---- 5) render-wipe regression, camera edition — arm FIRST (the field contract: you tap when the
+            armed thumb shows), then force renders and a visibility cycle, then prove nothing was lost ---- */
+    .then(function () { log("== 5: tvungen re-render + visibilitychange med LIVE strøm =="); click('[data-act="fangstShoot"]'); return until(armed, "capture 2 armert i stripen"); })
+    .then(function () {
+      // force TWO full render()s (#app rebuilt wholesale) via the always-present asset form: open + cancel
+      click('[data-act="assetNew"]');
+      return until(function () { return document.getElementById("as_type"); }, "asset-skjema åpnet (render 1)");
+    })
+    .then(function () {
+      click('[data-act="assetCancel"]');
+      return until(function () { return !document.getElementById("as_type"); }, "asset-skjema lukket (render 2)");
+    })
+    .then(function () { return until(function () { var v = video(); return v && v.srcObject && vTrack() && vTrack().readyState === "live" ? true : null; }, "strøm gjenfestet etter re-render"); })
+    .then(function () {
+      ok("stream survives forced full re-renders (module vars + mountFangst)", vTrack().readyState === "live");
+      return until(armed, "stripe + armering overlever re-renders");
+    })
+    .then(function () {
+      ok("strip AND armed selection survive the re-renders (state+IDB, never DOM-owned)", true);
+      VIS = "hidden"; fire("visibilitychange");
+      var t = vTrack();
+      ok("backgrounded → paused (track.enabled=false), NOT stopped", !!t && t.enabled === false && t.readyState === "live", t && jstr([t.enabled, t.readyState]));
+      VIS = "visible"; fire("visibilitychange");
+      return until(function () { var tr = vTrack(); return tr && tr.enabled === true && tr.readyState === "live" ? true : null; }, "resume etter visibilitychange");
+    })
+    .then(function () {
+      ok("return → resumed without re-request (permission economy)", true);
+      return until(armed, "stripe intakt gjennom visibility-syklusen");
+    })
+    .then(function () {
+      ok("strip intact through the visibility cycle", true);
+      mapTap(30, 20);
+      return until(function () { return assetOps().then(function (o) { return o.length === 2 ? o : null; }); }, "asset 2 plassert");
+    })
+    .then(function (o) { ok("the armed capture placed as asset 2 after the cycle", o.length === 2, jstr(o.map(function (x) { return x.payload.label; }))); })
+    /* ---- 6) leaving the mode stops every track ---- */
+    .then(function () {
+      log("== 6: avslutt fangst → alle spor stoppet ==");
+      var t = vTrack();
+      click('[data-act="fangstToggle"]');
+      return until(function () { return !video() && t.readyState === "ended"; }, "spor stoppet");
+    })
+    .then(function () { ok("leaving the mode stops all tracks (battery + privacy)", true); })
+    /* ---- 7) denial → file-input camera path, identical flow ---- */
+    .then(function () {
+      log("== 7: kamera avslått → fil-input driver samme flyt ==");
+      DENY = true;
+      click('[data-act="fangstToggle"]');
+      return until(function () { return document.getElementById("fangst_file"); }, "fallback-input");
+    })
+    .then(function () {
+      ok("denial message er ærlig og rolig", document.body.textContent.indexOf("Kamera ikke tilgjengelig — bruker vanlig kameraknapp.") !== -1);
+      return new Promise(function (res) {
+        var cv = document.createElement("canvas"); cv.width = 320; cv.height = 240;
+        var cx = cv.getContext("2d"); cx.fillStyle = "#b3512f"; cx.fillRect(0, 0, 320, 240);
+        cv.toBlob(function (blob) { res(new File([blob], "felt.jpg", { type: "image/jpeg" })); }, "image/jpeg", 0.8);
+      });
+    })
+    .then(function (file) {
+      var inp = document.getElementById("fangst_file");
+      var dt = new DataTransfer(); dt.items.add(file); inp.files = dt.files;
+      inp.dispatchEvent(new Event("change", { bubbles: true }));
+      return until(armed, "fil-capture armert i stripen");
+    })
+    .then(function () { mapTap(-30, -20); return until(function () { return assetOps().then(function (o) { return o.length === 3 ? o : null; }); }, "fil-capture plassert"); })
+    .then(function (o) {
+      var last = o.filter(function (x) { return (x.payload.photo_ids || []).length === 1; });
+      ok("file-input capture → tap → asset (the mode never dead-ends)", o.length === 3 && last.length === 3, jstr(o.map(function (x) { return x.payload.label; })));
+      click('[data-act="fangstToggle"]');   // off
+      DENY = false;
+      return until(function () { return !document.getElementById("fangst_file"); }, "fallback lukket");
+    })
+    /* ---- 8) rapid-fire 5 → serialized outbox drains with no interleave loss ---- */
+    .then(function () {
+      log("== 8: hurtigserie 5 → utboksen drenerer uten tap ==");
+      click('[data-act="fangstToggle"]');
+      return until(function () { var v = video(); return v && v.readyState >= 2 && v.videoWidth > 0; }, "video klar igjen");
+    })
+    .then(function () {
+      var chain = Promise.resolve();
+      for (var i = 0; i < 5; i++) (function (i) {
+        chain = chain.then(function () {
+          click('[data-act="fangstShoot"]');
+          return until(armed, "capture " + (i + 1) + " armert");
+        }).then(function () {
+          mapTap(i * 16 - 32, i * 10 - 20);
+          return until(function () { return assetOps().then(function (o) { return o.length === 4 + i ? o : null; }); }, "asset " + (4 + i) + " i kø");
+        });
+      })(i);
+      return chain;
+    })
+    .then(function () { return Promise.all([assetOps(), OFF.listPhotos(UID)]); })
+    .then(function (r) {
+      var paths = r[0].map(function (o) { return (o.payload.photo_ids || [])[0]; });
+      var uniq = {}; paths.forEach(function (p) { uniq[p] = 1; });
+      ok("8 asset-ops queued, every one with its own photo", r[0].length === 8 && paths.filter(Boolean).length === 8 && Object.keys(uniq).length === 8, jstr(paths));
+      ok("all captures placed — no drafts left behind", r[1].filter(function (p) { return p.status === "draft"; }).length === 0);
+      click('[data-act="fangstToggle"]');   // done shooting — drain with the wire back
+      ONLINE = true;
+      return OFF.drain(sbDrain, UID, null);
+    })
+    .then(function () { return Promise.all([OFF.listOps(UID), OFF.listPhotos(UID)]); })
+    .then(function (r) {
+      var rows = SRV.tables.assets ? Object.keys(SRV.tables.assets).map(function (k) { return SRV.tables.assets[k]; }) : [];
+      ok("drain: outbox empty — all 8 ops acked", r[0].length === 0, jstr(r[0].map(function (x) { return x.status; })));
+      ok("drain: 8 distinct asset rows on the server", rows.length === 8, rows.length);
+      var a1 = SRV.tables.assets && SRV.tables.assets[A1];
+      ok("retype survived the drain: asset 1 is «Utekran 1»", !!a1 && a1.type === "utekran" && a1.label === "Utekran 1", a1 && jstr([a1.type, a1.label]));
+      ok("every server row carries its photo + position", rows.every(function (x) { return (x.photo_ids || []).length === 1 && x.lat != null && x.lon != null; }));
+      var up = {}; SRV.uploads.forEach(function (p) { up[p] = 1; });
+      ok("photo queue drained: 8 uploads, matching the rows' photo_ids", SRV.uploads.length === 8 && rows.every(function (x) { return up[x.photo_ids[0]]; }), jstr(SRV.uploads.length));
+      ok("photos marked uploaded locally (GC after grace)", r[1].filter(function (p) { return p.status === "uploaded"; }).length === 8, jstr(r[1].map(function (p) { return p.status; })));
+    })
+    .then(function () {
+      ok("zero console errors", CONSOLE_ERRORS.length === 0, CONSOLE_ERRORS.join(" | "));
+      log("DONE fails=" + FAILS);
+    })
+    .catch(function (e) { FAILS++; log("FAIL " + (e && e.message)); log("DONE fails=" + FAILS); });
+  }
+})();
+</script>
+</body></html>

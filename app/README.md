@@ -56,11 +56,14 @@ npm --prefix packages/core test         # 12 tests: core anchors + the APP-path 
 node --check app/app.js app/offline.js app/sw.js
 python3 -m http.server 8788             # repo root, then open:
 #   http://localhost:8788/app/tests/interleave.html   → expect "DONE fails=0"
+#   http://localhost:8788/app/tests/fangst.html       → expect "DONE fails=0"
 ```
 
 `app/tests/interleave.html` is the committed outbox-interleaving harness (F-M2 razor, claim contention,
-ack-vs-coalesce both orders, sign-out-during-sending, conflict regression). It ships as an inert page but
-is not in the SW shell.
+ack-vs-coalesce both orders, sign-out-during-sending, conflict regression). `app/tests/fangst.html` boots
+the REAL app.js in basement mode with a mock camera (canvas captureStream) and drives the B2 capture loop
+end-to-end (shoot→tap→chip, render-wipe with a live stream, track stop on exit, denial fallback, rapid-fire
+5 → drain). Both ship as inert pages but are not in the SW shell.
 
 ## Auth / config
 

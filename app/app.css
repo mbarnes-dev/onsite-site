@@ -72,6 +72,29 @@ body.kb-land .top,body.kb-land .bhead,body.kb-land .ct{display:none}
 .leaflet-container{font:inherit}
 .ob-zprio{background:#1d4ed8;color:#fff;font-size:11px;font-weight:800;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 3px rgba(0,0,0,.3)}
 .ob-zpt{font-size:18px;filter:drop-shadow(0 1px 2px rgba(0,0,0,.4))}
+/* fangst B2 (doc-83 #3): point-asset pins — non-interactive (placement taps pass through to the map) */
+.ob-apin{width:30px;height:30px;border-radius:50%;background:rgba(255,255,255,.92);border:2px solid var(--teal);display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 1px 4px rgba(0,0,0,.35)}
+
+/* ============================ fangst B2 (doc-83 #3): split-screen capture mode ============================
+   Landscape tablet: camera | map side by side. Portrait/phone: stacked (sequential shoot → scroll to map).
+   The shutter and the type chips are glove targets — nothing under 46px tall. */
+.fangst-split{display:grid;grid-template-columns:1fr;gap:10px}
+@media (orientation:landscape) and (min-width:700px){.fangst-split{grid-template-columns:1fr 1fr}}
+.fangst-cam{position:relative;background:#101512;border-radius:12px;overflow:hidden;min-height:240px}
+.fangst-cam video{display:block;width:100%;height:100%;min-height:240px;object-fit:cover;background:#101512}
+@media (orientation:landscape) and (min-width:700px){
+  .fangst-cam,.fangst-cam video{height:min(52vh,460px)}
+  .kart-map.fangst-kart{height:min(52vh,460px)}
+}
+.fangst-shutter{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);width:78px;height:78px;border-radius:50%;
+  border:5px solid #fff;background:rgba(255,255,255,.28);cursor:pointer;padding:0;box-shadow:0 2px 8px rgba(0,0,0,.4)}
+.fangst-shutter:active{background:#fff}
+.fangst-fb{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:240px;padding:18px;text-align:center}
+.fangst-chiprow{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.fangst-chip{min-height:46px;padding:10px 14px;border-radius:12px;border:1.5px solid var(--line);background:#fff;
+  font-family:inherit;font-size:14px;font-weight:700;color:var(--ink);cursor:pointer;white-space:nowrap}
+.fangst-chip.on{background:var(--teal-l);border-color:var(--teal);color:var(--teal-d)}
+.fangst-chip:active{background:var(--teal-l)}
 
 /* ============================ onboarding C: befaring (walkaround checklist) ============================ */
 .cl-total{font-size:12.5px;color:var(--muted);margin:10px 0 8px}

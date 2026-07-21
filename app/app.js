@@ -31,6 +31,9 @@
     zones: null, editZone: null, zonePhoto: null,
     // desk mode D (doc-83): the assignment tray + document view + extraction form
     tray: null, docView: null, extract: null,
+    // fangst B2 (doc-83 #3): split-screen capture mode — { on, fallback, err, lastId }; the STREAM lives
+    // in module vars (camStream), never here: state survives renders, the camera survives via mountFangst
+    fangst: null,
     // onboarding C: the befaring checklist (working copy; persisted on the building row) + offer authoring
     checklist: null, clOpen: {}, offerBusy: false,
     // onboarding A (doc-82): the Step-0 registry-prefill wizard state (search → confirm → create)
@@ -512,13 +515,14 @@
     S.view = { name: "building", id: id };
     S.assets = null; S.proof = null; S.offers = null; S.contacts = null; S.zones = null; S.editAsset = null; S.editContact = null; S.editZone = null; S.secErr = {}; S.secMsg = {}; S.msg = null; S.error = null; S.snapTs = null;
     S.tray = null; S.docView = null; S.extract = null;   // desk mode resets (tray DRAFTS persist in IDB; loadTray re-lists them)
+    fangstStopStream(); S.fangst = null;                 // fangst B2: mode never crosses buildings; tracks stopped (privacy/battery)
     // onboarding C: the befaring is a working copy held in state — a background delta pull replacing the
     // building row must never roll back a tick the rep just made. The row stays the persistence target.
     S.checklist = null; S.clOpen = { 1: true, 3: true }; S.offerBusy = false;
     render();
     loadBuildingSections(id);   // cache-first paint, then background refresh; each section surfaces its own errors (C1)
   }
-  function closeBuilding() { flushPendingChecklist(); discardProofDraft(); closeBoardDoc(); S.view = { name: "list" }; S.editAsset = null; S.msg = null; S.error = null; render(); }
+  function closeBuilding() { flushPendingChecklist(); discardProofDraft(); closeBoardDoc(); fangstStopStream(); S.fangst = null; S.view = { name: "list" }; S.editAsset = null; S.msg = null; S.error = null; render(); }
   function loadBuildingSections(id) {
     var uid = userId();
     var start = function () { loadTray(id); refreshPending(); if (!S.session || !navigator.onLine) { render(); return; } loadAssets(id); loadContacts(id); loadZones(id); loadProof(id); loadOffers(id); };   // tray is IDB-only — works offline
@@ -687,6 +691,8 @@
     else if (S.view.name === "building" && buildingById(S.view.id)) { renderBuilding(buildingById(S.view.id)); hydrateProofPhotos(); }
     else { S.view = { name: "list" }; renderApp(); }
     bind();
+    mountFangst();   // fangst B2: after EVERY paint — attach the live stream to the fresh <video>, or stop
+                     // the tracks the moment no view shows the camera pane (privacy: no unwatched camera)
   }
   // gate item 3: an authenticated user with NO membership gets a clear dead-end with a way out — never an empty app.
   function renderNoAccess() {
@@ -1260,7 +1266,7 @@
 
   /* ---- Leaflet map lifecycle (rebuild-per-render, view preserved) ---- */
   var KARTVERKET = "https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/{z}/{y}/{x}.png";
-  var zmap = null, zmapBid = null, zmapView = null, zoneLayer = null;
+  var zmap = null, zmapBid = null, zmapView = null, zoneLayer = null, assetLayer = null;
   var drawMode = null, drawPts = [], drawTemp = null, drawVert = null;
   function renderZoneLayers() {
     if (!zmap) return;
@@ -1278,6 +1284,18 @@
     });
   }
   function zoneTip(z) { return esc(z.label || zoneMethodLabel(z) || z.service) + " · " + zoneMeasureStr(z) + (z.priority ? " · P" + z.priority : ""); }
+  /* fangst B2 (doc-83 #3): point-assets pin onto the same map — shoot→tap→pinned needs the pin to be SEEN.
+   * interactive:false so a pin never swallows the placement tap of the next asset; details live in the list. */
+  function renderAssetLayers() {
+    if (!zmap) return;
+    if (assetLayer) assetLayer.clearLayers(); else assetLayer = L.layerGroup().addTo(zmap);
+    (S.assets || []).forEach(function (a) {
+      if (!a.geo || a.geo.lat == null || a.geo.lon == null) return;
+      var d = assetTypeDef(a.type);
+      L.marker([a.geo.lat, a.geo.lon], { interactive: false,
+        icon: L.divIcon({ className: "", html: '<div class="ob-apin" title="' + esc(a.label || d.label) + '">' + d.emoji + '</div>', iconSize: [30, 30], iconAnchor: [15, 15] }) }).addTo(assetLayer);
+    });
+  }
   function mountKartMap(b) {
     var el = document.getElementById("kart-map");
     if (!el) { if (zmap) { try { zmap.remove(); } catch (e) {} zmap = null; } return; }
@@ -1288,6 +1306,7 @@
     try { zmap = L.map(el, { zoomControl: true }).setView(view.center, view.zoom); } catch (e) { zmap = null; return; }
     L.tileLayer(KARTVERKET, { attribution: "© Kartverket", maxZoom: 20, maxNativeZoom: 18 }).addTo(zmap);
     zoneLayer = L.layerGroup().addTo(zmap); renderZoneLayers();
+    assetLayer = null; renderAssetLayers();   // fresh map instance → fresh pin layer
     zmap.on("moveend", function () { try { var c = zmap.getCenter(); zmapView = { center: [c.lat, c.lng], zoom: zmap.getZoom() }; } catch (e) {} });
     zmap.on("click", function (e) {
       if (drawMode) { handleDrawClick(e.latlng); return; }
@@ -1443,13 +1462,37 @@
   function sectionKartHTML(b) {
     var hasGeo = b.lat != null && b.lon != null;
     var zPend = pendingOpByRecord("zones");
-    var mapBox = !hasGeo
-      ? '<div class="empty">Ingen koordinater ennå — sett dem via 📍 Geokod i bygg-oppsettet for å tegne soner på kart.</div>'
-      : '<div id="kart-drawtools" class="bar" style="margin:0 0 8px">' + drawToolbarHTML() + '</div>'
+    var fangstBar = hasGeo
+      ? '<div class="bar" style="margin:0 0 8px"><button class="btn' + (fangstActive() ? '' : ' ghost') + '" data-act="fangstToggle">'
+        + (fangstActive() ? '✕ Avslutt fangst' : '📸 Fangst — skyt · pin · type') + '</button></div>'
+      : '';
+    var mapBox;
+    if (!hasGeo) {
+      mapBox = '<div class="empty">Ingen koordinater ennå — sett dem via 📍 Geokod i bygg-oppsettet for å tegne soner på kart.</div>';
+    } else if (fangstActive()) {
+      // fangst B2 (doc-83 #3): camera beside map (landscape splits, portrait stacks — shoot, then the map
+      // is one swipe/auto-scroll away). The camera pane is a shell; mountFangst attaches the module-var stream.
+      var camPane = S.fangst.fallback
+        ? '<div class="fangst-fb"><div class="note" style="color:#e8eae6;margin-bottom:10px">' + esc(S.fangst.err || "Kamera ikke tilgjengelig — bruker vanlig kameraknapp.") + '</div>'
+          + '<label class="btn" style="cursor:pointer;margin:0">📸 Ta bilde<input type="file" id="fangst_file" accept="image/*" capture="environment" style="display:none"></label></div>'
+        : '<video id="fangst-video" autoplay muted playsinline></video><button class="fangst-shutter" data-act="fangstShoot" aria-label="Ta bilde"></button>';
+      mapBox = '<div class="fangst-split">'
+        + '<div class="fangst-cam">' + camPane + '</div>'
+        + '<div><div id="kart-map" class="kart-map fangst-kart"></div></div>'
+        + '</div>'
+        + '<div id="fangst-strip">' + fangstStripHTML() + '</div>'
+        + '<div id="fangst-chips" class="fangst-chiprow">' + fangstChipsHTML() + '</div>'
+        + '<div id="fangst-note">' + fangstNoteHTML() + '</div>'
+        + (S.offline ? '<div class="note" style="margin-top:6px">🗺️ Kartbakgrunn utilgjengelig uten nett — trykk der punktet hører hjemme; alt lagres og synkes.</div>' : '')
+        + '<div class="note" style="margin-top:6px;font-size:11px">Kartdata © Kartverket</div>';
+    } else {
+      mapBox = '<div id="kart-drawtools" class="bar" style="margin:0 0 8px">' + drawToolbarHTML() + '</div>'
         + '<div id="kart-readout" style="min-height:20px;margin-bottom:6px"></div>'
         + '<div id="kart-map" class="kart-map"></div>'
         + (S.offline ? '<div class="note" style="margin-top:6px">🗺️ Kartbakgrunn utilgjengelig uten nett — sonelisten under er fullt brukbar; tegning lagres og synkes.</div>' : '')
         + '<div class="note" style="margin-top:6px;font-size:11px">Kartdata © Kartverket</div>';
+    }
+    mapBox = fangstBar + mapBox;
     var list;
     if (S.secBusy.zones && S.zones == null) list = '<div class="empty"><span class="spin"></span>Henter soner…</div>';
     else if (!S.zones || !S.zones.length) list = '<div class="empty">Ingen tegnede soner ennå — bruk <b>Tegn sone</b> over kartet.</div>';
@@ -1536,6 +1579,10 @@
     S.tray.sel = null;
     refreshPending(function () { render(); });
     drainAll();
+    // fangst B2, portrait sequential flow: placed → camera slides back for the next shot (post-render)
+    if (fangstActive() && fangstPortrait()) setTimeout(function () {
+      var c = document.querySelector(".fangst-cam"); if (c && c.scrollIntoView) c.scrollIntoView({ block: "start", behavior: "smooth" });
+    }, 150);
   }
   // select a thumbnail → tap the map → a point-asset with the photo lands there (zero typing; doc-83 #3 chips)
   function trayPlaceAt(latlng) {
@@ -1554,6 +1601,7 @@
         S.assets = (S.assets || []).concat([assetRowToCore(row)]);
         S.secMsg.assets = "Lagret på enheten: " + row.label + " (med foto) — synkes.";
         snapshotBuilding(b.id);
+        if (fangstActive()) S.fangst.lastId = row.id;   // B2: the next chip tap retypes THIS asset
         trayAfterAssign(path);
       })
       .catch(function (e) { t.err = "⚠ Kunne IKKE lagre (" + ((e && e.message) || "lagringsfeil") + ") — bildet ligger fortsatt i skuffen."; render(); });
@@ -1571,6 +1619,7 @@
         S.assets = (S.assets || []).concat([assetRowToCore(row)]);
         S.secMsg.dok = "Lagret på enheten: " + row.label + " (" + (row.doc_type || "annet") + ") — synkes.";
         snapshotBuilding(b.id);
+        if (fangstActive()) S.fangst.lastId = row.id;   // B2: a chip tap can still re-type a mis-filed doc
         trayAfterAssign(path);
       })
       .catch(function (e) { t.err = "⚠ Kunne IKKE lagre dokumentet (" + ((e && e.message) || "lagringsfeil") + ")."; render(); });
@@ -1650,6 +1699,211 @@
       + (t && t.importing ? '<span class="chip s"><span class="spin"></span> importerer…</span>' : '') + '</div>'
       + '<p class="note">Bildene lagres på enheten (skuffen overlever omstart). Velg et bilde og plassér det — på kartet, på en eksisterende eiendel/sone, eller som 📄 dokument.</p>'
       + strip + assign + '</div>';
+  }
+
+  /* ============================ Fangst — split-screen capture mode (doc-83 #3, pass B2) ============================
+   * Martin's field spec: camera on one half of the landscape tablet, the map on the other; shoot → tap →
+   * pinned. This mode is a THIN SKIN over machinery that already exists and is already reviewed:
+   *   · a capture = one photo through the field-findings draft-IDB pipeline (queuePhoto status:"draft",
+   *     tray:true → read BACK → thumbnail is the STORED blob). Un-tapped captures are ordinary tray drafts —
+   *     they survive restarts and are assignable later at the desk; nothing is lost by walking on.
+   *   · placement = the SAME map-click path desk mode uses (S.tray.sel armed → trayPlaceAt): point-asset
+   *     with the photo, type from the armed chip, auto-numbered label, through the outbox. Zero typing.
+   *   · chip AFTER the tap retypes the just-placed asset (S.fangst.lastId): never-synced → queueCoalesced
+   *     rewrites the queued insert in place (ONE op per asset, no FIFO-order hazard between two upserts of
+   *     the same row); already-acked → a base-checked class-B update via queueUpdate. Chip stays armed, so
+   *     repeats of the same type are shoot-tap, shoot-tap.
+   * STREAM LIFECYCLE — the Leaflet pattern: render() rewrites #app wholesale, so the MediaStream lives in
+   * module vars and mountFangst() (called after every paint) re-attaches it to the fresh <video>. Backgrounding
+   * pauses (track.enabled=false); return resumes; a track iOS killed while backgrounded (readyState!=="live")
+   * is re-requested — permission survives the session, so that is prompt-free. Leaving the mode/view stops
+   * every track (battery + privacy: the camera never runs without its pane on screen). Shoot and thumb-select
+   * refresh SURGICALLY (strip/chips/note only): the map must never rebuild between the shoot and the tap. */
+  var camStream = null, camBusy = false;
+  function fangstActive() { return !!(S.fangst && S.fangst.on); }
+  function fangstPortrait() { return window.innerHeight > window.innerWidth; }
+  function fangstStopStream() {
+    if (camStream) { try { camStream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {} camStream = null; }
+  }
+  function fangstPause() {   // backgrounded mid-fangst: keep the stream, stop the sensors draining battery
+    if (camStream) { try { camStream.getTracks().forEach(function (t) { t.enabled = false; }); } catch (e) {} }
+    var v = document.getElementById("fangst-video"); if (v && v.pause) { try { v.pause(); } catch (e) {} }
+  }
+  function fangstResume() {
+    if (!fangstActive() || S.fangst.fallback) return;
+    var t = camStream && camStream.getVideoTracks && camStream.getVideoTracks()[0];
+    if (!t || t.readyState !== "live") { fangstStopStream(); mountFangst(); return; }   // hard failure only → re-request
+    try { camStream.getTracks().forEach(function (tr) { tr.enabled = true; }); } catch (e) {}
+    var v = document.getElementById("fangst-video");
+    if (v) { if (v.srcObject !== camStream) v.srcObject = camStream; if (v.play) v.play().catch(function () {}); }
+  }
+  function mountFangst() {   // called after EVERY render — the single owner of stream↔DOM attachment
+    var v = document.getElementById("fangst-video");
+    if (!fangstActive() || !v) {
+      // mode off, or the current view has no camera pane (outbox/review/doc/list/sign-out): tracks stop NOW
+      if (camStream) fangstStopStream();
+      if (!v && S.fangst && S.fangst.on && !S.fangst.fallback) S.fangst.on = false;   // left the pane behind → mode ends honestly
+      return;
+    }
+    if (S.fangst.fallback) return;   // file-input path — no stream to manage
+    var t = camStream && camStream.getVideoTracks && camStream.getVideoTracks()[0];
+    if (t && t.readyState === "live") {
+      if (v.srcObject !== camStream) v.srcObject = camStream;
+      if (v.play) v.play().catch(function () {});
+      return;
+    }
+    fangstStartStream();
+  }
+  function fangstStartStream() {
+    if (camBusy) return; camBusy = true;
+    var md = navigator.mediaDevices;
+    if (!md || !md.getUserMedia) { camBusy = false; fangstFallback(); return; }
+    md.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 960 } }, audio: false })
+      .then(function (stream) {
+        camBusy = false;
+        if (!fangstActive()) { try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {} return; }   // mode left while the prompt was up
+        fangstStopStream();   // belt: never hold two streams
+        camStream = stream;
+        var v = document.getElementById("fangst-video");
+        if (v) { v.srcObject = stream; if (v.play) v.play().catch(function () {}); }
+      })
+      .catch(function () { camBusy = false; fangstFallback(); });
+  }
+  function fangstFallback() {   // denied/unavailable → the file-input camera path drives the IDENTICAL flow
+    if (!S.fangst) return;
+    S.fangst.fallback = true;
+    S.fangst.err = "Kamera ikke tilgjengelig — bruker vanlig kameraknapp.";
+    render();
+  }
+  /* ---- surgical refresh: strip + chips + note + header only — the map must not move under the aiming hand ---- */
+  function fangstStripHTML() {
+    var t = S.tray, items = (t && t.items) || [];
+    if (!items.length) return '<div class="note" style="margin-top:8px">Ingen ventende bilder — 📸 skyt for å starte.</div>';
+    return '<div class="tray-strip" style="margin-top:8px">' + items.map(function (p) {
+      return '<img class="tray-thumb' + (t.sel === p.path ? ' sel' : '') + '" src="' + p.dataUrl + '" data-act="traySel" data-path="' + esc(p.path) + '" alt="ventende bilde (lagret på enheten)">';
+    }).join("") + '</div>';
+  }
+  function fangstChipsHTML() {
+    var armed = (S.tray && S.tray.chip) || "annet";
+    return TYPE_CHIPS.map(function (k) {
+      var d = assetTypeDef(k);
+      return '<button class="fangst-chip' + (armed === k ? ' on' : '') + '" data-act="fangstChip" data-id="' + k + '">' + d.emoji + ' ' + esc(d.label.split(" (")[0].split(" /")[0]) + '</button>';
+    }).join("");
+  }
+  function fangstNoteHTML() {
+    if (S.fangst && S.fangst.err && !S.fangst.fallback) return '<div class="msg err" style="margin:8px 0 0">' + esc(S.fangst.err) + '</div>';
+    if (S.tray && S.tray.sel) return '<div class="note" style="margin-top:8px">👆 <b>Trykk på kartet</b> der bildet hører hjemme — punktet pinnes der med bildet festet.</div>';
+    if (S.fangst && S.fangst.lastId) {
+      var a = (S.assets || []).filter(function (x) { return x.id === S.fangst.lastId; })[0];
+      return '<div class="note" style="margin-top:8px">✏️ Trykk en type over for å sette type på <b>«' + esc(a ? a.label : "") + '»</b> — eller 📸 skyt neste.</div>';
+    }
+    return '<div class="note" style="margin-top:8px">📸 Skyt → trykk på kartet → velg type. Alt lagres på enheten og synkes når det er nett.</div>';
+  }
+  function refreshFangst() {
+    var setH = function (id, html) { var el = document.getElementById(id); if (el) el.innerHTML = html; };
+    setH("fangst-strip", fangstStripHTML());
+    setH("fangst-chips", fangstChipsHTML());
+    setH("fangst-note", fangstNoteHTML());
+    setH("hdr-chips", headerChipsHTML());
+  }
+  function fangstNote(msg) { if (S.fangst) { S.fangst.err = msg; } refreshFangst(); }
+  /* ---- shoot: frame → draft-IDB immediately → thumbnail from the READ-BACK blob → armed for the tap ---- */
+  function fangstEnsureTray(b) {
+    if (!S.tray || S.tray.bid !== b.id) {
+      S.tray = { bid: b.id, items: [], sel: null, chip: (S.tray && S.tray.chip) || "annet", docType: "annet",
+        counters: { imported: 0, placed: 0, discarded: 0 }, importing: false, err: null };
+    }
+  }
+  function fangstShoot() {
+    var b = buildingById(S.view.id); if (!b) return;
+    var uid = userId(), tenantId = S.tenant && S.tenant.id;
+    if (!uid || !tenantId) { fangstNote("Mangler tenant/bruker — åpne appen på nett én gang først."); return; }
+    var v = document.getElementById("fangst-video");
+    if (!v || v.readyState < 2 || !v.videoWidth) {
+      if (v && v.play) v.play().catch(function () {});   // low-power autoplay block: a shutter tap IS the gesture
+      fangstNote("Kameraet er ikke klart ennå — prøv igjen."); return;
+    }
+    var dataUrl = null;
+    try {
+      var MAX = 1280, w = v.videoWidth, h = v.videoHeight;
+      if (w > MAX || h > MAX) { var s = Math.min(MAX / w, MAX / h); w = Math.round(w * s); h = Math.round(h * s); }
+      var cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+      cv.getContext("2d").drawImage(v, 0, 0, w, h);
+      dataUrl = cv.toDataURL("image/jpeg", 0.6);   // same ≤1280/q0.6 as compressImage; re-encode = no EXIF/GPS
+    } catch (e) { dataUrl = null; }
+    if (!dataUrl || dataUrl.indexOf("data:image") !== 0) { fangstNote("⚠ Kunne IKKE lese bildet fra kameraet — prøv igjen."); return; }
+    fangstStoreCapture(b, uid, tenantId, dataUrl);
+  }
+  function fangstFileShoot(el) {   // the fallback path — identical downstream (photo → tap → chip)
+    var b = buildingById(S.view.id); if (!b) return;
+    var uid = userId(), tenantId = S.tenant && S.tenant.id, file = el.files && el.files[0];
+    if (!file) return;
+    if (!uid || !tenantId) { fangstNote("Mangler tenant/bruker — åpne appen på nett én gang først."); return; }
+    compressImage(file, function (dataUrl) {
+      if (!dataUrl) { fangstNote("⚠ Kunne IKKE lese bildet — prøv et annet."); return; }
+      fangstStoreCapture(b, uid, tenantId, dataUrl);
+    });
+  }
+  function fangstStoreCapture(b, uid, tenantId, dataUrl) {
+    fangstEnsureTray(b);
+    if (!S.tray.items.length) S.tray.counters = { imported: 0, placed: 0, discarded: 0 };   // fresh batch → fresh honest count (mirrors trayImport)
+    var path = tenantId + "/" + b.id + "/" + OFF.uuid() + ".jpg";
+    OFF.queuePhoto({ path: path, userId: uid, buildingId: b.id, dataUrl: dataUrl, status: "draft", tray: true })
+      .then(function () { return OFF.getPhoto(path); })   // read BACK: the strip shows what is STORED (render-wipe law)
+      .then(function (stored) {
+        if (!stored || !stored.dataUrl) throw new Error("lagret foto kunne ikke leses tilbake");
+        S.tray.counters.imported++; traySaveCounters();
+        S.tray.items = S.tray.items.concat([stored]);
+        S.tray.sel = path;                     // armed: the next map tap pins THIS capture
+        if (S.fangst) { S.fangst.lastId = null; S.fangst.err = null; }   // chips now describe the capture being placed
+        refreshFangst();                       // surgical — the map stays perfectly still for the tap
+        if (fangstPortrait()) { var m = document.getElementById("kart-map"); if (m && m.scrollIntoView) m.scrollIntoView({ block: "start", behavior: "smooth" }); }
+      })
+      .catch(function (e) {   // C1: durable storage refused — loud, nothing is claimed
+        fangstNote("⚠ Kunne IKKE lagre bildet på enheten (" + ((e && e.message) || "lagringsfeil") + ") — bildet er IKKE trygt. Frigjør plass og prøv igjen.");
+      });
+  }
+  /* ---- chip AFTER the tap: retype the just-placed asset + renumber; the chip stays armed for the next tap ---- */
+  function fangstRetype(k) {
+    var b = buildingById(S.view.id); if (!b) return;
+    var id = S.fangst && S.fangst.lastId; if (!id) return;
+    var a = (S.assets || []).filter(function (x) { return x.id === id; })[0]; if (!a) return;
+    var uid = userId(); if (!uid || !S.tenant || !S.tenant.id) return;
+    if (a.type === k) { refreshFangst(); return; }
+    var d = assetTypeDef(k);
+    var n = (S.assets || []).filter(function (x) { return x.type === k && x.id !== id; }).length + 1;
+    var after = { id: id, type: k, label: d.label.split(" (")[0].split(" /")[0] + " " + n, area: d.area,
+      access: a.access || "", notes: a.notes || "", bin: d.isBin ? (a.bin || {}) : null,
+      docType: d.isDoc ? "annet" : null, geo: a.geo || null, photoIds: a.photoIds || [], complianceLink: a.complianceLink || null };
+    var row = assetToRow(after);
+    var base = a._row || {};
+    var done = function () {
+      var merged;
+      if (base.updated_at) { merged = {}; for (var mk in base) merged[mk] = base[mk]; for (var rk in row) merged[rk] = row[rk]; merged.id = id; }
+      else { merged = {}; for (var rk2 in row) merged[rk2] = row[rk2]; merged.id = id; merged.tenant_id = S.tenant.id; merged.building_id = b.id; }
+      S.assets = (S.assets || []).map(function (x) { return x.id === id ? assetRowToCore(merged) : x; });
+      snapshotBuilding(b.id);
+      renderAssetLayers();   // the pin's emoji flips in place — no map rebuild
+      refreshPending(function () { refreshFangst(); });
+      scheduleDrain(900);    // chips can be corrected rapidly — one drain per settle, durability already banked
+    };
+    if (base.updated_at) {
+      // already acked server-side (fast online drain): a normal base-checked class-B field update
+      OFF.queueUpdate({ entity: "assets", op: "update",
+        payload: { id: id, type: row.type, label: row.label, area: row.area, bin: row.bin, doc_type: row.doc_type },
+        baseUpdatedAt: base.updated_at, tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: row.label })
+        .then(done)
+        .catch(function (e) { fangstNote("⚠ Kunne IKKE endre type (" + ((e && e.message) || "lagringsfeil") + ")."); });
+    } else {
+      // never synced: rewrite the QUEUED insert in place (queueCoalesced) — one op per asset, and never two
+      // same-row upserts whose FIFO order could tie. If the drain claimed it mid-rewrite, the rev/status
+      // guards re-queue it with this newest payload (review-3 semantics) — nothing is lost either way.
+      var full = {}; for (var fk in row) full[fk] = row[fk]; full.id = id; full.tenant_id = S.tenant.id; full.building_id = b.id;
+      queueCoalesced({ entity: "assets", id: id, fullRow: function () { return full; },
+        tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: row.label })
+        .then(done)
+        .catch(function (e) { fangstNote("⚠ Kunne IKKE endre type (" + ((e && e.message) || "lagringsfeil") + ")."); });
+    }
   }
 
   /* ============================ section: Dokumenter — the shelf + the extraction seam (doc-83 #5) ============================ */
@@ -2773,7 +3027,11 @@
     zoneDel: function (el) { zoneDelete(el.getAttribute("data-id")); },
     zonePhotoRemove: function () { var p = S.zonePhoto; S.zonePhoto = null; if (p) OFF.delPhoto(p.path).then(function () { render(); }); else render(); },
     // desk mode D: the assignment tray
-    traySel: function (el) { if (!S.tray) return; var p = el.getAttribute("data-path"); S.tray.sel = S.tray.sel === p ? null : p; S.tray.err = null; render(); },
+    traySel: function (el) {
+      if (!S.tray) return; var p = el.getAttribute("data-path"); S.tray.sel = S.tray.sel === p ? null : p; S.tray.err = null;
+      if (S.fangst) S.fangst.lastId = null;               // choosing a draft to place → chips describe IT now
+      if (fangstActive()) { refreshFangst(); } else { render(); }   // surgical in fangst: no map rebuild pre-tap
+    },
     trayDeselect: function () { if (S.tray) { S.tray.sel = null; render(); } },
     trayChip: function (el) { if (S.tray) { S.tray.chip = el.getAttribute("data-id"); render(); } },
     trayDocType: function (el) { if (S.tray) { S.tray.docType = el.getAttribute("data-id"); render(); } },
@@ -2839,6 +3097,23 @@
       it.photoIds = (it.photoIds || []).filter(function (p) { return p !== path; });
       refreshBefaring(); saveChecklist(b, true);
     },
+    // fangst B2 (doc-83 #3): split-screen capture mode
+    fangstToggle: function () {
+      if (fangstActive()) { S.fangst = null; fangstStopStream(); render(); return; }
+      cancelDraw();   // fangst and zone-drawing never share the map click
+      S.fangst = { on: true, fallback: false, err: null, lastId: null };
+      var b = buildingById(S.view.id); if (b) { fangstEnsureTray(b); loadTray(b.id); }   // strip = the live draft set
+      render();   // mountFangst starts the stream into the fresh pane
+    },
+    fangstShoot: fangstShoot,
+    fangstChip: function (el) {
+      var k = el.getAttribute("data-id");
+      var b = buildingById(S.view.id); if (b) fangstEnsureTray(b);
+      if (!S.tray) return;
+      S.tray.chip = k;                                   // armed for coming taps…
+      if (S.fangst && S.fangst.lastId) fangstRetype(k);  // …and sets the type of the one JUST placed
+      else refreshFangst();
+    },
     // onboarding C: offer authoring
     offerCompute: computeOfferNow,
     offerModExpand: function (el) { var k = "m:" + el.getAttribute("data-id"); S.clOpen[k] = !S.clOpen[k]; render(); },
@@ -2858,6 +3133,7 @@
     if (e.target && e.target.id === "pf_photo") attachProofPhoto(e.target);   // findings #1: durable at ATTACH time
     if (e.target && e.target.id === "z_photo") attachZonePhoto(e.target);      // onboarding B: zone photo, same draft pipeline
     if (e.target && e.target.id === "tray_files") trayImport(e.target);        // desk mode D: batch import → draft-IDB tray
+    if (e.target && e.target.id === "fangst_file") fangstFileShoot(e.target);  // fangst B2 fallback: file-input camera, same flow
     if (e.target && e.target.getAttribute && e.target.getAttribute("data-zsvc")) {   // service change → method options change
       if (S.editZone) { S.editZone.service = e.target.value; S.editZone.method = zoneDefaultMethod(e.target.value); render(); }
     }
@@ -3001,10 +3277,10 @@
     if (S.view.name === "list") render();
   });
   document.addEventListener("visibilitychange", function () {
-    if (document.visibilityState === "visible") drainAll();
-    else flushPendingChecklist();   // backgrounded mid-befaring: the in-flight tick becomes durable NOW
+    if (document.visibilityState === "visible") { drainAll(); fangstResume(); }   // fangst: resume; re-request only if iOS killed the track
+    else { flushPendingChecklist(); fangstPause(); }   // backgrounded mid-befaring: the in-flight tick becomes durable NOW; camera paused (battery)
   });
-  window.addEventListener("pagehide", flushPendingChecklist);
+  window.addEventListener("pagehide", function () { flushPendingChecklist(); fangstStopStream(); });   // resume re-acquires if the page comes back
 
   render(); // immediate paint (login screen / cached shell) while getSession resolves
 })();
