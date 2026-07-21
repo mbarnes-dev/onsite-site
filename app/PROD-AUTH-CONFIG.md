@@ -62,4 +62,27 @@ The 1c app's login loop depends on dashboard settings that live outside the repo
   <p style="color:#666;font-size:0.9em">Koden og lenken gjelder i én time og kan brukes én gang. Var ikke dette deg? Da kan du se bort fra denne e-posten.</p>
   ```
 
+- **2026-07-21 — RE-VERIFIED, still blocked.** Prompted by "why do I only get a link, never a code?" — the
+  answer is unchanged and now re-confirmed against live config, not memory:
+
+  | Check | Live value (2026-07-21) |
+  |---|---|
+  | Org plan (`onsite`, `ztvadezskcnyewsqqkiy`) | **`free`** |
+  | Custom SMTP (`smtp_host`) | **`null`** — default Supabase sender |
+  | `mailer_templates_magic_link_content` | link-only, **no `{{ .Token }}`** (`<h2>Your sign-in link</h2>…`) |
+  | `mailer_subjects_magic_link` | `Your sign-in link` |
+  | PATCH attempt (template + subject) | **HTTP 400** — *"Email template modification is not available for free tier projects using the default email provider."* |
+  | `disable_signup` / `mailer_otp_exp` / `site_url` / allowlist | `true` / `3600` / app origin / app origin — all still correct ✅ |
+
+  **The gate is the PLAN + SENDER, not the template text.** The dashboard template editor hits this same
+  API, so editing `{{ .Token }}` in the UI cannot be saved either — it is not a 5-minute dashboard fix.
+  **Cheapest unblock: custom SMTP (Resend), not a Pro upgrade** — configuring any custom SMTP sender lifts
+  the template lock on Free. Resend values: host `smtp.resend.com`, port `465`, user `resend`, password =
+  a Resend API key, sender on a Resend-verified domain. Once `smtp_host` is non-null, the staged PATCH
+  below applies in ~2 minutes and the installed-iOS code login works.
+
+  **Also reconcile in that same pass:** `mailer_otp_length` is **8**, but the app's login card says
+  «engangskode (6 siffer)». Either PATCH `mailer_otp_length: 6` (makes the existing copy true; the input
+  already accepts 6–8) or change the copy. Pinning to 6 is the shorter thing to type on a ladder.
+
 - **Martin — live proof after any settings change:** request login from the app; confirm existing-user sign-in still works with `disable_signup:true`. Date + initials: ______________
