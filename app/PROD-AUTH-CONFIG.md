@@ -24,7 +24,8 @@ The 1c app's login loop depends on dashboard settings that live outside the repo
 | **Email OTP / magic-link expiry** | ≤ 3600 s (1 h) | `mailer_otp_exp: 3600` — **confirmed already compliant 2026-07-03**, left unchanged. |
 | **Rate limits** (Auth → Rate Limits) | Keep defaults or tighter for "Email sent" | The login form is public; sending is our email quota. (`rate_limit_otp: 30`, default.) |
 | **Leaked password protection** (`password_hibp_enabled`) | **Enable** — but **PRO-PLAN-GATED** | Attempted via Management API 2026-07-03 → **HTTP 402** "available on Pro Plans and up." Cosmetic for magic-link-only (no passwords to leak); the security-advisor WARN persists until Pro. |
-| **Magic Link email template** (`mailer_templates_magic_link_content` + `mailer_subjects_magic_link`) | Body must carry the code (`{{ .Token }}`) + keep `{{ .ConfirmationURL }}`; subject `Logg inn i OnSite` | Attempted via Management API 2026-07-03 → **HTTP 400: "Email template modification is not available for free tier projects using the default email provider. Please upgrade your plan or configure a custom SMTP provider."** **BLOCKED** — this is the headline OTP-in-email goal. Until unblocked, the email is the default link-only template, so the app's `verifyOtp` code path has no code to enter and the standalone-iOS login fix is inert. Note: `mailer_otp_length` is **8** — when the template is unblocked, the emitted code is 8 digits (the app OTP input must accept 8, or set `mailer_otp_length: 6` in the same pass). |
+| **Custom SMTP** (`smtp_host`…) | A non-default sender — this is what lifts the Free-tier template lock | **LIVE 2026-07-21**: Resend — `smtp.resend.com:465`, user `resend`, sender `OnSite <onsite@nexorgroup.ae>`. Set by Martin. |
+| **Magic Link email template** (`mailer_templates_magic_link_content` + `mailer_subjects_magic_link`) | Body must carry the code (`{{ .Token }}`) + keep `{{ .ConfirmationURL }}`; subject `Logg inn i OnSite` | **DONE 2026-07-21** ✅ — applied via Management API once custom SMTP landed (HTTP 200, read back verified). `mailer_otp_length` pinned **8 → 6** in the same PATCH so the app's «engangskode (6 siffer)» copy is true. This was the headline OTP-in-email goal; the app's `verifyOtp` path finally has a code to receive. |
 
 ## Verification steps (after saving the settings)
 
@@ -84,5 +85,31 @@ The 1c app's login loop depends on dashboard settings that live outside the repo
   **Also reconcile in that same pass:** `mailer_otp_length` is **8**, but the app's login card says
   «engangskode (6 siffer)». Either PATCH `mailer_otp_length: 6` (makes the existing copy true; the input
   already accepts 6–8) or change the copy. Pinning to 6 is the shorter thing to type on a ladder.
+
+- **2026-07-21 — UNBLOCKED. The OTP email finally carries a code.** Martin configured custom SMTP (Resend),
+  which lifts the Free-tier template lock; the staged PATCH was applied the same day and read back verified:
+
+  | Setting | Before | After (live, verified) |
+  |---|---|---|
+  | `smtp_host` / sender | `null` / Supabase default | **`smtp.resend.com`** / `OnSite <onsite@nexorgroup.ae>` ✅ |
+  | `mailer_templates_magic_link_content` | link-only, no code | **carries `{{ .Token }}` + `{{ .ConfirmationURL }}`** ✅ |
+  | `mailer_subjects_magic_link` | `Your sign-in link` | **`Logg inn i OnSite`** ✅ |
+  | `mailer_otp_length` | `8` | **`6`** ✅ (matches the app's «6 siffer» copy; input still accepts 6–8) |
+  | `disable_signup` / `site_url` / allowlist / `mailer_otp_exp` | — | untouched, still correct ✅ |
+
+  Live template body:
+
+  ```html
+  <h2>Logg inn i OnSite</h2>
+  <p>Skriv inn denne koden i appen:</p>
+  <p style="font-size:30px;font-weight:700;letter-spacing:6px;margin:14px 0">{{ .Token }}</p>
+  <p>&mdash; eller <a href="{{ .ConfirmationURL }}">trykk her for å logge inn</a> på denne enheten.</p>
+  <p style="color:#666;font-size:0.9em">Koden og lenken gjelder i én time og kan brukes én gang. Var ikke dette deg? Da kan du se bort fra denne e-posten.</p>
+  ```
+
+  **Open follow-up (deliberately NOT shipped yet):** `A2HS_IOS_ENABLED` in `app.js` is still `false` — the
+  iOS «Legg til på Hjem-skjerm» hint stays suppressed until an installed-iPad code login is proven end to
+  end. Flip it to `true` (one commit + SW bump) once that test passes; do not flip it on the strength of
+  this config change alone, or a still-broken install would re-create the exact trap the flag was added for.
 
 - **Martin — live proof after any settings change:** request login from the app; confirm existing-user sign-in still works with `disable_signup:true`. Date + initials: ______________
