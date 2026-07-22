@@ -55,15 +55,25 @@ session that forgot it.
 npm --prefix packages/core test         # 12 tests: core anchors + the APP-path 16 530 parity + strictFloors
 node --check app/app.js app/offline.js app/sw.js
 python3 -m http.server 8788             # repo root, then open:
-#   http://localhost:8788/app/tests/interleave.html   → expect "DONE fails=0"
-#   http://localhost:8788/app/tests/fangst.html       → expect "DONE fails=0"
+#   http://localhost:8788/app/tests/interleave.html      → expect "DONE fails=0"
+#   http://localhost:8788/app/tests/fangst.html          → expect "DONE fails=0"
+#   http://localhost:8788/app/tests/befaring-focus.html  → expect "DONE fails=0"
 ```
 
 `app/tests/interleave.html` is the committed outbox-interleaving harness (F-M2 razor, claim contention,
 ack-vs-coalesce both orders, sign-out-during-sending, conflict regression). `app/tests/fangst.html` boots
 the REAL app.js in basement mode with a mock camera (canvas captureStream) and drives the B2 capture loop
 end-to-end (shoot→tap→chip, render-wipe with a live stream, track stop on exit, denial fallback, rapid-fire
-5 → drain). Both ship as inert pages but are not in the SW shell.
+5 → drain). `app/tests/befaring-focus.html` guards field-findings #3: it types into a befaring field with
+>400 ms gaps (so the debounced save flushes between characters) and forces a full `render()` mid-typing,
+asserting `document.activeElement` identity survives both — the iPad keyboard-drops-per-character bug.
+All three ship as inert pages but are not in the SW shell.
+
+**The paint law these encode** (break it and the field notices before you do): anything that rewrites
+`#app` or `#cl-body` while a control is focused or mid-interaction must be deferred. `render()` and
+`refreshBefaring()` both check `clFieldFocused()` and pay the deferred paint on blur; the Leaflet map and
+the fangst stream survive re-renders via module vars. A new surface that types, draws or streams needs the
+same treatment — and a harness proving it, since none of this reproduces on a fast desktop.
 
 ## Auth / config
 

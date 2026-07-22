@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<!-- COMMITTED focus-retention harness (field-findings #3, installed iPad PWA 2026-07-21) — the keyboard
+     died after EVERY character in a befaring field. Root cause was a REPAINT racing the typing finger,
+     from two independent sources, and this harness drives BOTH deterministically against the real app.js:
+
+       A. the debounced save: type → 400 ms idle → flushChecklist → refreshBefaring → setH("cl-body", …)
+          rewrote the innerHTML that owns the focused <input>. Reproduced by typing with >400 ms gaps —
+          exactly how a rep types on a ladder, and why fast desktop typing hid the bug.
+       B. the full paint: flushChecklist schedules a drain, and drainAll() calls render() (whole #app).
+          Fires only when ONLINE, which is why offline testing never saw it. Forced here via the "online"
+          event, whose handler calls render() unconditionally — same paint, no backend needed.
+
+     A repaint that REPLACES the focused element blurs it, and iOS reads blur as "done" → keyboard down.
+     The pass/fail signal is therefore document.activeElement identity across those repaints, plus proof
+     that persistence never regressed (every character still reaches the outbox) and that the deferred
+     repaint actually lands on blur.
+
+     Run: python3 -m http.server 8788 (repo root) → open /app/tests/befaring-focus.html → DONE fails=0.
+     Ships inert (no secrets, not in the SW shell), like interleave.html and fangst.html. -->
+<html lang="nb"><head><meta charset="UTF-8"><title>befaring — focus retention</title>
+<link rel="stylesheet" href="../vendor/leaflet/leaflet.css">
+<link rel="stylesheet" href="../app.css?v=9">
+<style>#log{background:#111;color:#9f9;font:12px/1.5 monospace;padding:14px;border-radius:8px;white-space:pre-wrap}</style>
+</head>
+<body>
+<pre id="log"></pre>
+<div class="wrap"><div id="app"></div></div>
+<div id="printdoc" aria-hidden="true"></div>
+
+<script>
+try { Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: { register: function () { return Promise.reject(new Error("SW off")); }, addEventListener: function () {}, getRegistrations: function () { return Promise.resolve([]); } } }); } catch (e) {}
+var CONSOLE_ERRORS = [];
+window.onerror = function (m) { CONSOLE_ERRORS.push(String(m)); };
+var ONLINE = false;
+Object.defineProperty(navigator, "onLine", { configurable: true, get: function () { return ONLINE; } });
+
+var UID = "felt-tester";
+localStorage.setItem("sb-btneqhrqnxmggwowboei-auth-token", JSON.stringify({ user: { id: UID, email: "felt@test.no" } }));
+localStorage.setItem("onsite_a2hs_dismissed", "1");
+localStorage.removeItem("onsite-drain-lease");
+
+window.supabase = { createClient: function () {
+  function q() { var o = { eq: function () { return o; }, is: function () { return o; }, gt: function () { return o; }, order: function () { return o; }, select: function () { return o; }, maybeSingle: function () { return o; }, upsert: function () { return o; }, update: function () { return o; }, then: function (res, rej) { return Promise.resolve({ data: null, error: { message: "offline-harness" } }).then(res, rej); } }; return o; }
+  return {
+    auth: { onAuthStateChange: function () {}, getSession: function () { return Promise.resolve({ data: { session: null } }); },
+      signInWithOtp: function () { return Promise.resolve({ error: { message: "harness" } }); },
+      verifyOtp: function () { return Promise.resolve({ error: { message: "harness" } }); },
+      signOut: function () { return Promise.resolve({}); } },
+    from: function () { return q(); },
+    storage: { from: function () { return { upload: function () { return Promise.resolve({ data: {}, error: null }); }, createSignedUrl: function () { return Promise.resolve({ data: null, error: { message: "offline" } }); } }; } }
+  };
+} };
+</script>
+
+<script src="../vendor/leaflet/leaflet.js"></script>
+<script src="../offline.js?v=5"></script>
+<script>
+var LOG = document.getElementById("log"), FAILS = 0;
+function log(s) { LOG.textContent += s + "\n"; }
+function ok(n, c, x) { if (c) log("PASS  " + n); else { FAILS++; log("FAIL  " + n + (x ? " — " + x : "")); } }
+function jstr(o) { return JSON.stringify(o); }
+var OFF = window.OnsiteOffline;
+function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+function until(fn, label, ms) { ms = ms || 12000; var t0 = Date.now(); return (function p() { return Promise.resolve().then(fn).then(function (v) { if (v) return v; if (Date.now() - t0 > ms) throw new Error("timeout: " + label); return wait(40).then(p); }); })(); }
+function click(sel) { var el = document.querySelector(sel); if (!el) throw new Error("mangler element: " + sel); el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window })); return el; }
+function field(id) { return document.querySelector('[data-clf="value"][data-id="' + id + '"]'); }
+function noteField(id) { return document.querySelector('[data-clf="notes"][data-id="' + id + '"]'); }
+function buildingsOp() { return OFF.listOps(UID).then(function (o) { return o.filter(function (x) { return x.entity === "buildings"; })[0] || null; }); }
+function clOf(op, id) { return ((op && op.payload && op.payload.checklist) || []).filter(function (x) { return x.id === id; })[0] || null; }
+
+/* type one character the way a thumb does: append, fire input, then IDLE past the 400 ms debounce so the
+   save actually flushes between characters. That idle gap IS the bug's trigger. */
+function typeChar(el, ch, idleMs) {
+  el.value = el.value + ch;
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  return wait(idleMs);
+}
+/* leaving a field. NOTE the explicit focusout dispatch: el.blur() does move document.activeElement here,
+   but Chrome SUPPRESSES focus events while the document itself is unfocused (a headless/background tab),
+   so the browser-generated focusout never arrives and the app's blur handler would never be exercised.
+   On a real iPad — a focused document — the tap that leaves the field fires focusout for real. Dispatching
+   it keeps this harness testing OUR handler rather than the runner's window-focus state. */
+function leaveField(el) {
+  el.blur();
+  el.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+  return wait(60);
+}
+
+(function main() {
+  var del = indexedDB.deleteDatabase("onsite-app-offline");
+  del.onsuccess = del.onerror = del.onblocked = seed;
+  function seed() {
+    Promise.all([
+      OFF.cachePut(UID, "meta", { id: "t1", role: "rep", name: "Testfirma AS", count: 1 }),
+      OFF.cachePut(UID, "buildings", [{ id: "b1", name: "Testbygg", address: "Testveien 1", gnr: "1", bnr: "2",
+        kommunenr: "0301", lat: 59.91, lon: 10.75, created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z" }])
+    ]).then(function () {
+      var s = document.createElement("script"); s.src = "../app.js?v=18";
+      s.onload = run; s.onerror = function () { FAILS++; log("FAIL app.js lastet ikke"); log("DONE fails=" + FAILS); };
+      document.body.appendChild(s);
+    }).catch(function (e) { FAILS++; log("FAIL seed: " + e.message); log("DONE fails=" + FAILS); });
+  }
+
+  function run() {
+    var el, node;
+    Promise.resolve()
+    .then(function () { log("== boot: basement + bygg åpnet =="); return until(function () { return document.querySelector('[data-act="openBuilding"][data-id="b1"]'); }, "byggliste"); })
+    .then(function () { click('[data-act="openBuilding"][data-id="b1"]'); return until(function () { return field("hedges"); }, "befaring-felt (sone 1 åpen)"); })
+
+    /* ---- 1) THE FIELD BUG: type «200» one digit at a time, idling past the debounce between each ---- */
+    .then(function () {
+      log("== 1: antall — skriv «200» med 450 ms mellom hvert siffer (debouncen rekker å flushe) ==");
+      el = field("hedges"); el.focus(); node = el;
+      ok("felt har fokus før skriving", document.activeElement === node);
+      return typeChar(el, "2", 450);
+    })
+    .then(function () {
+      ok("etter «2» + flush: SAMME node har fortsatt fokus (tastaturet blir stående)",
+         document.activeElement === node, "activeElement=" + (document.activeElement && document.activeElement.tagName) + " isConnected=" + node.isConnected);
+      return typeChar(node, "0", 450);
+    })
+    .then(function () {
+      ok("etter «20» + flush: fokus intakt", document.activeElement === node);
+      return typeChar(node, "0", 450);
+    })
+    .then(function () {
+      ok("etter «200» + flush: fokus intakt — ingen re-tapping", document.activeElement === node);
+      ok("verdien står i feltet: «200»", node.value === "200", node.value);
+      return buildingsOp();
+    })
+    .then(function (op) {
+      var it = clOf(op, "hedges");
+      ok("PERSISTERING uendret: hvert tegn nådde outboxen (checklist.hedges = «200»)", !!it && it.value === "200", it && it.value);
+    })
+
+    /* ---- 2) the full-paint path: the drain's render() must not steal focus either ---- */
+    .then(function () {
+      log("== 2: full render() midt i skrivingen (online-hendelsen — samme maling som drainAll) ==");
+      window.dispatchEvent(new Event("online"));
+      return wait(120);
+    })
+    .then(function () {
+      ok("full render() utsatt: fokus overlevde", document.activeElement === node);
+      ok("feltet er fortsatt i DOM-en (ikke erstattet)", node.isConnected);
+      ok("verdien uendret etter render-forsøket", node.value === "200", node.value);
+      // the honesty chips must still update live even while the body repaint waits
+      ok("header-chips oppdateres likevel (usendte-telleren lyver ikke mens du skriver)",
+         (document.getElementById("hdr-chips") || {}).innerHTML !== undefined);
+    })
+
+    /* ---- 3) blur pays the deferred repaint ---- */
+    .then(function () {
+      log("== 3: forlat feltet → lista tegnes på nytt, én gang ==");
+      return leaveField(node).then(function () {
+        return until(function () { var f = field("hedges"); return (f && f !== node) ? f : null; }, "cl-body tegnet på nytt etter blur");
+      });
+    })
+    .then(function (fresh) {
+      ok("blur → lista re-tegnet (ny node)", fresh !== node);
+      ok("den nye noden viser «200» (modellen var kilden hele veien)", fresh.value === "200", fresh.value);
+      ok("ingen fokustyveri etterpå", document.activeElement !== fresh);
+    })
+
+    /* ---- 4) the note field: a whole sentence in one go ---- */
+    .then(function () {
+      log("== 4: notat — hel setning uten å miste tastaturet ==");
+      el = noteField("hedges"); el.focus(); node = el;
+      var chars = "Hekk mot vei".split("");
+      return chars.reduce(function (chain, ch, i) {
+        return chain.then(function () { return typeChar(node, ch, i % 4 === 3 ? 450 : 30); });   // flush-gaps mid-sentence
+      }, Promise.resolve());
+    })
+    .then(function () {
+      ok("hele setningen landet i ett strekk", node.value === "Hekk mot vei", node.value);
+      ok("fokus holdt gjennom flere flush-runder", document.activeElement === node);
+      return leaveField(node).then(function () {
+        return until(function () { var f = noteField("hedges"); return (f && f !== node) ? f : null; }, "notat re-tegnet etter blur");
+      });
+    })
+    .then(function (fresh) { ok("notatet står etter blur-repaint", fresh.value === "Hekk mot vei", fresh.value); })
+
+    /* ---- 5) persistence + relaunch survival (doc-80): the value is in the outbox AND the cache ---- */
+    .then(function () { return Promise.all([buildingsOp(), OFF.cacheGet(UID, "buildings")]); })
+    .then(function (r) {
+      var it = clOf(r[0], "hedges");
+      ok("outbox: antall + notat begge lagret", !!it && it.value === "200" && it.notes === "Hekk mot vei", jstr(it && [it.value, it.notes]));
+      var cached = ((r[1] && r[1].v) || []).filter(function (x) { return x.id === "b1"; })[0];
+      var cit = ((cached && cached.checklist) || []).filter(function (x) { return x.id === "hedges"; })[0];
+      ok("read-cache: verdien overlever relaunch", !!cit && cit.value === "200" && cit.notes === "Hekk mot vei", jstr(cit && [cit.value, cit.notes]));
+      ok("ÉN coalesced op for bygget — ikke én per tastetrykk", true);
+      return OFF.listOps(UID);
+    })
+    .then(function (ops) {
+      var b = ops.filter(function (o) { return o.entity === "buildings"; });
+      ok("nøyaktig 1 buildings-op i køen (queueCoalesced intakt)", b.length === 1, "antall=" + b.length);
+    })
+
+    /* ---- 6) scope taps still repaint immediately (no focus to protect) ---- */
+    .then(function () {
+      log("== 6: scope-tapp uten fokus → umiddelbar re-tegning som før ==");
+      click('[data-act="clScope"][data-id="hedges"][data-arg="in"]');
+      return until(function () { var btns = document.querySelectorAll('[data-act="clScope"][data-id="hedges"][data-arg="in"].on'); return btns.length ? btns : null; }, "scope ✅ malt");
+    })
+    .then(function () {
+      ok("scope-tapp maler umiddelbart (ingen utsettelse når ingenting har fokus)", true);
+      ok("zero console errors", CONSOLE_ERRORS.length === 0, CONSOLE_ERRORS.join(" | "));
+      log("DONE fails=" + FAILS);
+    })
+    .catch(function (e) { FAILS++; log("FAIL " + (e && e.message)); log("DONE fails=" + FAILS); });
+  }
+})();
+</script>
+</body></html>

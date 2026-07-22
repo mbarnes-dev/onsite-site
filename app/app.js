@@ -681,6 +681,11 @@
   }
 
   function render() {
+    /* field-findings #3: a full paint while a befaring field is focused rips the <input> out from under the
+     * typing finger and iOS drops the keyboard. The drain calls render() on ITS own 1200 ms schedule, so
+     * this guard — not the debounce — is what actually keeps the keyboard up. Downgrade to the surgical
+     * refresh (chips/messages/total still update live), remember that a FULL paint is owed, pay it on blur. */
+    if (S.view.name === "building" && clFieldFocused()) { clDeferredPaint = "render"; refreshBefaring(); return; }
     if (!S.session && !S.offlineIdent) { renderLogin(); }
     else if (S.view.name === "signoutGuard") { renderSignoutGuard(); }
     else if (S.view.name === "outbox") { renderOutbox(); }
@@ -2312,6 +2317,31 @@
       + '<div class="cl-total">Fanget fastpris (✅): <b id="cl-total">' + kr(walkTotal()) + '</b> <span class="muted">/mnd — resten prises av soner og antall</span></div>'
       + '<div id="cl-body">' + befaringBodyHTML() + '</div></div>';
   }
+  /* ---- field-findings #3 (installed iPad PWA, 21 Jul): the keyboard died after EVERY character ----------
+   * Typing «200» in a befaring field took three separate taps, one per digit. Every character persisted
+   * (a re-tap resumed where it left off), so this was never a data bug — it was a REPAINT bug, and there
+   * were two repaints racing the typing finger:
+   *   1. the debounced save (400 ms) → flushChecklist → refreshBefaring → `setH("cl-body", …)` rewrites the
+   *      checklist body's innerHTML, replacing the very <input> that has focus;
+   *   2. the drain it schedules (1200 ms) → drainAll → render() — a WHOLE-#app rebuild. This one only fires
+   *      when online, which is why it hid during offline testing and bit on a building with signal.
+   * Replacing a focused element blurs it, and iOS treats blur as "user is done" and dismisses the keyboard.
+   * Persisting on every keystroke is correct and stays. Repainting the list under the finger is not:
+   * while a checklist field owns the focus BOTH repaints are deferred, and the single deferred repaint runs
+   * on blur. Nothing is dropped — the model and the outbox still take every character; only pixels wait.
+   * (The same law the README states for Leaflet and the tray, now enforced centrally instead of by custom.) */
+  var clDeferredPaint = null;   // null | "refresh" (surgical) | "render" (full) — the strongest one wins
+  function clFieldFocused() {
+    var el = document.activeElement;
+    if (!el || !/^(INPUT|TEXTAREA)$/.test(el.tagName || "")) return false;
+    if (el.getAttribute && el.getAttribute("data-clf")) return true;                 // antall / m² / kr / notat
+    return !!(el.closest && el.closest("#cl-body"));                                  // anything else in the list
+  }
+  function clFlushDeferredPaint() {
+    var want = clDeferredPaint; if (!want) return;
+    clDeferredPaint = null;
+    if (want === "render") render(); else refreshBefaring();
+  }
   /* A tick must NOT go through render(): that rebuilds #app wholesale, which tears down and re-creates the
    * Leaflet map (and re-fetches its tiles) — forty times over the course of one befaring. Patch the four
    * nodes that actually changed instead. Same reason the demo has refreshChecklist() rather than a re-render. */
@@ -2321,10 +2351,11 @@
     var setH = function (id, html) { var el = document.getElementById(id); if (el) el.innerHTML = html; };
     setH("hdr-chips", headerChipsHTML());   // the «usendte» counter stays honest without a full paint
     setH("cl-head", befaringHeadHTML(b));
-    setH("cl-msg", befaringMsgHTML());
-    setH("cl-body", befaringBodyHTML());
+    setH("cl-msg", befaringMsgHTML());      // C1 errors still surface INSTANTLY — they live outside #cl-body
+    // the body is the only node that owns the focused input: rebuild it now, or once the finger lifts
+    if (clFieldFocused()) { clDeferredPaint = clDeferredPaint || "refresh"; }
+    else { setH("cl-body", befaringBodyHTML()); hydrateProofPhotos(); }
     var tot = document.getElementById("cl-total"); if (tot) tot.textContent = kr(walkTotal());
-    hydrateProofPhotos();
     var btn = document.getElementById("of-compute");
     if (btn) btn.disabled = S.offerBusy || !offerComputable();
     var hint = document.getElementById("of-hint");
@@ -3173,6 +3204,18 @@
       var tot = document.getElementById("cl-total"); if (tot) tot.textContent = kr(walkTotal());
       saveChecklist(b);
     }
+  });
+  /* findings #3: the deferred repaint is paid HERE — one paint, after the finger lifts. The timeout lets
+   * focus land on its next owner first: tabbing/tapping straight to another checklist field must stay
+   * silent (the rep is still typing), so only a focus that has genuinely LEFT the list repaints. */
+  app.addEventListener("focusout", function (e) {
+    var t = e.target;
+    if (!t || !t.getAttribute) return;
+    if (!t.getAttribute("data-clf") && !(t.closest && t.closest("#cl-body"))) return;
+    setTimeout(function () {
+      if (clFieldFocused()) return;        // moved to the next checklist field — keep the keyboard, stay quiet
+      clFlushDeferredPaint();
+    }, 0);
   });
   /* findings #2: iPad landscape keyboard leaves a sliver. Scroll the focused field into view after the
    * keyboard animation, and collapse the chrome while typing in landscape so the form owns the height. */
