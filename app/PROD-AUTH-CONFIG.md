@@ -107,9 +107,15 @@ The 1c app's login loop depends on dashboard settings that live outside the repo
   <p style="color:#666;font-size:0.9em">Koden og lenken gjelder i én time og kan brukes én gang. Var ikke dette deg? Da kan du se bort fra denne e-posten.</p>
   ```
 
-  **Open follow-up (deliberately NOT shipped yet):** `A2HS_IOS_ENABLED` in `app.js` is still `false` — the
-  iOS «Legg til på Hjem-skjerm» hint stays suppressed until an installed-iPad code login is proven end to
-  end. Flip it to `true` (one commit + SW bump) once that test passes; do not flip it on the strength of
-  this config change alone, or a still-broken install would re-create the exact trap the flag was added for.
+  **Follow-up — CLOSED same day.** Martin confirmed code login works in the **installed app on the iPad**
+  (no Safari detour). `A2HS_IOS_ENABLED` flipped to `true` and shipped (`e8e64cb`, SW cache
+  **`onsite-app-v17`**, `app.js?v=17`), so the iOS «Legg til på Hjem-skjerm» hint is live again — it now
+  invites an install whose login actually works. The flag is kept, not deleted: set it back to `false` for
+  a one-token kill switch if the emailed code ever regresses. Pre-deploy suite green (core 12/12,
+  `interleave.html` 0 fails, `fangst.html` 0 fails/32 asserts); live-verified SW v17 + flag true on origin.
+
+  **The 2-Jul → 21-Jul login saga is now closed end to end:** invite-only signup (server-side) → emailed
+  6-digit code → in-app `verifyOtp` → installed-PWA login → add-to-home invite. Nothing in this chain is
+  gated on anything else now.
 
 - **Martin — live proof after any settings change:** request login from the app; confirm existing-user sign-in still works with `disable_signup:true`. Date + initials: ______________
