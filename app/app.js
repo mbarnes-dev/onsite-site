@@ -736,7 +736,10 @@
    * capture (doc 62), never in standalone, dismissal remembered. iOS = manual steps; Android = the
    * captured beforeinstallprompt. ---- */
   var A2HS_KEY = "onsite_a2hs_dismissed";
-  var A2HS_IOS_ENABLED = false;   // iOS add-to-home hint suppressed until installed-iOS login works (OTP email unblocked)
+  var A2HS_IOS_ENABLED = true;    // UNBLOCKED 2026-07-21: custom SMTP (Resend) lifted the template lock, the
+                                  // magic-link email now carries {{ .Token }} (6 digits) and installed-iPad
+                                  // code login is PROVEN on device. Kept as a flag, not deleted: it is the
+                                  // one-token kill switch if the emailed code ever regresses.
   function isStandalone() { try { return (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone === true; } catch (e) { return false; } }
   function isIOS() { return /iPad|iPhone|iPod/.test(navigator.userAgent || ""); }
   function a2hsDismissed() { try { return localStorage.getItem(A2HS_KEY) === "1"; } catch (e) { return true; } }
@@ -748,9 +751,11 @@
         + '<span style="display:flex;gap:8px;flex-shrink:0"><button class="btn" style="padding:8px 12px" data-act="a2hsInstall">Installer</button>'
         + '<button class="btn ghost" style="padding:8px 10px" data-act="a2hsDismiss" aria-label="Ikke nå">✕</button></span></div>';
     }
-    // Housekeeping (doc-82, Martin's 7 Jul defer): the iOS hint invites users to install, but the
-    // installed-iOS PWA login is still broken until the {{ .Token }} email works (blocked on Supabase
-    // Free tier). So the iOS hint stays SUPPRESSED. Flip A2HS_IOS_ENABLED back to true when Pro/SMTP lands.
+    // The iOS hint invites users to install, and the installed PWA's login is the CODE (the link would
+    // open in Safari, whose storage the standalone app can't see — the 2-Jul wrong-browser class). That
+    // code path was inert while the email was link-only, so this hint was suppressed from 7 Jul. Custom
+    // SMTP landed 21 Jul → the email carries {{ .Token }} → verified on Martin's iPad → the invite is
+    // honest again. If the code ever stops arriving, set A2HS_IOS_ENABLED = false and it goes quiet.
     if (A2HS_IOS_ENABLED && isIOS()) {
       return '<div class="card" style="padding:11px 14px;display:flex;justify-content:space-between;gap:10px;align-items:center">'
         + '<span class="note" style="margin:0">📲 Legg til på Hjem-skjerm for rask tilgang: trykk <b>Del</b> (firkanten med pil ↑), velg <b>«Legg til på Hjem-skjerm»</b> — og logg inn i appen med koden fra e-posten.</span>'
