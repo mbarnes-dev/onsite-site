@@ -75,6 +75,7 @@ function log(s) { LOG.textContent += s + "\n"; }
 function ok(n, c, x) { if (c) log("PASS  " + n); else { FAILS++; log("FAIL  " + n + (x ? " — " + x : "")); } }
 function jstr(o) { return JSON.stringify(o); }
 var OFF = window.OnsiteOffline;
+function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 function until(fn, label, ms) { ms = ms || 12000; var t0 = Date.now(); return (function p() { return Promise.resolve().then(fn).then(function (v) { if (v) return v; if (Date.now() - t0 > ms) throw new Error("timeout: " + label); return new Promise(function (r) { setTimeout(r, 40); }).then(p); }); })(); }
 function click(sel) { var el = document.querySelector(sel); if (!el) throw new Error("mangler element: " + sel); el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window })); return el; }
 function armed() { return document.querySelector("#fangst-strip img.tray-thumb.sel"); }
@@ -124,7 +125,7 @@ var sbDrain = {
       OFF.cachePut(UID, "buildings", [{ id: "b1", name: "Testbygg", address: "Testveien 1", gnr: "1", bnr: "2",
         kommunenr: "0301", lat: 59.91, lon: 10.75, created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z" }])
     ]).then(function () {
-      var s = document.createElement("script"); s.src = "../app.js?v=18";
+      var s = document.createElement("script"); s.src = "../app.js?v=19";
       s.onload = run; s.onerror = function () { FAILS++; log("FAIL app.js lastet ikke"); log("DONE fails=" + FAILS); };
       document.body.appendChild(s);
     }).catch(function (e) { FAILS++; log("FAIL seed: " + e.message); log("DONE fails=" + FAILS); });
@@ -182,21 +183,26 @@ var sbDrain = {
     })
     .then(function () { ok("pin flips type in place (💧 Utekran 1)", true); })
     /* ---- 5) render-wipe regression, camera edition — arm FIRST (the field contract: you tap when the
-            armed thumb shows), then force renders and a visibility cycle, then prove nothing was lost ---- */
-    .then(function () { log("== 5: tvungen re-render + visibilitychange med LIVE strøm =="); click('[data-act="fangstShoot"]'); return until(armed, "capture 2 armert i stripen"); })
+            armed thumb shows), then fire render()s and a visibility cycle, then prove nothing was lost.
+            NOTE: since field-findings #4 (v19) render() goes SURGICAL while the camera pane is live — it no
+            longer rebuilds #app — so we force renders via the online-event handler (which calls render())
+            rather than the asset form, and additionally assert the <video> node itself is preserved.
+            fangst-camera.html is the exhaustive node-preservation harness; this keeps the strip/stream
+            coverage in the end-to-end flow. ---- */
+    .then(function () { log("== 5: render() + visibilitychange med LIVE strøm (surgical, node bevart) =="); click('[data-act="fangstShoot"]'); return until(armed, "capture 2 armert i stripen"); })
     .then(function () {
-      // force TWO full render()s (#app rebuilt wholesale) via the always-present asset form: open + cancel
-      click('[data-act="assetNew"]');
-      return until(function () { return document.getElementById("as_type"); }, "asset-skjema åpnet (render 1)");
+      var node = video();
+      window.dispatchEvent(new Event("online"));   // online handler calls render() → surgical during fangst
+      window.dispatchEvent(new Event("online"));
+      return wait(150).then(function () { return node; });
+    })
+    .then(function (node) {
+      ok("<video> node preserved across render()s (not swapped — the black-preview fix)", video() === node, video() === node ? "" : "node replaced");
+      return until(function () { var v = video(); return v && v.srcObject && vTrack() && vTrack().readyState === "live" ? true : null; }, "strøm intakt etter render");
     })
     .then(function () {
-      click('[data-act="assetCancel"]');
-      return until(function () { return !document.getElementById("as_type"); }, "asset-skjema lukket (render 2)");
-    })
-    .then(function () { return until(function () { var v = video(); return v && v.srcObject && vTrack() && vTrack().readyState === "live" ? true : null; }, "strøm gjenfestet etter re-render"); })
-    .then(function () {
-      ok("stream survives forced full re-renders (module vars + mountFangst)", vTrack().readyState === "live");
-      return until(armed, "stripe + armering overlever re-renders");
+      ok("stream still live after render()s (module vars + surgical guard)", vTrack().readyState === "live");
+      return until(armed, "stripe + armering overlever render");
     })
     .then(function () {
       ok("strip AND armed selection survive the re-renders (state+IDB, never DOM-owned)", true);

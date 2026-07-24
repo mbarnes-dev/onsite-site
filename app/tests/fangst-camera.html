@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<!-- COMMITTED camera-preview harness (field-findings #4, installed iPad PWA 2026-07-22) — the map-pin
+     camera showed a BLACK preview. Root cause: render() rebuilds #app wholesale, creating a FRESH <video>
+     node each time; mountFangst re-attaches the MediaStream, which is enough on desktop Chrome but on iOS
+     the new node's play() is interrupted by the next swap and the frame never paints. It only bit ONLINE,
+     where a placement's drainAll fires a storm of render()s mid-stream.
+
+     Headless Chrome can't reproduce the iOS play()-interrupt (play() always succeeds here), so the test's
+     TEETH are the invariant that actually protects iOS: while the camera is live, a render() must NOT swap
+     the <video> node. The node reference captured on open must survive every render path — placement,
+     the online-event handler, a forced full render() — with its srcObject and a live track intact, and
+     play() must NOT be re-issued on the already-playing node. Neuter the render() guard and the node is
+     swapped → these assertions fail (verified during the fix).
+
+     Run: python3 -m http.server 8788 (repo root) → open /app/tests/fangst-camera.html → DONE fails=0.
+     Ships inert (no secrets, not in the SW shell), like the other harnesses. -->
+<html lang="nb"><head><meta charset="UTF-8"><title>fangst — camera preview retention</title>
+<link rel="stylesheet" href="../vendor/leaflet/leaflet.css">
+<link rel="stylesheet" href="../app.css?v=9">
+<style>#log{background:#111;color:#9f9;font:12px/1.5 monospace;padding:14px;border-radius:8px;white-space:pre-wrap}</style>
+</head>
+<body>
+<pre id="log"></pre>
+<div class="wrap"><div id="app"></div></div>
+<div id="printdoc" aria-hidden="true"></div>
+
+<script>
+try { Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: { register: function () { return Promise.reject(new Error("SW off")); }, addEventListener: function () {}, getRegistrations: function () { return Promise.resolve([]); } } }); } catch (e) {}
+var CONSOLE_ERRORS = [];
+window.onerror = function (m) { CONSOLE_ERRORS.push(String(m)); };
+var ONLINE = false;
+Object.defineProperty(navigator, "onLine", { configurable: true, get: function () { return ONLINE; } });
+
+/* spy on play() so the harness can prove we don't re-issue it on an already-playing node (the iOS interrupt) */
+var PLAY_CALLS = 0;
+(function () {
+  var proto = window.HTMLMediaElement && HTMLMediaElement.prototype;
+  if (!proto) return;
+  var orig = proto.play;
+  proto.play = function () { PLAY_CALLS++; try { return orig.apply(this, arguments); } catch (e) { return Promise.reject(e); } };
+})();
+
+var UID = "felt-tester";
+localStorage.setItem("sb-btneqhrqnxmggwowboei-auth-token", JSON.stringify({ user: { id: UID, email: "felt@test.no" } }));
+localStorage.setItem("onsite_a2hs_dismissed", "1");
+localStorage.removeItem("onsite-drain-lease");
+
+window.supabase = { createClient: function () {
+  function q() { var o = { eq: function () { return o; }, is: function () { return o; }, gt: function () { return o; }, order: function () { return o; }, select: function () { return o; }, maybeSingle: function () { return o; }, upsert: function () { return o; }, update: function () { return o; }, then: function (res, rej) { return Promise.resolve({ data: null, error: { message: "offline-harness" } }).then(res, rej); } }; return o; }
+  return {
+    auth: { onAuthStateChange: function () {}, getSession: function () { return Promise.resolve({ data: { session: null } }); },
+      signInWithOtp: function () { return Promise.resolve({ error: { message: "harness" } }); },
+      verifyOtp: function () { return Promise.resolve({ error: { message: "harness" } }); },
+      signOut: function () { return Promise.resolve({}); } },
+    from: function () { return q(); },
+    storage: { from: function () { return { upload: function () { return Promise.resolve({ data: {}, error: null }); }, createSignedUrl: function () { return Promise.resolve({ data: null, error: { message: "offline" } }); } }; } }
+  };
+} };
+
+/* mock camera: a painted canvas captureStream */
+var camCv = document.createElement("canvas"); camCv.width = 640; camCv.height = 480;
+var camCx = camCv.getContext("2d");
+setInterval(function () { camCx.fillStyle = "#2f6f5f"; camCx.fillRect(0, 0, 640, 480); camCx.fillStyle = "#fff"; camCx.fillRect(120, 100, 240, 180); }, 100);
+if (!navigator.mediaDevices) { try { Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: {} }); } catch (e) {} }
+navigator.mediaDevices.getUserMedia = function () { return Promise.resolve(camCv.captureStream(10)); };
+</script>
+
+<script src="../vendor/leaflet/leaflet.js"></script>
+<script src="../offline.js?v=5"></script>
+<script>
+var LOG = document.getElementById("log"), FAILS = 0;
+function log(s) { LOG.textContent += s + "\n"; }
+function ok(n, c, x) { if (c) log("PASS  " + n); else { FAILS++; log("FAIL  " + n + (x ? " — " + x : "")); } }
+function jstr(o) { return JSON.stringify(o); }
+var OFF = window.OnsiteOffline;
+function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+function until(fn, label, ms) { ms = ms || 12000; var t0 = Date.now(); return (function p() { return Promise.resolve().then(fn).then(function (v) { if (v) return v; if (Date.now() - t0 > ms) throw new Error("timeout: " + label); return wait(40).then(p); }); })(); }
+function click(sel) { var el = document.querySelector(sel); if (!el) throw new Error("mangler element: " + sel); el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window })); return el; }
+function video() { return document.getElementById("fangst-video"); }
+function vTrack() { var v = video(); var s = v && v.srcObject; return (s && s.getVideoTracks && s.getVideoTracks()[0]) || null; }
+function armed() { return document.querySelector("#fangst-strip img.tray-thumb.sel"); }
+function assetOps() { return OFF.listOps(UID).then(function (o) { return o.filter(function (x) { return x.entity === "assets"; }); }); }
+function mapTap(dx, dy) {
+  var m = document.getElementById("kart-map"); if (!m) throw new Error("kart-map mangler");
+  try { m.scrollIntoView({ block: "center" }); } catch (e) {}
+  var r = m.getBoundingClientRect();
+  var x = r.left + r.width / 2 + (dx || 0), y = r.top + r.height / 2 + (dy || 0);
+  (document.elementFromPoint(x, y) || m).dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y }));
+}
+/* the whole point: is the live <video> the SAME element it was, still streaming, after a render path fired? */
+function assertPreserved(label, node) {
+  var v = video();
+  ok(label + ": <video> is the SAME node (not swapped)", v === node, v === node ? "" : "node was replaced");
+  ok(label + ": srcObject still attached", !!(v && v.srcObject));
+  var t = vTrack();
+  ok(label + ": video track still live", !!t && t.readyState === "live", t && t.readyState);
+  ok(label + ": not paused (preview would be black if paused)", !!v && v.paused === false, v && ("paused=" + v.paused));
+}
+
+(function main() {
+  var del = indexedDB.deleteDatabase("onsite-app-offline");
+  del.onsuccess = del.onerror = del.onblocked = seed;
+  function seed() {
+    Promise.all([
+      OFF.cachePut(UID, "meta", { id: "t1", role: "rep", name: "Testfirma AS", count: 1 }),
+      OFF.cachePut(UID, "buildings", [{ id: "b1", name: "Testbygg", address: "Testveien 1", gnr: "1", bnr: "2",
+        kommunenr: "0301", lat: 59.91, lon: 10.75, created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z" }])
+    ]).then(function () {
+      var s = document.createElement("script"); s.src = "../app.js?v=19";
+      s.onload = run; s.onerror = function () { FAILS++; log("FAIL app.js lastet ikke"); log("DONE fails=" + FAILS); };
+      document.body.appendChild(s);
+    }).catch(function (e) { FAILS++; log("FAIL seed: " + e.message); log("DONE fails=" + FAILS); });
+  }
+
+  var NODE = null;
+  function run() {
+    Promise.resolve()
+    .then(function () { log("== boot: basement + bygg + fangst =="); return until(function () { return document.querySelector('[data-act="openBuilding"][data-id="b1"]'); }, "byggliste"); })
+    .then(function () { click('[data-act="openBuilding"][data-id="b1"]'); return until(function () { return document.querySelector('[data-act="fangstToggle"]'); }, "fangst-knapp"); })
+
+    /* ---- 1) open → live preview, capture the node ---- */
+    .then(function () {
+      log("== 1: åpne fangst → live preview, fest node-referansen ==");
+      click('[data-act="fangstToggle"]');
+      return until(function () { var v = video(); return v && v.readyState >= 2 && v.videoWidth > 0 && vTrack() && vTrack().readyState === "live" ? v : null; }, "video live");
+    })
+    .then(function (v) {
+      NODE = v;
+      ok("preview is live on open (readyState≥2, videoWidth>0, track live)", v.readyState >= 2 && v.videoWidth > 0 && !v.paused, "rs=" + v.readyState + " w=" + v.videoWidth + " paused=" + v.paused);
+    })
+
+    /* ---- 2) loadTray's async render already fired during warmup — the node must have survived it ---- */
+    .then(function () {
+      log("== 2: loadTray-renderen under oppvarming byttet IKKE noden ==");
+      assertPreserved("etter open+loadTray", NODE);
+    })
+
+    /* ---- 3) shoot + place a pin: trayAfterAssign → render() (the per-placement swapper) ---- */
+    .then(function () { log("== 3: skyt → plassér pin → render() etter plassering =="); click('[data-act="fangstShoot"]'); return until(armed, "capture armert"); })
+    .then(function () {
+      var playsBefore = PLAY_CALLS;
+      mapTap(0, 0);
+      return until(function () { return assetOps().then(function (o) { return o.length === 1 ? o : null; }); }, "pin plassert")
+        .then(function () { return wait(120); })   // let the post-placement render() settle
+        .then(function () { return playsBefore; });
+    })
+    .then(function (playsBefore) {
+      assertPreserved("etter plassering", NODE);
+      ok("placement did NOT re-issue play() on the live node (no iOS interrupt)", PLAY_CALLS === playsBefore, "play() delta=" + (PLAY_CALLS - playsBefore));
+      return until(function () { return document.querySelector(".ob-apin"); }, "pin på kartet");
+    })
+    .then(function () { ok("pin appeared on the map via the surgical path (renderAssetLayers)", true); })
+
+    /* ---- 4) the online-event render() — the very storm that blacked it out in the field ---- */
+    .then(function () {
+      log("== 4: online-hendelsen (drain-stormen) → render() midt i strømmen ==");
+      var playsBefore = PLAY_CALLS;
+      ONLINE = true; window.dispatchEvent(new Event("online"));
+      return wait(200).then(function () { return playsBefore; });
+    })
+    .then(function (playsBefore) {
+      assertPreserved("etter online-render", NODE);
+      ok("online render() did NOT re-issue play() on the live node", PLAY_CALLS === playsBefore, "play() delta=" + (PLAY_CALLS - playsBefore));
+    })
+
+    /* ---- 5) a second placement while ONLINE — the exact field sequence ---- */
+    .then(function () { log("== 5: nok en pin mens online — feltets faktiske sekvens =="); click('[data-act="fangstShoot"]'); return until(armed, "capture 2 armert"); })
+    .then(function () { mapTap(30, 20); return until(function () { return assetOps().then(function (o) { return o.length === 2 ? o : null; }); }, "pin 2 plassert"); })
+    .then(function () { return wait(150); })
+    .then(function () {
+      assertPreserved("etter online-plassering", NODE);
+      ok("two pins on the map", document.querySelectorAll(".ob-apin").length === 2, document.querySelectorAll(".ob-apin").length);
+    })
+
+    /* ---- 6) a direct forced render() (belt: any future caller) still preserves the node ---- */
+    .then(function () {
+      log("== 6: direkte render() (vilkårlig fremtidig kaller) bevarer noden ==");
+      var playsBefore = PLAY_CALLS;
+      window.dispatchEvent(new Event("online"));   // fires render() again
+      return wait(120).then(function () {
+        assertPreserved("etter nok en render", NODE);
+        ok("still no redundant play()", PLAY_CALLS === playsBefore, "delta=" + (PLAY_CALLS - playsBefore));
+      });
+    })
+
+    /* ---- 7) leaving the mode stops all tracks (privacy/battery, unchanged) ---- */
+    .then(function () {
+      log("== 7: avslutt fangst → alle spor stoppet ==");
+      var t = vTrack();
+      click('[data-act="fangstToggle"]');
+      return until(function () { return !video() && t && t.readyState === "ended"; }, "spor stoppet");
+    })
+    .then(function () { ok("leaving the mode stops all tracks", true); })
+
+    .then(function () {
+      ok("zero console errors", CONSOLE_ERRORS.length === 0, CONSOLE_ERRORS.join(" | "));
+      log("DONE fails=" + FAILS);
+    })
+    .catch(function (e) { FAILS++; log("FAIL " + (e && e.message)); log("DONE fails=" + FAILS); });
+  }
+})();
+</script>
+</body></html>

@@ -686,6 +686,18 @@
      * this guard — not the debounce — is what actually keeps the keyboard up. Downgrade to the surgical
      * refresh (chips/messages/total still update live), remember that a FULL paint is owed, pay it on blur. */
     if (S.view.name === "building" && clFieldFocused()) { clDeferredPaint = "render"; refreshBefaring(); return; }
+    /* field-findings #4 (installed iPad PWA, live): the map-pin camera showed a BLACK preview. Root cause is
+     * the same render-wipe law as the keyboard bug above. render() rebuilds #app wholesale → a FRESH <video>
+     * node every time; mountFangst re-attaches the MediaStream, which is enough on desktop Chrome but NOT on
+     * iOS — the new node's play() is interrupted by the next swap and the frame never paints (black). It
+     * "worked before" because the swaps that black it out are the ONLINE drainAll→render() storm: placing a
+     * pin fires a drain whose progress+completion callbacks each render(), each swapping the node mid-stream.
+     * Fix: while fangst is active AND its pane is already mounted, downgrade render() to a SURGICAL update —
+     * strip/chips/note/header/pins refresh, the <video> and the Leaflet map stay exactly where they are, so
+     * the stream is never torn off its node. The FIRST render (the one that BUILDS the pane) has no
+     * #fangst-video yet, so it still runs full and mounts the camera once; the fallback path has no live
+     * node to protect and likewise runs full. */
+    if (fangstActive() && !S.fangst.fallback && document.getElementById("fangst-video")) { refreshFangstView(); return; }
     if (!S.session && !S.offlineIdent) { renderLogin(); }
     else if (S.view.name === "signoutGuard") { renderSignoutGuard(); }
     else if (S.view.name === "outbox") { renderOutbox(); }
@@ -1759,10 +1771,20 @@
     var t = camStream && camStream.getVideoTracks && camStream.getVideoTracks()[0];
     if (t && t.readyState === "live") {
       if (v.srcObject !== camStream) v.srcObject = camStream;
-      if (v.play) v.play().catch(function () {});
+      // play ONLY if actually paused — re-issuing play() on an already-playing element interrupts the
+      // in-flight play promise, which on iOS is exactly what leaves the preview black
+      if (v.paused && v.play) v.play().catch(function () {});
       return;
     }
     fangstStartStream();
+  }
+  /* the surgical whole-view update render() downgrades to while the camera is live: the strip, type chips,
+   * guidance note, header chips AND the map pins all refresh — but the <video> and the Leaflet map are left
+   * exactly where they are. Nothing here rebuilds #app, so the stream is never torn off its node. */
+  function refreshFangstView() {
+    refreshFangst();       // strip / chips / note / «usendte» header chip
+    renderAssetLayers();   // pins reflect the newest S.assets without tearing the map down
+    mountFangst();         // idempotent belt: keep the stream on the SAME node, resume only if it paused
   }
   function fangstStartStream() {
     if (camBusy) return; camBusy = true;
@@ -1801,7 +1823,10 @@
     }).join("");
   }
   function fangstNoteHTML() {
-    if (S.fangst && S.fangst.err && !S.fangst.fallback) return '<div class="msg err" style="margin:8px 0 0">' + esc(S.fangst.err) + '</div>';
+    // surface BOTH camera-origin (S.fangst.err) and placement-origin (S.tray.err) failures here — during
+    // fangst the tray section below is not surgically refreshed, so its own error line would stay stale
+    var err = (S.fangst && S.fangst.err) || (S.tray && S.tray.err);
+    if (err && !(S.fangst && S.fangst.fallback)) return '<div class="msg err" style="margin:8px 0 0">' + esc(err) + '</div>';
     if (S.tray && S.tray.sel) return '<div class="note" style="margin-top:8px">👆 <b>Trykk på kartet</b> der bildet hører hjemme — punktet pinnes der med bildet festet.</div>';
     if (S.fangst && S.fangst.lastId) {
       var a = (S.assets || []).filter(function (x) { return x.id === S.fangst.lastId; })[0];

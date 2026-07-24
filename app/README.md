@@ -58,6 +58,7 @@ python3 -m http.server 8788             # repo root, then open:
 #   http://localhost:8788/app/tests/interleave.html      → expect "DONE fails=0"
 #   http://localhost:8788/app/tests/fangst.html          → expect "DONE fails=0"
 #   http://localhost:8788/app/tests/befaring-focus.html  → expect "DONE fails=0"
+#   http://localhost:8788/app/tests/fangst-camera.html   → expect "DONE fails=0"
 ```
 
 `app/tests/interleave.html` is the committed outbox-interleaving harness (F-M2 razor, claim contention,
@@ -67,13 +68,19 @@ end-to-end (shoot→tap→chip, render-wipe with a live stream, track stop on ex
 5 → drain). `app/tests/befaring-focus.html` guards field-findings #3: it types into a befaring field with
 >400 ms gaps (so the debounced save flushes between characters) and forces a full `render()` mid-typing,
 asserting `document.activeElement` identity survives both — the iPad keyboard-drops-per-character bug.
-All three ship as inert pages but are not in the SW shell.
+`app/tests/fangst-camera.html` guards field-findings #4: with a mock camera (canvas captureStream) it
+opens the map-pin camera, then fires every render path that runs during capture (placement, the online
+event, a direct `render()`) and asserts the `<video>` node is the SAME element throughout, srcObject +
+live track intact, and `play()` is never re-issued on the already-playing node — the black-preview bug.
+All ship as inert pages but are not in the SW shell.
 
 **The paint law these encode** (break it and the field notices before you do): anything that rewrites
-`#app` or `#cl-body` while a control is focused or mid-interaction must be deferred. `render()` and
-`refreshBefaring()` both check `clFieldFocused()` and pay the deferred paint on blur; the Leaflet map and
-the fangst stream survive re-renders via module vars. A new surface that types, draws or streams needs the
-same treatment — and a harness proving it, since none of this reproduces on a fast desktop.
+`#app` while a control is focused, mid-interaction, or holding a live MediaStream must be deferred or made
+surgical. `render()` guards on `clFieldFocused()` (defer to blur) AND on an active fangst pane (downgrade
+to `refreshFangstView()`, leaving the `<video>` + Leaflet map in place); `refreshBefaring()` guards the
+same way. The keyboard and the camera are the same bug class — a focused/live DOM node replaced under the
+user — and each only reproduces on a real iPad online, so a new surface that types, draws or streams needs
+this treatment AND a headless harness whose teeth are node/focus identity (verified by neutering the guard).
 
 ## Auth / config
 
