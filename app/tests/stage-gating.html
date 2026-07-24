@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<!-- COMMITTED stage-gating harness (OnSite-STADIER-OG-FUNKSJONER §A/§B, phase 1-2, 2026-07-24) — proves
+     "funksjon følger stadie" for the concrete case the build prompt named: proof/utført is HIDDEN entirely
+     before `signert`, and appears at `signert`+ (drift). Boots the REAL app.js in basement mode with three
+     buildings pre-seeded at different stages, drives the sign transition through real DOM, and asserts:
+       · the stage BADGE renders in the list + header
+       · at befaring / tilbud (stage < signert): NO proof capture form, NO proofSave action, locked note shown
+       · at drift (stage >= signert): the proof capture form IS present, no locked note
+       · signing an offer → building flips to drift (optimistic), proof opens, and the outbox carries BOTH
+         the offers status=signed op and the buildings stage=drift op (one coalesced building op)
+     Teeth verified during the build: neuter the `stageAtLeast(b,"signert")` gate and the "no proof form at
+     befaring" assertions fail (proof form appears on a non-customer building — the exact root problem).
+
+     Run: python3 -m http.server 8788 (repo root) → open /app/tests/stage-gating.html → DONE fails=0.
+     Ships inert (no secrets, not in the SW shell), like the other harnesses. -->
+<html lang="nb"><head><meta charset="UTF-8"><title>stage gating — funksjon følger stadie</title>
+<link rel="stylesheet" href="../vendor/leaflet/leaflet.css">
+<link rel="stylesheet" href="../app.css?v=9">
+<style>#log{background:#111;color:#9f9;font:12px/1.5 monospace;padding:14px;border-radius:8px;white-space:pre-wrap}</style>
+</head>
+<body>
+<pre id="log"></pre>
+<div class="wrap"><div id="app"></div></div>
+<div id="printdoc" aria-hidden="true"></div>
+
+<script>
+try { Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: { register: function () { return Promise.reject(new Error("SW off")); }, addEventListener: function () {}, getRegistrations: function () { return Promise.resolve([]); } } }); } catch (e) {}
+var CONSOLE_ERRORS = [];
+window.onerror = function (m) { CONSOLE_ERRORS.push(String(m)); };
+Object.defineProperty(navigator, "onLine", { configurable: true, get: function () { return false; } });   // basement: render from cache, writes queue
+window.confirm = function () { return true; };   // the sign action confirms; auto-accept in the harness
+
+var UID = "felt-tester";
+localStorage.setItem("sb-btneqhrqnxmggwowboei-auth-token", JSON.stringify({ user: { id: UID, email: "felt@test.no" } }));
+localStorage.setItem("onsite_a2hs_dismissed", "1");
+localStorage.removeItem("onsite-drain-lease");
+
+window.supabase = { createClient: function () {
+  function q() { var o = { eq: function () { return o; }, is: function () { return o; }, gt: function () { return o; }, order: function () { return o; }, select: function () { return o; }, maybeSingle: function () { return o; }, upsert: function () { return o; }, update: function () { return o; }, then: function (res, rej) { return Promise.resolve({ data: null, error: { message: "offline-harness" } }).then(res, rej); } }; return o; }
+  return {
+    auth: { onAuthStateChange: function () {}, getSession: function () { return Promise.resolve({ data: { session: null } }); },
+      signInWithOtp: function () { return Promise.resolve({ error: { message: "harness" } }); },
+      verifyOtp: function () { return Promise.resolve({ error: { message: "harness" } }); },
+      signOut: function () { return Promise.resolve({}); } },
+    from: function () { return q(); },
+    storage: { from: function () { return { upload: function () { return Promise.resolve({ data: {}, error: null }); }, createSignedUrl: function () { return Promise.resolve({ data: null, error: { message: "offline" } }); } }; } }
+  };
+} };
+</script>
+
+<script src="../vendor/leaflet/leaflet.js"></script>
+<script src="../offline.js?v=5"></script>
+<script>
+var LOG = document.getElementById("log"), FAILS = 0;
+function log(s) { LOG.textContent += s + "\n"; }
+function ok(n, c, x) { if (c) log("PASS  " + n); else { FAILS++; log("FAIL  " + n + (x ? " — " + x : "")); } }
+function jstr(o) { return JSON.stringify(o); }
+var OFF = window.OnsiteOffline;
+function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+function until(fn, label, ms) { ms = ms || 10000; var t0 = Date.now(); return (function p() { return Promise.resolve().then(fn).then(function (v) { if (v) return v; if (Date.now() - t0 > ms) throw new Error("timeout: " + label); return wait(40).then(p); }); })(); }
+function click(sel) { var el = document.querySelector(sel); if (!el) throw new Error("mangler element: " + sel); el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window })); return el; }
+function txt() { return (document.getElementById("app") || document.body).textContent; }
+function proofForm() { return document.getElementById("pf_title") || document.querySelector('[data-act="proofSave"]'); }
+function lockedNote() { return txt().indexOf("Åpnes når bygget er") !== -1; }
+function openB(id) { click('[data-act="openBuilding"][data-id="' + id + '"]'); return until(function () { return document.querySelector('[data-act="back"]'); }, "bygg " + id + " åpnet"); }
+function backToList() { click('[data-act="back"]'); return until(function () { return document.querySelector('[data-act="openBuilding"]'); }, "tilbake til liste"); }
+function bldgOps() { return OFF.listOps(UID).then(function (o) { return o.filter(function (x) { return x.entity === "buildings"; }); }); }
+function offerOps() { return OFF.listOps(UID).then(function (o) { return o.filter(function (x) { return x.entity === "offers"; }); }); }
+
+function seedBuilding(id, name, stage) {
+  return { id: id, tenant_id: "t1", name: name, address: name + "veien 1", gnr: "1", bnr: "2", kommunenr: "0301",
+    lat: 59.91, lon: 10.75, stage: stage, checklist: null,
+    created_at: "2026-01-0" + (id.slice(-1)) + "T00:00:00.000Z", updated_at: "2026-02-01T00:00:00.000Z" };
+}
+
+(function main() {
+  var del = indexedDB.deleteDatabase("onsite-app-offline");
+  del.onsuccess = del.onerror = del.onblocked = seed;
+  function seed() {
+    var offer = { id: "of1", tenant_id: "t1", building_id: "b_tilbud", version: 1, period: "mnd",
+      total_monthly: 16530, total_yearly: 198360, status: "draft", cover_note: null,
+      data: { modules: [], optionLines: [], totalMonthly: 16530, totalYearly: 198360 } };
+    Promise.all([
+      OFF.cachePut(UID, "meta", { id: "t1", role: "admin", name: "Testfirma AS", count: 1 }),
+      OFF.cachePut(UID, "buildings", [ seedBuilding("b_bef", "Befaringbygg", "befaring"),
+        seedBuilding("b_tilbud", "Tilbudbygg", "tilbud"), seedBuilding("b_drift", "Driftbygg", "drift") ]),
+      // per-building section snapshots so the detail view paints fully offline (no network leg)
+      OFF.cachePut(UID, "b:b_bef", { assets: [], proof: [], offers: null, contacts: [], zones: [] }),
+      OFF.cachePut(UID, "b:b_tilbud", { assets: [], proof: [], offers: [offer], contacts: [], zones: [] }),
+      OFF.cachePut(UID, "b:b_drift", { assets: [], proof: [], offers: null, contacts: [], zones: [] })
+    ]).then(function () {
+      var s = document.createElement("script"); s.src = "../app.js?v=20";
+      s.onload = run; s.onerror = function () { FAILS++; log("FAIL app.js lastet ikke"); log("DONE fails=" + FAILS); };
+      document.body.appendChild(s);
+    }).catch(function (e) { FAILS++; log("FAIL seed: " + e.message); log("DONE fails=" + FAILS); });
+  }
+
+  function run() {
+    Promise.resolve()
+    /* ---- 1) badges in the list ---- */
+    .then(function () { log("== 1: stadie-badge i byggliste =="); return until(function () { return document.querySelector('[data-act="openBuilding"][data-id="b_bef"]'); }, "byggliste"); })
+    .then(function () {
+      var card = function (id) { return document.querySelector('[data-act="openBuilding"][data-id="' + id + '"]').textContent; };
+      ok("befaring-bygg badge = «Befaring»", card("b_bef").indexOf("Befaring") !== -1, card("b_bef"));
+      ok("tilbud-bygg badge = «Tilbud»", card("b_tilbud").indexOf("Tilbud") !== -1, card("b_tilbud"));
+      ok("drift-bygg badge = «Drift»", card("b_drift").indexOf("Drift") !== -1, card("b_drift"));
+    })
+    /* ---- 2) befaring: proof HIDDEN ---- */
+    .then(function () { log("== 2: befaring → proof skjult, låst notat, badge i header =="); return openB("b_bef"); })
+    .then(function () {
+      ok("header viser badge «Befaring»", txt().indexOf("Befaring") !== -1);
+      ok("INGEN proof-fangstskjema på et bygg før signert", !proofForm(), "proofForm present");
+      ok("låst notat forklarer hvorfor", lockedNote());
+      return backToList();
+    })
+    /* ---- 3) tilbud: still hidden (tilbud < signert), sign button present. NB the offer loads from the
+            b:<id> cache a tick after the first paint, so poll for the sign button rather than assert instantly ---- */
+    .then(function () { log("== 3: tilbud → proof fortsatt skjult, «Marker som signert» tilgjengelig =="); return openB("b_tilbud"); })
+    .then(function () { return until(function () { return document.querySelector('[data-act="offerSign"]'); }, "«Marker som signert» (etter at tilbud er lastet fra cache)"); })
+    .then(function () {
+      ok("proof fortsatt skjult ved tilbud (< signert)", !proofForm());
+      ok("«Marker som signert» finnes på tilbud-stadiet", !!document.querySelector('[data-act="offerSign"]'));
+    })
+    /* ---- 4) sign → drift: proof opens, outbox carries both ops ---- */
+    .then(function () {
+      log("== 4: signer → drift → proof åpnes + begge ops i kø ==");
+      click('[data-act="offerSign"]');
+      return until(function () { return (txt().indexOf("Drift") !== -1 && proofForm()) ? true : null; }, "drift + proof åpnet etter signering");
+    })
+    .then(function () {
+      ok("etter signering: header badge → «Drift»", txt().indexOf("Drift") !== -1);
+      ok("etter signering: proof-fangstskjema er nå tilgjengelig", !!proofForm());
+      ok("etter signering: «Marker som signert» borte (status signed)", !document.querySelector('[data-act="offerSign"]'));
+      return Promise.all([bldgOps(), offerOps()]);
+    })
+    .then(function (r) {
+      var bop = r[0].filter(function (o) { return o.buildingId === "b_tilbud"; });
+      var oop = r[1].filter(function (o) { return o.payload && o.payload.id === "of1"; });
+      ok("ÉN buildings-op for bygget (coalesced), stage=drift", bop.length === 1 && bop[0].payload.stage === "drift", jstr(bop.map(function (o) { return o.payload.stage; })));
+      ok("buildings-op bevarer resten av raden (ikke bare stage)", bop.length === 1 && bop[0].payload.name === "Tilbudbygg" && "checklist" in bop[0].payload, jstr(Object.keys((bop[0] || {}).payload || {})));
+      ok("offers-op har status=signed", oop.length === 1 && oop[0].payload.status === "signed", jstr(oop.map(function (o) { return o.payload.status; })));
+      return backToList();
+    })
+    /* ---- 5) drift building: proof present from the start ---- */
+    .then(function () { log("== 5: drift-bygg → proof tilgjengelig direkte =="); return openB("b_drift"); })
+    .then(function () {
+      ok("drift-bygg: proof-fangstskjema tilgjengelig", !!proofForm());
+      ok("drift-bygg: ingen låst notat", !lockedNote());
+    })
+    .then(function () {
+      ok("zero console errors", CONSOLE_ERRORS.length === 0, CONSOLE_ERRORS.join(" | "));
+      log("DONE fails=" + FAILS);
+    })
+    .catch(function (e) { FAILS++; log("FAIL " + (e && e.message)); log("DONE fails=" + FAILS); });
+  }
+})();
+</script>
+</body></html>

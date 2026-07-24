@@ -66,6 +66,9 @@
       // onboarding C: the befaring checklist rides the building row (buildings.checklist jsonb) — stored
       // AS the core shape (a plain array of items), so computeOffer reads it with no translation layer.
       checklist: row.checklist || null,
+      // stage model (§A): the lifecycle stage. Fallback 'befaring' so a stale cache (from before the
+      // column existed / a delta not yet pulled) still renders sensibly; the next pull brings the real value.
+      stage: row.stage || "befaring",
       _row: row };
   }
   function coreToRow(tenantId, b) {
@@ -76,6 +79,58 @@
     return row;
   }
   function coreReady() { return !!(window.OnSiteCore && Object.keys(window.OnSiteCore).length); }
+
+  /* ============================ stage model (OnSite-STADIER-OG-FUNKSJONER §A) ============================
+   * The building's lifecycle, made explicit. ORDER is load-bearing: gating is "stage >= X" (stageAtLeast),
+   * so the array index IS the ordinal. Mirrors the DB CHECK on buildings.stage exactly — keep them in sync.
+   * NB the §4/§7 gating & role matrices live in the (not-yet-committed) model doc; this pass wires only the
+   * concretes the build prompt spelled out (create→befaring, first offer→tilbud, sign→drift; proof gated
+   * at >= signert). */
+  var STAGE_ORDER = ["prospekt", "befaring", "tilbud", "signert", "drift", "arkiv"];
+  var STAGE_DEFS = {
+    prospekt: { label: "Prospekt", emoji: "🔍", cls: "q" },
+    befaring: { label: "Befaring", emoji: "📋", cls: "s" },
+    tilbud:   { label: "Tilbud",   emoji: "💰", cls: "s" },
+    signert:  { label: "Signert",  emoji: "✍️", cls: "ok" },
+    drift:    { label: "Drift",    emoji: "🔧", cls: "ok" },
+    arkiv:    { label: "Arkiv",    emoji: "📦", cls: "q" }
+  };
+  function stageOf(b) { return (b && b.stage) || "befaring"; }
+  function stageIdx(s) { var i = STAGE_ORDER.indexOf(s); return i < 0 ? STAGE_ORDER.indexOf("befaring") : i; }
+  function stageAtLeast(b, floor) { return stageIdx(stageOf(b)) >= stageIdx(floor); }
+  function stageBadgeHTML(b) {
+    var d = STAGE_DEFS[stageOf(b)] || STAGE_DEFS.befaring;
+    return '<span class="chip ' + d.cls + '" title="stadie">' + d.emoji + ' ' + esc(d.label) + '</span>';
+  }
+  /* Advance (or set) a building's stage. buildings is a blob row one rep owns, so — like buildings.checklist
+   * (see queueCoalesced / flushChecklist) — this rides the WHOLE-ROW coalesced write, never the field-merge
+   * path: a stage change and an in-flight befaring edit then share the ONE pending building op (both read
+   * b._row), instead of racing two ops on the same row. Optimistic into state + the buildings-list cache;
+   * the chip flips instantly and the drain syncs it. `only` guards a forward-only transition (never demote
+   * on a re-trigger); pass no `only` to set unconditionally (used by the future archive/manual paths). */
+  function setStage(b, stage, only) {
+    var uid = userId();
+    if (!b || !stage || stageOf(b) === stage) return Promise.resolve();
+    if (only && only.indexOf(stageOf(b)) < 0) return Promise.resolve();   // current stage not in the allowed-from set
+    if (!S.tenant || !S.tenant.id || !uid) return Promise.resolve();
+    b.stage = stage; if (b._row) b._row.stage = stage;   // optimistic — the badge flips now
+    return OFF.cacheGet(uid, "buildings").then(function (c) {
+      var rows = ((c && c.v) || []).map(function (r) { if (r.id !== b.id) return r; var x = {}; for (var k in r) x[k] = r[k]; x.stage = stage; return x; });
+      return OFF.cachePut(uid, "buildings", rows);
+    }).then(function () {
+      return queueCoalesced({
+        entity: "buildings", id: b.id,
+        // copy the whole row (carries checklist + everything) and stamp the new stage; upsert onConflict:id
+        // updates only the columns present, so nothing else is clobbered (same shape as flushChecklist)
+        fullRow: function () { var row = {}; for (var k in (b._row || {})) row[k] = b._row[k]; row.id = b.id; row.stage = b.stage; return row; },
+        tenantId: S.tenant.id, buildingId: b.id, userId: uid,
+        title: "Stadie → " + ((STAGE_DEFS[stage] || {}).label || stage) + ": " + b.name
+      });
+    }).then(function () {
+      refreshPending(function () { render(); });
+      scheduleDrain();
+    }).catch(function () { /* stage is advisory metadata — a queue hiccup never blocks the rep's flow */ });
+  }
 
   /* ============================ prodDb: authenticated data layer ============================
    * RLS does the tenant filtering server-side. We only ever set tenant_id from the user's own membership. */
@@ -285,7 +340,7 @@
     if (!b.name) { S.error = "Bygg-navn må fylles ut."; S.msg = null; render(); return; }
     var uid = userId();
     if (!S.tenant || !S.tenant.id || !uid) { S.error = "Mangler tenant/bruker (åpne appen på nett én gang først)."; render(); return; }
-    var row = coreToRow(S.tenant.id, b); row.id = OFF.uuid();
+    var row = coreToRow(S.tenant.id, b); row.id = OFF.uuid(); row.stage = "befaring";   // §A: create → befaring
     S.error = null; S.msg = null;
     OFF.queueOp({ entity: "buildings", op: "insert", payload: row, baseUpdatedAt: null,
       tenantId: S.tenant.id, buildingId: row.id, userId: uid, title: "Nytt bygg: " + row.name })
@@ -467,7 +522,7 @@
     if (!S.tenant || !S.tenant.id || !uid) { nb.error = "Mangler tenant/bruker (åpne appen på nett én gang først)."; render(); return; }
     if (!p.name) p.name = (p.addr || "").split(",")[0].trim() || "Nytt bygg";   // address/discovery path may have no org name → never silently block
     var b = { name: p.name, orgnr: p.orgnr, addr: p.addr, gnr: p.gnr, bnr: p.bnr, kommunenr: p.kommunenummer, lat: p.lat, lon: p.lon };
-    var row = coreToRow(S.tenant.id, b); row.id = OFF.uuid();
+    var row = coreToRow(S.tenant.id, b); row.id = OFF.uuid(); row.stage = "befaring";   // §A: create → befaring
     // contacts: styreleder + forvalter, NAME + ROLE only (registry gives no work phone/email; those are manual later)
     var contactRows = [];
     if ((p.styreleder || "").trim()) contactRows.push({ id: OFF.uuid(), tenant_id: S.tenant.id, building_id: row.id, name: p.styreleder.trim(), role: "Styreleder", phone: null, email: null });
@@ -795,7 +850,7 @@
       var bPend = pendingOpByRecord("buildings");
       list = S.buildings.map(function (b) {
         var meta = [b.addr, (b.gnr ? 'gnr ' + b.gnr : ''), (b.bnr ? 'bnr ' + b.bnr : '')].filter(Boolean).join(' · ');
-        return '<button class="bldg click" data-act="openBuilding" data-id="' + esc(b.id) + '"><span><span class="t">🏢 ' + esc(b.name) + opChip(bPend[b.id]) + '</span>' + (meta ? '<span class="d">' + esc(meta) + '</span>' : '') + '</span><span class="chev">›</span></button>';
+        return '<button class="bldg click" data-act="openBuilding" data-id="' + esc(b.id) + '"><span><span class="t">🏢 ' + esc(b.name) + ' ' + stageBadgeHTML(b) + opChip(bPend[b.id]) + '</span>' + (meta ? '<span class="d">' + esc(meta) + '</span>' : '') + '</span><span class="chev">›</span></button>';
       }).join("");
     }
 
@@ -2517,6 +2572,12 @@
         });
     });
   }
+  /* §B: the locked stand-in shown before `signert` — no capture form, no proof list, nothing writable.
+   * It exists only so the section's absence isn't mystifying mid-test; it recreates none of the root problem. */
+  function sectionProofLockedHTML(b) {
+    return '<div class="card"><div class="ct">📋 Dokumentert arbeid <span class="muted" style="font-weight:600">· låst</span></div>'
+      + '<div class="note" style="margin:0">🔒 Åpnes når bygget er <b>signert</b> og i drift. Før signering er all fangst foreløpig — ingen uforanderlige bevis opprettes på et bygg som ennå ikke er kunde.</div></div>';
+  }
   function sectionProofHTML(b) {
     var body = "";
     // 1) pending captures for THIS building — the outbox view of the timeline (doc-80 §6 chips)
@@ -2712,6 +2773,9 @@
         S.offers = sortOffers((S.offers || []).concat([row]));
         S.secMsg.offers = "Tilbud v" + offer.version + " beregnet — " + kr(offer.totalMonthly) + "/mnd · lagret på enheten, synkes.";
         snapshotBuilding(b.id);
+        // stage transition (§A): building the first offer moves prospekt/befaring → tilbud. Forward-only,
+        // so a recompute at a later stage (a drift change-order re-priced) never demotes the building.
+        setStage(b, "tilbud", ["prospekt", "befaring"]);
         refreshPending(function () { render(); });
         drainAll();
       })
@@ -2720,6 +2784,36 @@
         S.secErr.offers = "⚠ Kunne IKKE lagre tilbudet på enheten (" + ((e && e.message) || "lagringsfeil") + ") — det er IKKE lagret.";
         render();
       });
+  }
+  /* §A/§C sign transition (minimal): mark the latest offer signed → building enters DRIFT. The befaring is
+   * now the frozen operating baseline; proof/utført opens (gated at stage >= signert). offers is a blob row
+   * one rep owns → queueCoalesced (whole-row), same as offerEdit. Optimistic, rolled back on a queue failure.
+   * NOTE this is the minimal transition; the fuller draft→sent→signed lifecycle, a real counter-signature,
+   * and re-signing a change-order are phase-3 work, and role-gating (field may not sign) is phase-4. */
+  function offerSign(rowId) {
+    var b = buildingById(S.view.id), uid = userId();
+    var row = (S.offers || []).filter(function (x) { return x.id === rowId; })[0];
+    if (!b || !row || !uid || !S.tenant || !S.tenant.id) return;
+    if (!window.confirm("Marker tilbud v" + row.version + " som signert?\n\nBygget går til DRIFT: befaringen fryser som driftsgrunnlag, og «Dokumentert arbeid» åpnes.")) return;
+    var prevStatus = row.status;
+    row.status = "signed";   // optimistic
+    S.secErr.offers = null; S.secMsg.offers = "Tilbud v" + row.version + " signert — bygget er i drift.";
+    snapshotBuilding(b.id);
+    queueCoalesced({
+      entity: "offers", id: row.id,
+      fullRow: function () { var x = {}; for (var k in row) x[k] = row[k]; return x; },
+      tenantId: S.tenant.id, buildingId: b.id, userId: uid, title: "Signert: Tilbud v" + row.version
+    }).then(function () {
+      return setStage(b, "drift", ["prospekt", "befaring", "tilbud", "signert"]);   // forward-only
+    }).then(function () {
+      refreshPending(function () { render(); });
+      scheduleDrain();
+    }).catch(function (e) {
+      row.status = prevStatus;   // roll back the optimistic status
+      S.secMsg.offers = null;
+      S.secErr.offers = "⚠ Kunne IKKE signere (" + ((e && e.message) || "lagringsfeil") + ") — status uendret.";
+      render();
+    });
   }
   /* An edit to the draft you are authoring — module in/out, a hand-set price — mutates THAT version's blob
    * and re-derives every total through core. Class-B, through the outbox: it works in a basement. */
@@ -2812,9 +2906,16 @@
   }
   function sectionOffersHTML(b) {
     var canCompute = offerComputable();
-    var computeBar = '<div class="bar"><button class="btn" id="of-compute" data-act="offerCompute"' + (S.offerBusy || !canCompute ? ' disabled' : '') + '>'
+    var lo = latestOffer();
+    // §A sign transition: a built-but-unsigned offer can be marked signed → building enters DRIFT (befaring
+    // freezes as the operating baseline, proof opens). PROD/phase-3: full draft→sent→signed + a real
+    // counter-signature; PROD/phase-4: gate this button to admin/office (field may not sign).
+    var signBtn = (lo && lo.status !== "signed" && lo.status !== "signert")
+      ? '<button class="btn" data-act="offerSign" data-id="' + esc(lo.id) + '">✍️ Marker som signert → drift</button>' : '';
+    var computeBar = '<div class="bar"><button class="btn' + (signBtn ? ' ghost' : '') + '" id="of-compute" data-act="offerCompute"' + (S.offerBusy || !canCompute ? ' disabled' : '') + '>'
       + (S.offerBusy ? '<span class="spin"></span>Beregner…' : '🧮 Beregn tilbud fra soner + befaring →') + '</button>'
-      + (latestOffer() ? '<button class="btn ghost" data-act="offerPrint">🖨 Tilbud til styret</button>' : '')
+      + signBtn
+      + (lo ? '<button class="btn ghost" data-act="offerPrint">🖨 Tilbud til styret</button>' : '')
       + '</div>'
       + '<div class="note" id="of-hint" style="margin-top:6px' + (canCompute ? ';display:none' : '') + '">Tick av befaringen (✅/⬆) — så priser @onsite/core bygget fra de målte sonene og de talte enhetene.</div>';
 
@@ -2984,7 +3085,7 @@
       + '<span id="hdr-chips">' + headerChipsHTML() + '</span>'
       + '</div><div style="display:flex;gap:8px;align-items:center"><span class="who">' + esc(email) + '</span><button class="btn ghost" data-act="signout" style="padding:8px 12px">Logg av</button></div></div>'
       + '<div class="bhead"><button class="btn ghost" data-act="back" style="padding:9px 13px">← Bygg</button>'
-      + '<div><h1>🏢 ' + esc(b.name) + '</h1><div class="note">' + esc(meta) + esc(synk) + '</div></div></div>'
+      + '<div><h1>🏢 ' + esc(b.name) + ' ' + stageBadgeHTML(b) + '</h1><div class="note">' + esc(meta) + esc(synk) + '</div></div></div>'
       + (S.error ? '<div class="msg err">' + esc(S.error) + '</div>' : '')
       + sectionKartHTML(b)
       + sectionTrayHTML(b)
@@ -2992,7 +3093,11 @@
       + sectionBefaringHTML(b)
       + sectionAssetsHTML(b)
       + sectionContactsHTML(b)
-      + sectionProofHTML(b)
+      // §B: function follows stage. Proof/utført is HIDDEN entirely until the building is signed — that is
+      // the root fix for "proof on a building that isn't a customer": no capture surface can exist before
+      // there is a signed baseline, so there is never a bogus, immutable proof to have to delete. Before
+      // signert an honest one-liner explains where it went; at signert+ the full section renders.
+      + (stageAtLeast(b, "signert") ? sectionProofHTML(b) : sectionProofLockedHTML(b))
       + sectionOffersHTML(b);
     mountKartMap(b);   // (re)attach Leaflet into the fresh #kart-map node after innerHTML is set
   }
@@ -3179,6 +3284,7 @@
     offerCompute: computeOfferNow,
     offerModExpand: function (el) { var k = "m:" + el.getAttribute("data-id"); S.clOpen[k] = !S.clOpen[k]; render(); },
     offerModToggle: offerModToggle,
+    offerSign: function (el) { offerSign(el.getAttribute("data-id")); },
     offerPrint: showBoardDoc
   };
   app.addEventListener("click", function (e) {

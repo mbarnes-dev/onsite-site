@@ -59,6 +59,7 @@ python3 -m http.server 8788             # repo root, then open:
 #   http://localhost:8788/app/tests/fangst.html          → expect "DONE fails=0"
 #   http://localhost:8788/app/tests/befaring-focus.html  → expect "DONE fails=0"
 #   http://localhost:8788/app/tests/fangst-camera.html   → expect "DONE fails=0"
+#   http://localhost:8788/app/tests/stage-gating.html    → expect "DONE fails=0"
 ```
 
 `app/tests/interleave.html` is the committed outbox-interleaving harness (F-M2 razor, claim contention,
@@ -72,7 +73,19 @@ asserting `document.activeElement` identity survives both — the iPad keyboard-
 opens the map-pin camera, then fires every render path that runs during capture (placement, the online
 event, a direct `render()`) and asserts the `<video>` node is the SAME element throughout, srcObject +
 live track intact, and `play()` is never re-issued on the already-playing node — the black-preview bug.
+`app/tests/stage-gating.html` guards the stage model (§A/§B): three buildings pre-seeded at
+befaring/tilbud/drift, asserting the stage badge renders and the proof/utført section is hidden before
+`signert` and appears at `signert`+, plus the sign transition (tilbud → drift, both outbox ops).
 All ship as inert pages but are not in the SW shell.
+
+**Stage model (`OnSite-STADIER-OG-FUNKSJONER` §A — phases 1-2 shipped 2026-07-24).** `buildings.stage`
+(`prospekt|befaring|tilbud|signert|drift|arkiv`, DB CHECK; migration in `supabase/migrations/`) is the
+building's explicit lifecycle. `STAGE_ORDER` in app.js mirrors the CHECK — **keep them in sync**, and the
+array index is the gating ordinal (`stageAtLeast`). Transitions wired: create→befaring, first offer built
+→tilbud, sign→drift (all forward-only via `setStage`, a whole-row coalesced building write like the
+checklist). Function-follows-stage so far: proof hidden until `signert`. Phases 3-5 (change orders,
+operator-role gating, external `building_access` RLS stage-gating) are **not built yet** — the role enum
+values are unconfirmed and the external RLS work is security-critical; see the session report.
 
 **The paint law these encode** (break it and the field notices before you do): anything that rewrites
 `#app` while a control is focused, mid-interaction, or holding a live MediaStream must be deferred or made

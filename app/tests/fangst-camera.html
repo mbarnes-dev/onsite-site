@@ -106,7 +106,7 @@ function assertPreserved(label, node) {
       OFF.cachePut(UID, "buildings", [{ id: "b1", name: "Testbygg", address: "Testveien 1", gnr: "1", bnr: "2",
         kommunenr: "0301", lat: 59.91, lon: 10.75, created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z" }])
     ]).then(function () {
-      var s = document.createElement("script"); s.src = "../app.js?v=19";
+      var s = document.createElement("script"); s.src = "../app.js?v=20";
       s.onload = run; s.onerror = function () { FAILS++; log("FAIL app.js lastet ikke"); log("DONE fails=" + FAILS); };
       document.body.appendChild(s);
     }).catch(function (e) { FAILS++; log("FAIL seed: " + e.message); log("DONE fails=" + FAILS); });
